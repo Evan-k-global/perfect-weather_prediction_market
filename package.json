@@ -25,6 +25,7 @@
     "weather:daemon": "node --enable-source-maps dist/weather-oracle-daemon.js",
     "weather:daemon:health": "node --enable-source-maps dist/weather-daemon-health.js",
     "weather:tls:check": "node --enable-source-maps dist/weather-tls-check.js",
+    "cleanup:data": "node --enable-source-maps dist/cleanup-data.js",
     "demo:local": "node --enable-source-maps dist/demo-local.js",
     "demo:oracle": "node --enable-source-maps dist/demo-oracle-adapter-local.js",
     "oracle:build-statement": "node --enable-source-maps dist/resolve-from-attestation.js",

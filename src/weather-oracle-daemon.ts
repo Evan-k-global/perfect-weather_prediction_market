@@ -1,6 +1,7 @@
 import './env.js';
 import { runWeatherAttestation } from './weather-attest.js';
 import { runWeatherSync } from './weather-hourly-sync.js';
+import { cleanupData } from './cleanup-data.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -38,6 +39,10 @@ export async function runWeatherOracleDaemon(): Promise<void> {
   const intervalMs = envInt('WEATHER_DAEMON_INTERVAL_MS', 15 * 60 * 1000);
   const retryMs = envInt('WEATHER_DAEMON_RETRY_MS', 2 * 60 * 1000);
   const startDelayMs = envInt('WEATHER_DAEMON_START_DELAY_MS', 0);
+  const cleanupIntervalMs = envInt('CLEANUP_DATA_INTERVAL_MS', 6 * 60 * 60 * 1000);
+  const cleanupKeepContestDays = envInt('CLEANUP_KEEP_CONTEST_DAYS', 14);
+  const cleanupKeepOperatorBackups = envInt('CLEANUP_KEEP_OPERATOR_BACKUPS', 3);
+  const cleanupKeepBatchHistory = envInt('CLEANUP_KEEP_BATCH_HISTORY', 200);
   const heartbeatFile =
     process.env.WEATHER_DAEMON_HEARTBEAT_FILE || './data/weather-daemon-heartbeat.json';
 
@@ -48,6 +53,9 @@ export async function runWeatherOracleDaemon(): Promise<void> {
   console.log('[weather-daemon] starting');
   console.log(`[weather-daemon] interval_ms=${intervalMs} retry_ms=${retryMs}`);
   console.log(
+    `[weather-daemon] cleanup interval_ms=${cleanupIntervalMs} keep_contest_days=${cleanupKeepContestDays} keep_operator_backups=${cleanupKeepOperatorBackups} keep_batch_history=${cleanupKeepBatchHistory}`
+  );
+  console.log(
     `[weather-daemon] strict=${process.env.WEATHER_REQUIRE_TLSN} attestation_file=${process.env.WEATHER_TLSN_ATTESTATION_FILE}`
   );
 
@@ -57,11 +65,23 @@ export async function runWeatherOracleDaemon(): Promise<void> {
   }
 
   let cycle = 0;
+  let lastCleanupAt = 0;
   while (true) {
     cycle += 1;
     const cycleStart = Date.now();
     try {
       await runOnce(cycle);
+      if (cleanupIntervalMs > 0 && Date.now() - lastCleanupAt >= cleanupIntervalMs) {
+        const cleanup = await cleanupData({
+          keepContestDays: cleanupKeepContestDays,
+          keepOperatorBackups: cleanupKeepOperatorBackups,
+          keepBatchHistory: cleanupKeepBatchHistory
+        });
+        lastCleanupAt = Date.now();
+        console.log(
+          `[weather-daemon] cleanup removed backups=${cleanup.operatorBackups.removed.length} contests=${cleanup.contestFiles.removed.length} batchHistory=${cleanup.batchHistory.before - cleanup.batchHistory.after}`
+        );
+      }
       await writeHeartbeat(heartbeatFile, {
         status: 'ok',
         cycle,

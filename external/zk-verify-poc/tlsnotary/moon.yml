@@ -1,0 +1,18 @@
+$schema: 'https://moonrepo.dev/schemas/project.json'
+
+language: 'rust'
+
+tasks:
+  build:
+    command: 'cargo build --manifest-path Cargo.toml'
+  test:
+    command: 'cargo test --manifest-path Cargo.toml'
+  notary:
+    command: 'cargo run --manifest-path Cargo.toml --bin notary'
+    preset: 'server'
+    options:
+      cache: false
+  prover:
+    command: 'cargo run --manifest-path Cargo.toml --bin prover'
+    options:
+      cache: false

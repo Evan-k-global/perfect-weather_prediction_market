@@ -4,6 +4,7 @@
 
 - [Blog: Private Market on Zeko](/Users/evankereiakes/Documents/Codex/private-prediction-market/docs/blog-zeko-private-market.md)
 - [Protocol vs Demo](/Users/evankereiakes/Documents/Codex/private-prediction-market/docs/protocol-vs-demo.md)
+- [Developer Setup](/Users/evankereiakes/Documents/Codex/private-prediction-market/docs/developer-setup.md)
 - [Operator Runbook](/Users/evankereiakes/Documents/Codex/private-prediction-market/docs/operator-runbook.md)
 - [zkTLS Hardening Notes](/Users/evankereiakes/Documents/Codex/private-prediction-market/docs/zktls-hardening-notes.md)
 
