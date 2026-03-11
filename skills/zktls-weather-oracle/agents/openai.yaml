@@ -1,0 +1,4 @@
+interface:
+  display_name: "zkTLS Weather Oracle"
+  short_description: "zkTLS/TLSNotary weather oracle integration"
+  default_prompt: "Use $zktls-weather-oracle to debug or extend the zkTLS weather attestation, verifier, or strict-mode oracle flow."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Private Market Protocol"
+  short_description: "Protocol-layer market and zkApp changes"
+  default_prompt: "Use $private-market-protocol to update the reusable zkApp, tx flow, or oracle policy layer for this repo."

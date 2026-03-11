@@ -1,0 +1,4 @@
+interface:
+  display_name: "Private Betting Privacy"
+  short_description: "Privacy model and batching guardrails"
+  default_prompt: "Use $private-betting-privacy to update privacy behavior, batching, or user-facing privacy claims in this repo."

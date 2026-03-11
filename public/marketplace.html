@@ -1,0 +1,1008 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Perfect Weather Prediction Market</title>
+    <style>
+      :root {
+        --ink: #123a5c;
+        --muted: #4f7ea4;
+        --line: rgba(31, 93, 140, 0.22);
+        --panel: rgba(255, 255, 255, 0.84);
+        --panel-strong: rgba(255, 255, 255, 0.9);
+        --buy: #2298ff;
+        --yes: #11b770;
+        --no: #df5557;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        color: var(--ink);
+        font-family: "Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif;
+        background: linear-gradient(160deg, #ddf4ff, #dff5ff, #fff8d9);
+        overflow-x: hidden;
+      }
+      .bg { position: fixed; inset: 0; z-index: 0; overflow: hidden; }
+      .bg video { width: 100%; height: 100%; object-fit: cover; filter: saturate(1.08) brightness(1.06); }
+      .bg::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(1000px 520px at 14% 6%, rgba(187, 226, 251, 0.18), transparent),
+          radial-gradient(1200px 620px at 90% 90%, rgba(255, 246, 192, 0.2), transparent),
+          linear-gradient(145deg, rgba(237, 248, 255, 0.18), rgba(255, 249, 218, 0.14));
+      }
+      .app {
+        position: relative;
+        z-index: 1;
+        width: min(1240px, calc(100vw - 24px));
+        margin: 0 auto;
+        padding: 14px 12px 16px;
+        display: grid;
+        gap: 10px;
+      }
+      .top, .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        backdrop-filter: blur(4px);
+      }
+      .top { padding: 10px; display: grid; grid-template-columns: 1.5fr 220px 120px; gap: 8px; align-items: end; }
+      .brand b { font-size: 33px; line-height: 1.08; display: block; }
+      .sub { font-size: 12px; color: var(--muted); }
+      .status-row {
+        grid-column: 1 / -1;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .pill {
+        font-size: 12px;
+        width: fit-content;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 4px 10px;
+        background: rgba(255, 255, 255, 0.9);
+      }
+      .pill.batch { max-width: 100%; }
+      .dot { display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: #41c7ff; margin-right: 6px; }
+      .dot.warn { background: #ffbf53; }
+      .dot.bad { background: #ff6e6e; }
+      .wallet-status {
+        font-size: 12px;
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 9px 10px;
+        background: rgba(255, 255, 255, 0.88);
+      }
+
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
+      .stack { display: grid; gap: 10px; }
+      .card { padding: 10px; }
+      h3 { margin: 0 0 8px; font-size: 17px; }
+      .hint, .small, .tiny { color: var(--muted); }
+      .hint { font-size: 12px; margin: 0 0 8px; }
+      .small { font-size: 12px; margin-top: 4px; }
+      .tiny { font-size: 11px; margin-top: 4px; }
+      .oracle-meta-line {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        font-size: 12px;
+        color: var(--muted);
+        margin: 0 0 6px;
+      }
+      .odds-wrap { margin-top: 8px; }
+      .odds-bar {
+        height: 10px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        overflow: hidden;
+        display: grid;
+        grid-template-columns: var(--yesw, 50%) 1fr;
+        background: rgba(255,255,255,0.9);
+      }
+      .odds-yes { background: linear-gradient(90deg, #13bc73, #20d08a); }
+      .odds-no { background: linear-gradient(90deg, #d65153, #e75f61); }
+      .odds-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+      .field { display: grid; gap: 4px; margin-top: 7px; }
+      .field > label { font-size: 12px; color: #2f618a; font-weight: 700; }
+      .inline-input {
+        display: grid;
+        grid-template-columns: minmax(0, 120px) auto;
+        align-items: center;
+        gap: 8px;
+        width: fit-content;
+      }
+      .inline-controls {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 170px;
+        gap: 8px;
+        align-items: end;
+      }
+      .unit {
+        font-size: 12px;
+        color: #2f618a;
+        font-weight: 700;
+      }
+      input, select, textarea, button {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        padding: 9px 10px;
+        font: inherit;
+        color: var(--ink);
+        background: rgba(249, 253, 255, 0.95);
+      }
+      textarea { min-height: 64px; resize: vertical; }
+      button { cursor: pointer; font-weight: 700; }
+      .buy { background: linear-gradient(120deg, #2b9fff, #3daeff); color: #fafdff; }
+      .ghost { background: rgba(229, 243, 255, 0.96); }
+      #connectWallet { padding: 7px 10px; font-size: 13px; align-self: end; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+
+      .market {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+        margin-bottom: 8px;
+        background: var(--panel-strong);
+      }
+      .market-title { font-size: clamp(24px, 3.2vw, 30px); font-weight: 700; }
+      .bar { display: flex; height: 10px; border: 1px solid var(--line); border-radius: 99px; overflow: hidden; margin-top: 4px; }
+      .yes { background: linear-gradient(90deg, #13bc73, #20d08a); }
+      .no { background: linear-gradient(90deg, #d65153, #e75f61); }
+
+      table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+      th, td { border-bottom: 1px solid var(--line); padding: 5px 4px; text-align: left; }
+      th:nth-child(2), td:nth-child(2),
+      th:nth-child(3), td:nth-child(3),
+      th:nth-child(4), td:nth-child(4) { text-align: center; }
+      .day-row { cursor: pointer; }
+      .day-row:hover { background: rgba(226, 242, 255, 0.9); }
+      .day-row.active { background: rgba(200, 232, 255, 0.9); }
+
+      .viz {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+        background: rgba(247, 252, 255, 0.95);
+      }
+      .viz-head { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: center; }
+      .viz-icon { font-size: 34px; line-height: 1; }
+      .viz-title { font-weight: 700; }
+      .viz-sub { font-size: 12px; color: var(--muted); }
+      .viz-graph { margin-top: 8px; display: grid; gap: 6px; }
+      .viz-bar-row { display: grid; grid-template-columns: 96px 56px minmax(0, 1fr) 52px; gap: 7px; align-items: center; font-size: 12px; }
+      .viz-track { height: 10px; border: 1px solid var(--line); border-radius: 99px; overflow: hidden; background: #eef7ff; }
+      .viz-fill { height: 100%; background: linear-gradient(90deg, #74c1ff, #2b9fff); }
+      .viz-bar-row.active .viz-fill { background: linear-gradient(90deg, #ffc04d, #ff9f2f); }
+      .viz-chart-wrap { margin-top: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 8px; background: rgba(255,255,255,0.82); }
+      .viz-legend { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; font-size: 11px; color: var(--muted); margin-top: 6px; }
+      .viz-legend > div { text-align: center; }
+      .oracle-table { table-layout: fixed; }
+      .oracle-table th:nth-child(1), .oracle-table td:nth-child(1) { width: 86px; }
+      .oracle-table th:nth-child(2), .oracle-table td:nth-child(2) { width: 80px; }
+      .oracle-table th:nth-child(3), .oracle-table td:nth-child(3) { width: 80px; }
+      .oracle-table th:nth-child(4), .oracle-table td:nth-child(4) { width: 94px; }
+
+      pre { margin: 0; white-space: pre-wrap; font-size: 12px; max-height: 180px; overflow: auto; }
+      a { color: #106cb0; }
+
+      @media (max-width: 1000px) {
+        .top { grid-template-columns: 1fr 1fr; }
+        .grid { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 640px) {
+        .top { grid-template-columns: 1fr; }
+        .row { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="bg">
+      <video id="bgVideo" autoplay muted playsinline preload="metadata" src="/assets/beach.mp4"></video>
+    </div>
+
+    <main class="app">
+      <section class="top">
+        <div class="brand">
+          <b>Perfect Weather Prediction Market</b>
+          <span class="sub">zkTLS weather oracle + daily high temperature prediction market.</span>
+          <span class="sub" id="privacyStatus">Privacy mode: private commit queue, batched settlement</span>
+        </div>
+        <div class="field">
+          <label>Wallet</label>
+          <div id="walletStatus" class="wallet-status">Not connected</div>
+        </div>
+        <button id="connectWallet" class="ghost">Connect Wallet</button>
+        <div class="status-row">
+          <div id="oraclePill" class="pill"><span class="dot"></span><span>Oracle status loading...</span></div>
+          <div id="batchPill" class="pill batch"><span class="dot"></span><span>Last batch: loading...</span></div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <section class="stack">
+          <section class="card">
+            <h3>Atherton, CA - Over/Under Market (On-Chain)</h3>
+            <p class="hint">Place an over/under bet: OVER = daily high is over <span id="thresholdLabel">68</span>F. UNDER = <span id="thresholdLabelNo">68</span>F or lower.</p>
+            <p class="tiny">Pool and market OVER/UNDER odds below are on-chain aggregate values synced from the market state.</p>
+            <div class="small" id="marketSummary">Loading market...</div>
+            <div class="row">
+              <div class="field">
+                <label for="marketDateSelect">Market Date (Locked Threshold)</label>
+                <select id="marketDateSelect"></select>
+              </div>
+            </div>
+            <div class="odds-wrap">
+              <div id="marketOddsBar" class="odds-bar" style="--yesw:50%">
+                <div class="odds-yes"></div>
+                <div class="odds-no"></div>
+              </div>
+              <div class="odds-label" id="marketOddsLabel">OVER 50.0% / UNDER 50.0%</div>
+              <div class="tiny" id="selectedPayoutLabel">Winning odds: OVER n/a | UNDER n/a | Pot n/a</div>
+            </div>
+            <div class="row">
+              <div class="field">
+                <label for="betSide">Bet Side</label>
+                <select id="betSide">
+                  <option id="betYesOption" value="over">OVER (Over 68F)</option>
+                  <option id="betNoOption" value="under">UNDER (68F or Lower)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="marketStake">Bet Amount</label>
+                <div class="inline-input">
+                  <input id="marketStake" type="number" value="5" max="99999999" />
+                  <span class="unit">tMINA</span>
+                </div>
+              </div>
+            </div>
+            <div class="row">
+              <button class="buy" id="placeMarketBet">Place Bet</button>
+              <button id="refreshWeatherTop" class="ghost">Sync Oracle</button>
+            </div>
+            <div class="tiny" id="betProgress">Idle</div>
+            <div class="tiny">Settlement is automatic during oracle sync once the oracle is fresh and market reaches determination.</div>
+          </section>
+
+          <section class="card">
+            <h3>Oracle + Forecast Context (94027)</h3>
+            <p class="hint">Read-only data context for the market above. No separate betting in this section.</p>
+            <div class="oracle-meta-line">
+              <span>Trusted source: <a href="https://forecast.weather.gov/MapClick.php?lat=37.4534&lon=-122.1942&lg=english&&FcstType=digital" target="_blank">NWS Forecast (94027)</a></span>
+              <span id="weatherMeta"></span>
+            </div>
+            <div id="weatherTable"></div>
+          </section>
+
+        </section>
+
+        <section class="stack">
+          <section class="card">
+            <h3>Weather Visualizer</h3>
+            <p class="hint">Click a day row in the weather table to visualize an intra-day temperature curve.</p>
+            <div class="viz">
+              <div class="viz-head">
+                <div class="viz-icon" id="weatherVizIcon">☀️</div>
+                <div>
+                  <div class="viz-title" id="weatherVizTitle">Select a weather day</div>
+                  <div class="viz-sub" id="weatherVizDetail">No day selected yet.</div>
+                </div>
+              </div>
+              <div class="viz-chart-wrap">
+                <svg id="weatherVizSvg" viewBox="0 0 640 220" width="100%" height="160" aria-label="Intra-day temperature chart"></svg>
+              </div>
+              <div class="viz-legend">
+                <div>00:00</div><div>06:00</div><div>12:00</div><div>18:00</div>
+              </div>
+              <div class="viz-graph" id="weatherVizGraph"></div>
+            </div>
+          </section>
+
+          <section class="card">
+            <h3>Resolved Markets</h3>
+            <p class="hint">Winning claims are public payout transactions. Use this panel after a market resolves.</p>
+            <div id="resolvedMarketsPanel" class="small">Connect wallet to load resolved claimable positions.</div>
+          </section>
+
+          <section class="card">
+            <h3>Your Activity</h3>
+            <pre id="out">{}</pre>
+          </section>
+
+        </section>
+      </section>
+    </main>
+
+    <script>
+      const base = "http://127.0.0.1:8790";
+      const out = document.getElementById("out");
+      const weatherMetaEl = document.getElementById("weatherMeta");
+      const weatherTableEl = document.getElementById("weatherTable");
+      const marketSummaryEl = document.getElementById("marketSummary");
+      const marketDateSelectEl = document.getElementById("marketDateSelect");
+      const oraclePill = document.getElementById("oraclePill");
+      const batchPill = document.getElementById("batchPill");
+      const weatherVizIconEl = document.getElementById("weatherVizIcon");
+      const weatherVizTitleEl = document.getElementById("weatherVizTitle");
+      const weatherVizDetailEl = document.getElementById("weatherVizDetail");
+      const weatherVizGraphEl = document.getElementById("weatherVizGraph");
+      const weatherVizSvgEl = document.getElementById("weatherVizSvg");
+      const resolvedMarketsPanelEl = document.getElementById("resolvedMarketsPanel");
+      const placeMarketBetBtn = document.getElementById("placeMarketBet");
+      const betProgressEl = document.getElementById("betProgress");
+      const thresholdLabelEl = document.getElementById("thresholdLabel");
+      const thresholdLabelNoEl = document.getElementById("thresholdLabelNo");
+      const betYesOptionEl = document.getElementById("betYesOption");
+      const betNoOptionEl = document.getElementById("betNoOption");
+      const marketOddsBarEl = document.getElementById("marketOddsBar");
+      const marketOddsLabelEl = document.getElementById("marketOddsLabel");
+      const selectedPayoutLabelEl = document.getElementById("selectedPayoutLabel");
+      const refreshWeatherTopBtn = document.getElementById("refreshWeatherTop");
+      const walletStatusEl = document.getElementById("walletStatus");
+      const privacyStatusEl = document.getElementById("privacyStatus");
+      const bgVideoEl = document.getElementById("bgVideo");
+      const toJson = (v) => JSON.stringify(v, null, 2);
+      let latestWeather = null;
+      let selectedWeatherDay = 0;
+      let walletPublicKey = null;
+      let currentMarketKey = "1002";
+      let currentThresholdF = 68;
+      let currentMarketDate = "";
+      let dailyMarkets = [];
+      let currentMarketYesPct = 50.0;
+      let currentMarketNoPct = 50.0;
+      let currentMarketResolved = false;
+      let privacyMode = "zk_strong";
+      let zkappFundingAddress = null;
+      let zkappConfigError = null;
+      let latestOracleRows = [];
+
+      async function req(path, opts = {}) {
+        const res = await fetch(base + path, { cache: "no-store", ...opts });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || "request failed");
+        return json;
+      }
+
+      async function refreshPrivacyMode() {
+        const health = await req("/api/health");
+        privacyMode = String(health.privacyMode || "zk_strong");
+        zkappFundingAddress = typeof health.zkappPublicKey === "string" ? health.zkappPublicKey : null;
+        zkappConfigError = typeof health.zkappConfigError === "string" ? health.zkappConfigError : null;
+        if (privacyStatusEl) {
+          privacyStatusEl.textContent =
+            privacyMode === "zk_strong"
+              ? "Privacy mode: private commit queue, batched settlement"
+              : "Privacy mode: direct per-user tx path";
+        }
+        if (privacyMode === "zk_strong" && !zkappFundingAddress) {
+          placeMarketBetBtn.disabled = true;
+          out.textContent = toJson({
+            error:
+              "Missing zkApp funding address. Set ZKAPP_PUBLIC_KEY (preferred) or ZKAPP_PRIVATE_KEY in .env.local, then restart marketplace server.",
+            details: zkappConfigError || null
+          });
+        }
+      }
+
+      async function sendWalletPayment(to, amountMina) {
+        if (!window.mina) throw new Error("Auro/Pallad wallet not detected");
+        if (!to) {
+          throw new Error(
+            "zkApp funding address not available. Configure ZKAPP_PUBLIC_KEY or ZKAPP_PRIVATE_KEY in .env.local and restart server."
+          );
+        }
+        const amount = Number(amountMina);
+        if (!Number.isFinite(amount) || amount <= 0) throw new Error("invalid payment amount");
+        const sent = await window.mina.sendPayment({
+          to,
+          amount: amount.toString()
+        });
+        const hash = sent?.hash || null;
+        if (!hash) throw new Error("wallet did not return payment hash");
+        return hash;
+      }
+
+      function setBetProgress(text, busy = false) {
+        if (betProgressEl) betProgressEl.textContent = text;
+        if (placeMarketBetBtn) {
+          placeMarketBetBtn.disabled = busy;
+          placeMarketBetBtn.textContent = busy ? text : "Place Bet";
+        }
+      }
+
+      function setupLoopingVideo(video) {
+        if (!video) return;
+        video.loop = true;
+        video.playbackRate = 1;
+        video.play().catch(() => {});
+      }
+
+      function walletShort(pk) {
+        if (!pk || pk.length < 14) return pk || "Not connected";
+        return `${pk.slice(0, 7)}...${pk.slice(-7)}`;
+      }
+
+      function setWalletStatus(text) {
+        walletStatusEl.textContent = text;
+      }
+
+      async function connectWallet() {
+        if (!window.mina) throw new Error("Auro/Pallad wallet not detected");
+        await window.mina.requestAccounts();
+        const accounts = await window.mina.getAccounts();
+        const publicKey = Array.isArray(accounts) ? accounts[0] : null;
+        if (!publicKey) throw new Error("No wallet account returned");
+        walletPublicKey = publicKey;
+        setWalletStatus(`Connected: ${walletShort(publicKey)}`);
+        const connectBtn = document.getElementById("connectWallet");
+        connectBtn.textContent = "Connected";
+        connectBtn.disabled = true;
+        refreshResolvedMarkets().catch((e) => {
+          out.textContent = toJson({ error: String(e) });
+        });
+        return publicKey;
+      }
+
+      async function ensureWalletConnected() {
+        if (walletPublicKey) return walletPublicKey;
+        return connectWallet();
+      }
+
+      function nanominaToMinaString(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n) || n <= 0) return "0.1";
+        const mina = n / 1_000_000_000;
+        return mina.toFixed(9).replace(/\.?0+$/, "");
+      }
+
+      async function sendOnchainTx(txPayload, fee) {
+        if (!window.mina) throw new Error("Auro/Pallad wallet not detected");
+        const feeMina = nanominaToMinaString(fee);
+        let sent = null;
+        try {
+          sent = await window.mina.sendTransaction({
+            transaction: txPayload,
+            feePayer: { fee: feeMina }
+          });
+        } catch {
+          sent = await window.mina.sendTransaction({
+            transaction: JSON.stringify(txPayload),
+            feePayer: { fee: feeMina }
+          });
+        }
+        const txHash = sent?.hash || null;
+        if (!txHash) throw new Error("wallet did not return tx hash");
+        return txHash;
+      }
+
+      function setOraclePill(oracle) {
+        if (!oraclePill || !oracle) return;
+        const dotClass = oracle.state === "fresh" ? "dot" : oracle.state === "stale" ? "dot warn" : "dot bad";
+        const age = Number.isFinite(oracle.ageMs) ? ` | age ${(oracle.ageMs / 60000).toFixed(1)}m` : "";
+        const settlementNote =
+          oracle.state === "fresh"
+            ? "bets and settlement available"
+            : "bets still allowed; settlement paused until oracle refresh";
+        oraclePill.innerHTML = `<span class="${dotClass}"></span><span>Oracle ${oracle.state}${age} - ${oracle.reason || ""} (${settlementNote})</span>`;
+      }
+
+      function shortHash(value) {
+        if (!value || typeof value !== "string") return "n/a";
+        if (value.length < 14) return value;
+        return `${value.slice(0, 8)}...${value.slice(-6)}`;
+      }
+
+      function setBatchPill(status) {
+        if (!batchPill) return;
+        const recent = status?.recentBatch || null;
+        if (!recent) {
+          batchPill.innerHTML = `<span class="dot warn"></span><span>Last batch: none yet</span>`;
+          return;
+        }
+        const when = recent.atUnixMs ? new Date(recent.atUnixMs).toLocaleTimeString() : "n/a";
+        if (recent.status === "success") {
+          batchPill.innerHTML = `<span class="dot"></span><span>Last batch: success | +${recent.totalPositionBetAdded} tMINA | tx ${shortHash(recent.txHash)} | ${when}</span>`;
+          return;
+        }
+        batchPill.innerHTML = `<span class="dot bad"></span><span>Last batch: failed | ${recent.error || "unknown error"} | ${when}</span>`;
+      }
+
+      async function refreshMarket() {
+        const data = await req("/api/markets");
+        const markets = Array.isArray(data.markets) ? data.markets : [];
+        const market = markets.find((m) => String(m.marketKey) === String(currentMarketKey)) || null;
+        if (!market) {
+          marketSummaryEl.textContent = `No on-chain market found for ${currentMarketDate || "selected date"}. Run the per-date market creation step first.`;
+          placeMarketBetBtn.disabled = true;
+          currentMarketResolved = false;
+          return;
+        }
+        currentMarketKey = String(market.marketKey);
+        currentMarketResolved = Boolean(market.resolved);
+        const yesPct = Math.round((Number(market.impliedProbability || 0) * 1000)) / 10;
+        const noPct = Math.round((100 - yesPct) * 10) / 10;
+        currentMarketYesPct = yesPct;
+        currentMarketNoPct = noPct;
+        marketSummaryEl.textContent =
+          `${market.title} | Pool: ${market.totalPositionBet} tMINA`;
+        marketOddsBarEl.style.setProperty("--yesw", `${Math.max(0, Math.min(100, yesPct))}%`);
+        marketOddsLabelEl.textContent = `OVER ${yesPct.toFixed(1)}% / UNDER ${noPct.toFixed(1)}%`;
+        placeMarketBetBtn.disabled = Boolean(market.resolved);
+        if (market.resolved) {
+          out.textContent = toJson({
+            error: "Active on-chain market is resolved. Create a new unresolved market, sync state, then place bet."
+          });
+        }
+      }
+
+      function applySelectedDailyMarket() {
+        const selected = dailyMarkets.find((m) => m.marketDate === marketDateSelectEl.value) || dailyMarkets[0] || null;
+        if (!selected) return;
+        currentMarketDate = selected.marketDate;
+        currentMarketKey = String(selected.marketKey || "");
+        currentMarketResolved = Boolean(selected.onChainResolved);
+        currentThresholdF = Number.isFinite(Number(selected.thresholdF)) ? Number(selected.thresholdF) : 68;
+        thresholdLabelEl.textContent = String(currentThresholdF);
+        thresholdLabelNoEl.textContent = String(currentThresholdF);
+        betYesOptionEl.textContent = `OVER (Over ${currentThresholdF}F)`;
+        betNoOptionEl.textContent = `UNDER (${currentThresholdF}F or Lower)`;
+        const total = Number(selected.onChainCreated ? selected.onChainPoolTmina : selected.totalPositionBet);
+        const overStake = Number(selected.onChainCreated ? selected.onChainOverTmina : selected.totalYesPositionBet);
+        const underStake = Number.isFinite(total) && Number.isFinite(overStake) ? total - overStake : NaN;
+        const overPayout = Number.isFinite(total) && total > 0 && Number.isFinite(overStake) && overStake > 0
+          ? `${(total / overStake).toFixed(2)}`
+          : "n/a";
+        const underPayout = Number.isFinite(total) && total > 0 && Number.isFinite(underStake) && underStake > 0
+          ? `${(total / underStake).toFixed(2)}`
+          : "n/a";
+        if (selectedPayoutLabelEl) {
+          const potLabel = Number.isFinite(total) ? `${total} tMINA` : "n/a";
+          selectedPayoutLabelEl.textContent = `Winning odds: OVER ${overPayout} | UNDER ${underPayout} | Pot ${potLabel}`;
+        }
+        if (!selected.onChainCreated) {
+          marketSummaryEl.textContent = `No on-chain market exists yet for ${currentMarketDate}. Create the per-date market before betting.`;
+          placeMarketBetBtn.disabled = true;
+        }
+      }
+
+      async function refreshDailyMarkets() {
+        const res = await req("/api/demo/daily-markets");
+        const todayIso = new Date().toISOString().slice(0, 10);
+        dailyMarkets = (Array.isArray(res.dailyMarkets) ? res.dailyMarkets : [])
+          .filter((m) => typeof m.marketDate === "string" && m.marketDate >= todayIso)
+          .slice(0, 6);
+        if (!dailyMarkets.length) {
+          marketDateSelectEl.innerHTML = "";
+          return;
+        }
+        const prev = currentMarketDate || marketDateSelectEl.value;
+        marketDateSelectEl.innerHTML = dailyMarkets
+          .map((m) => {
+            return `<option value="${m.marketDate}">${m.marketDate} | ${m.thresholdF}F</option>`;
+          })
+          .join("");
+        const foundPrev = dailyMarkets.some((m) => m.marketDate === prev);
+        marketDateSelectEl.value = foundPrev ? prev : dailyMarkets[0].marketDate;
+        applySelectedDailyMarket();
+      }
+
+      function weatherIconForTemp(tempF) {
+        if (!Number.isFinite(tempF)) return "❔";
+        if (tempF >= 82) return "☀️";
+        if (tempF >= 70) return "🌤️";
+        if (tempF >= 58) return "⛅";
+        return "☁️";
+      }
+
+      function buildIntradayCurve(highF, dayIndex) {
+        const safeHigh = Number.isFinite(highF) ? highF : 70;
+        const lowF = Math.max(30, safeHigh - (11 + (dayIndex % 3)));
+        const points = [];
+        for (let h = 0; h <= 23; h += 1) {
+          const t = h / 24;
+          const wave = Math.sin((t - 0.28) * Math.PI * 2);
+          const temp = (safeHigh + lowF) / 2 + wave * (safeHigh - lowF) / 2;
+          points.push({ hour: h, temp: Math.round(temp * 10) / 10 });
+        }
+        return { lowF, highF: safeHigh, points };
+      }
+
+      function isoDateOffset(baseDateIso, dayOffset) {
+        const dt = new Date(`${baseDateIso}T00:00:00.000-08:00`);
+        const next = new Date(dt.getTime() + dayOffset * 24 * 60 * 60 * 1000);
+        const y = next.getUTCFullYear();
+        const m = String(next.getUTCMonth() + 1).padStart(2, "0");
+        const d = String(next.getUTCDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+      }
+
+      function renderIntradaySvg(curve) {
+        if (!weatherVizSvgEl) return;
+        const W = 640, H = 220;
+        const pad = { l: 42, r: 14, t: 16, b: 28 };
+        const minT = Math.min(...curve.points.map((p) => p.temp)) - 2;
+        const maxT = Math.max(...curve.points.map((p) => p.temp)) + 2;
+        const x = (h) => pad.l + (h / 23) * (W - pad.l - pad.r);
+        const y = (t) => pad.t + (1 - (t - minT) / (maxT - minT || 1)) * (H - pad.t - pad.b);
+
+        const poly = curve.points.map((p) => `${x(p.hour)},${y(p.temp)}`).join(" ");
+        const area = `${x(0)},${H - pad.b} ${poly} ${x(23)},${H - pad.b}`;
+        const guides = [0, 6, 12, 18]
+          .map((h) => `<line x1="${x(h)}" y1="${pad.t}" x2="${x(h)}" y2="${H-pad.b}" stroke="rgba(36,95,144,0.15)" stroke-width="1" />`)
+          .join("");
+        const levels = [minT, (minT + maxT) / 2, maxT];
+        const tempLines = levels
+          .map((t) => `<line x1="${pad.l}" y1="${y(t)}" x2="${W-pad.r}" y2="${y(t)}" stroke="rgba(36,95,144,0.12)" stroke-width="1" />`)
+          .join("");
+        const labels = levels
+          .map((t) => `<text x="6" y="${y(t)+4}" font-size="11" fill="#4f7ea4">${Math.round(t)}F</text>`)
+          .join("");
+
+        weatherVizSvgEl.innerHTML = `
+          ${guides}
+          ${tempLines}
+          <polygon points="${area}" fill="rgba(43,159,255,0.14)" />
+          <polyline points="${poly}" fill="none" stroke="#1f9dff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+          ${labels}
+        `;
+      }
+
+      function renderWeatherVisualizer() {
+        if (!latestWeather || !latestWeather.sevenDayProbabilities || latestWeather.sevenDayProbabilities.length === 0) {
+          weatherVizIconEl.textContent = "❔";
+          weatherVizTitleEl.textContent = "No weather forecast loaded";
+          weatherVizDetailEl.textContent = "Run Refresh Weather Data to populate this visualizer.";
+          weatherVizGraphEl.innerHTML = "";
+          return;
+        }
+
+        const probs = latestWeather.sevenDayProbabilities.slice(0, 6);
+        selectedWeatherDay = Math.max(0, Math.min(selectedWeatherDay, probs.length - 1));
+        const selected = probs[selectedWeatherDay];
+        const temp = Number(selected.expectedHighF);
+        const curve = buildIntradayCurve(temp, selected.dayIndex);
+
+        weatherVizIconEl.textContent = weatherIconForTemp(temp);
+        weatherVizTitleEl.textContent = `${selected.marketDate || "Selected day"} outlook`;
+        weatherVizDetailEl.textContent = `High ${curve.highF}F | Low ${curve.lowF}F`;
+        renderIntradaySvg(curve);
+
+        const maxTemp = Math.max(...probs.map((p) => Number(p.expectedHighF) || 0), 1);
+        weatherVizGraphEl.innerHTML = probs
+          .map((p, idx) => {
+            const high = Number(p.expectedHighF) || 0;
+            const low = buildIntradayCurve(high, p.dayIndex).lowF;
+            const width = Math.max(4, Math.round((high / maxTemp) * 100));
+            return `
+              <div class="viz-bar-row ${idx === selectedWeatherDay ? "active" : ""}" data-viz-day="${idx}">
+                <div>${p.marketDate || ""}</div>
+                <div>${low}F</div>
+                <div class="viz-track"><div class="viz-fill" style="width:${width}%"></div></div>
+                <div>${high}F</div>
+              </div>`;
+          })
+          .join("");
+
+        document.querySelectorAll("[data-viz-day]").forEach((el) => {
+          el.onclick = () => {
+            selectedWeatherDay = Number(el.getAttribute("data-viz-day"));
+            renderWeatherVisualizer();
+          };
+        });
+      }
+
+      function wireWeatherDayClicks() {
+        document.querySelectorAll(".day-row").forEach((row) => {
+          row.onclick = () => {
+            selectedWeatherDay = Number(row.getAttribute("data-day") || "0");
+            document.querySelectorAll(".day-row").forEach((r) => r.classList.remove("active"));
+            row.classList.add("active");
+            renderWeatherVisualizer();
+          };
+        });
+      }
+
+      function renderOracleTable() {
+        const rows = latestOracleRows
+          .map((row) => (
+            `<tr class="day-row ${row.dayIndex === selectedWeatherDay ? "active" : ""}" data-day="${row.dayIndex}">
+              <td>${row.marketDate}</td>
+              <td>${row.highLabel}</td>
+              <td>${row.lowLabel}</td>
+              <td>${row.thresholdLabel}</td>
+              <td>
+                <div class="odds-bar" style="--yesw:${row.yesWidth}%">
+                  <div class="odds-yes"></div>
+                  <div class="odds-no"></div>
+                </div>
+                <div class="tiny">OVER ${row.yesPct.toFixed(1)}% / UNDER ${row.noPct.toFixed(1)}%</div>
+                <div class="tiny">Pot ${row.potLabel}</div>
+              </td>
+            </tr>`
+          ))
+          .join("");
+
+        weatherTableEl.innerHTML = rows
+          ? `<table class="oracle-table"><thead><tr><th>Date</th><th>Forecast High</th><th>Forecast Low</th><th>Locked Threshold</th><th>Market Odds (over/under)</th></tr></thead><tbody>${rows}</tbody></table>`
+          : "<div class='small'>No forecast dates available.</div>";
+
+        wireWeatherDayClicks();
+      }
+
+      async function claimResolvedPosition(position) {
+        try {
+          const walletKey = await ensureWalletConnected();
+          setBetProgress("Generating claim proof", true);
+          const txBuild = await req("/api/tx/claim-payout", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              marketKey: position.marketKey,
+              positionKey: position.positionKey,
+              walletPublicKey: walletKey
+            })
+          });
+          setBetProgress("Waiting for wallet signature...", true);
+          const txHash = await sendOnchainTx(txBuild.tx, txBuild.fee);
+          setBetProgress("Finalizing payout state...", true);
+          const finalized = await req("/api/tx/finalize", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ intentId: txBuild.intentId, txHash })
+          });
+          out.textContent = toJson({ txHash, claim: position, finalized });
+          await refreshResolvedMarkets();
+          setBetProgress("Payout claimed", false);
+        } catch (e) {
+          setBetProgress("Claim failed", false);
+          out.textContent = toJson({ error: String(e) });
+        }
+      }
+
+      async function refreshResolvedMarkets() {
+        if (!resolvedMarketsPanelEl) return;
+        if (!walletPublicKey) {
+          resolvedMarketsPanelEl.textContent = "Connect wallet to load resolved claimable positions.";
+          return;
+        }
+        const res = await req(`/api/payouts/resolved-markets?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
+        const positions = Array.isArray(res.positions) ? res.positions : [];
+        if (!positions.length) {
+          resolvedMarketsPanelEl.textContent = "No resolved winning positions available for claim.";
+          return;
+        }
+        resolvedMarketsPanelEl.innerHTML = positions.map((p, idx) => {
+          const claimed = Boolean(p.claimed);
+          return `
+            <div class="market" style="margin-bottom:${idx === positions.length - 1 ? "0" : "8px"};">
+              <div class="small"><b>${p.marketDate || "Resolved market"}</b> | ${String(p.side || "").toUpperCase()} won</div>
+              <div class="tiny">Stake ${p.stakeTmina} tMINA | Pot ${p.totalPotTmina} tMINA | Payout ${p.payoutTmina} tMINA</div>
+              <div class="tiny">Market ${p.marketKey} | Position ${p.positionKey}</div>
+              <div class="row" style="grid-template-columns: 1fr;">
+                <button class="${claimed ? "ghost" : "buy"}" data-claim-idx="${idx}" ${claimed ? "disabled" : ""}>${claimed ? "Claimed" : "Claim Payout"}</button>
+              </div>
+            </div>`;
+        }).join("");
+        resolvedMarketsPanelEl.querySelectorAll("[data-claim-idx]").forEach((el) => {
+          el.onclick = () => {
+            const idx = Number(el.getAttribute("data-claim-idx"));
+            if (!Number.isFinite(idx) || idx < 0 || idx >= positions.length) return;
+            claimResolvedPosition(positions[idx]);
+          };
+        });
+      }
+
+      async function refreshWeather() {
+        const data = await req(`/api/weather/94027?threshold_f=${encodeURIComponent(currentThresholdF)}`);
+        const s = data.snapshot;
+        if (s) {
+          latestWeather = data;
+        }
+        setOraclePill(data.oracle);
+
+        if (!s) {
+          if (latestWeather && latestWeather.snapshot) {
+            weatherMetaEl.textContent =
+              `Using last snapshot from ${new Date(latestWeather.snapshot.fetchedAtUnixMs).toLocaleString()} while oracle refresh is pending/failing.`;
+          } else {
+            weatherMetaEl.textContent = "No weather snapshot yet. Click Sync Oracle.";
+            weatherTableEl.innerHTML = "";
+            renderWeatherVisualizer();
+          }
+          return;
+        }
+
+        weatherMetaEl.textContent =
+          `Updated ${new Date(s.fetchedAtUnixMs).toLocaleString()} | zkTLS verified ${s.verified ? "yes" : "no"}`;
+
+        const baseDate = (s && typeof s.localDate === "string" && s.localDate) || new Date().toISOString().slice(0, 10);
+        const perDate = Array.isArray(data.dailyMarkets) && data.dailyMarkets.length > 0
+          ? data.dailyMarkets.slice(0, 6)
+          : (data.sevenDayProbabilities || []).slice(0, 6).map((r) => ({
+              marketDate: r.marketDate || isoDateOffset(baseDate, Number(r.dayIndex) || 0),
+              thresholdF: currentThresholdF,
+              currentForecastHighF: r.expectedHighF,
+              pOverThreshold: r.pHighAboveThreshold,
+              pAtOrBelowThreshold: r.pHighAtOrBelowThreshold
+            }));
+
+        latestOracleRows = perDate.map((r, idx) => {
+          const onChainTotal = Number(r.onChainPoolTmina);
+          const onChainOver = Number(r.onChainOverTmina);
+          const marketProb = Number.isFinite(onChainTotal) && onChainTotal > 0 ? onChainOver / onChainTotal : 0.5;
+          const yesPct = Math.round((marketProb * 1000)) / 10;
+          const noPct = Math.round(((1 - marketProb) * 1000)) / 10;
+          const high = Number(r.currentForecastHighF);
+          const low = Number.isFinite(high) ? buildIntradayCurve(high, idx).lowF : NaN;
+          const total = Number.isFinite(onChainTotal) ? onChainTotal : 0;
+          const settlement = r.settlement || null;
+          return {
+            dayIndex: idx,
+            marketDate: r.marketDate,
+            highLabel: Number.isFinite(high) ? `${high}F` : "n/a",
+            lowLabel: Number.isFinite(Number(low)) ? `${low}F` : "n/a",
+            thresholdLabel: `${r.thresholdF}F`,
+            yesPct,
+            noPct,
+            yesWidth: Math.max(0, Math.min(100, yesPct)),
+            potLabel: Number.isFinite(total) ? `${total} tMINA` : "n/a",
+            settled: Boolean(settlement?.settled),
+            settlementLabel: settlement?.settled
+              ? `settled${Number.isFinite(Number(settlement.observedHighF)) ? ` @ ${settlement.observedHighF}F` : ""}`
+              : "open"
+          };
+        });
+
+        renderOracleTable();
+        renderWeatherVisualizer();
+      }
+
+      document.getElementById("placeMarketBet").onclick = async () => {
+        try {
+          setBetProgress("Preparing bet...", true);
+          const walletKey = await ensureWalletConnected();
+          const stake = Number(document.getElementById("marketStake").value);
+          if (!Number.isFinite(stake) || stake <= 0) throw new Error("stake must be > 0");
+          const side = String(document.getElementById("betSide").value || "over");
+
+          if (privacyMode === "zk_strong") {
+            setBetProgress("Funding private pool...", true);
+            const fundingTxHash = await sendWalletPayment(zkappFundingAddress, Math.floor(stake));
+            setBetProgress("Creating private commitment...", true);
+            const queued = await req("/api/private-bets/submit", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                marketKey: currentMarketKey,
+                addTotalBet: Math.floor(stake),
+                addYesBet: side === "over" ? Math.floor(stake) : 0,
+                walletPublicKey: walletKey,
+                fundingTxHash,
+                marketDate: currentMarketDate,
+                thresholdF: currentThresholdF
+              })
+            });
+            let batchKick = null;
+            try {
+              setBetProgress("Queueing batch settlement...", true);
+              batchKick = await req("/api/private-bets/process-batch", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ maxItems: 64 })
+              });
+            } catch (e) {
+              batchKick = { warning: String(e) };
+            }
+            out.textContent = toJson({ queued, batchKick });
+            await refreshMarket();
+            await refreshWeather();
+            setBetProgress("Queued privately", false);
+            return;
+          }
+
+          setBetProgress("Generating tx proof", true);
+          const txBuild = await req("/api/tx/market-bet", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              marketKey: currentMarketKey,
+              addTotalBet: Math.floor(stake),
+              addYesBet: side === "over" ? Math.floor(stake) : 0,
+              walletPublicKey: walletKey,
+              marketDate: currentMarketDate,
+              thresholdF: currentThresholdF
+            })
+          });
+          setBetProgress("Waiting for wallet signature...", true);
+          const txHash = await sendOnchainTx(txBuild.tx, txBuild.fee);
+          setBetProgress("Finalizing market state...", true);
+          const finalized = await req("/api/tx/finalize", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ intentId: txBuild.intentId, txHash })
+          });
+          out.textContent = toJson({ txHash, marketDate: currentMarketDate, thresholdF: currentThresholdF, finalized });
+          setBetProgress("Refreshing odds...", true);
+          await refreshMarket();
+          await new Promise((r) => setTimeout(r, 1000));
+          await refreshMarket();
+          await refreshWeather();
+          setBetProgress("Bet placed successfully", false);
+        } catch (e) {
+          setBetProgress("Bet failed", false);
+          out.textContent = toJson({ error: String(e) });
+        }
+      };
+
+      refreshWeatherTopBtn.onclick = async () => {
+        try {
+          const res = await req("/api/weather/94027/refresh", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({})
+          });
+          out.textContent = toJson(res);
+          await refreshDailyMarkets();
+          await refreshWeather();
+          await refreshMarket();
+        } catch (e) {
+          out.textContent = toJson({ error: String(e) });
+        }
+      };
+
+      marketDateSelectEl.onchange = async () => {
+        applySelectedDailyMarket();
+        await refreshWeather();
+        await refreshMarket();
+      };
+
+      document.getElementById("connectWallet").onclick = async () => {
+        try {
+          const pk = await connectWallet();
+          out.textContent = toJson({ connectedWallet: pk });
+        } catch (e) {
+          setWalletStatus("Wallet connection failed");
+          out.textContent = toJson({ error: String(e) });
+        }
+      };
+
+      if (!window.mina) {
+        setWalletStatus("Wallet not yet connected");
+      }
+      setupLoopingVideo(bgVideoEl);
+
+      async function refreshPageState() {
+        await refreshPrivacyMode();
+        await refreshDailyMarkets();
+        await refreshMarket();
+        await refreshWeather();
+        await refreshResolvedMarkets();
+        try {
+          const q = await req("/api/private-bets/status");
+          setBatchPill(q);
+        } catch {
+          setBatchPill(null);
+        }
+      }
+
+      refreshPageState().catch((e) => {
+        out.textContent = toJson({ error: String(e) });
+      });
+      setInterval(() => {
+        refreshPageState().catch((e) => {
+          out.textContent = toJson({ error: String(e) });
+        });
+      }, 60000);
+    </script>
+  </body>
+</html>

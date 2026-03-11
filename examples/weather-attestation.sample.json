@@ -1,0 +1,15 @@
+{
+  "server_name": "api.weather.example",
+  "request_path": "/v1/current?lat=40.7829&lon=-73.9654&units=metric",
+  "timestamp": 1767225600000,
+  "response_body": "{\"current\":{\"temp_c\":31.4},\"location\":{\"code\":\"NYC-CENTRAL-PARK\"}}",
+  "session_header_bytes_hex": "aabbccdd",
+  "signature": {
+    "r_hex": "11aa",
+    "s_hex": "22bb"
+  },
+  "notary_public_key": {
+    "x_hex": "33cc",
+    "y_hex": "44dd"
+  }
+}

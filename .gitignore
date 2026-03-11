@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*
+!.env.example
+/.DS_Store
+**/.DS_Store
+data/
+!data/.gitkeep
+625599_Tropical Sea Waves Beach Coast_By_Artem_Medvediev_Artlist_4K.mp4
+/node
+data/private-bet-queue.json
+data/private-batch-history.json

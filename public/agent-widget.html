@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent Prediction Marketplace Widget</title>
+    <style>
+      :root {
+        --ink: #111728;
+        --panel: #ffffff;
+        --line: #d6deea;
+      }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Avenir Next", sans-serif;
+        color: var(--ink);
+        background: linear-gradient(130deg, #f9fbff, #eef6ff);
+      }
+      .wrap { max-width: 920px; margin: 20px auto; padding: 0 14px; }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+      input, textarea, button {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 9px;
+        font: inherit;
+      }
+      textarea { min-height: 70px; }
+      button { background: #101725; color: white; font-weight: 700; cursor: pointer; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      pre { margin: 0; white-space: pre-wrap; font-size: 12px; }
+      @media (max-width: 800px) { .row { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h3>Agent Models</h3>
+        <button id="refresh">Refresh Models</button>
+        <pre id="models"></pre>
+      </div>
+
+      <div class="card">
+        <h3>Buy Prediction (Escrow)</h3>
+        <div class="row">
+          <input id="buyer" value="demo-buyer-1" />
+          <input id="agentId" value="default-random-weather" />
+        </div>
+        <textarea id="prompt">Predict probability YES for market 1002.</textarea>
+        <button id="createOrder">Create Escrow Order</button>
+      </div>
+
+      <div class="card">
+        <h3>Relayer Run + Settle</h3>
+        <input id="orderId" placeholder="order id" />
+        <button id="relay">Relayer Run</button>
+        <button id="settle">Reveal + Settle</button>
+      </div>
+
+      <div class="card">
+        <h3>Output</h3>
+        <pre id="out">{}</pre>
+      </div>
+    </div>
+
+    <script>
+      const base = "http://127.0.0.1:8789";
+      const out = document.getElementById("out");
+      const models = document.getElementById("models");
+      const toJson = (v) => JSON.stringify(v, null, 2);
+
+      async function req(path, opts = {}) {
+        const res = await fetch(base + path, opts);
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || "request failed");
+        return json;
+      }
+
+      async function refreshModels() {
+        const json = await req("/api/agents");
+        models.textContent = toJson(json);
+      }
+
+      document.getElementById("refresh").onclick = async () => {
+        try { await refreshModels(); } catch (e) { out.textContent = toJson({ error: String(e) }); }
+      };
+
+      document.getElementById("createOrder").onclick = async () => {
+        try {
+          const json = await req("/api/orders/create", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              buyer: document.getElementById("buyer").value.trim(),
+              agentId: document.getElementById("agentId").value.trim(),
+              prompt: document.getElementById("prompt").value
+            })
+          });
+          document.getElementById("orderId").value = json.order.id;
+          out.textContent = toJson(json);
+        } catch (e) {
+          out.textContent = toJson({ error: String(e) });
+        }
+      };
+
+      document.getElementById("relay").onclick = async () => {
+        try {
+          const id = document.getElementById("orderId").value.trim();
+          const json = await req(`/api/orders/${id}/relay-run`, { method: "POST" });
+          out.textContent = toJson(json);
+        } catch (e) {
+          out.textContent = toJson({ error: String(e) });
+        }
+      };
+
+      document.getElementById("settle").onclick = async () => {
+        try {
+          const id = document.getElementById("orderId").value.trim();
+          const order = await req(`/api/orders/${id}`);
+          const ciphertext = order.order.relayerOutputCiphertext;
+          const output = atob(ciphertext);
+          const json = await req(`/api/orders/${id}/reveal-settle`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ output })
+          });
+          out.textContent = toJson(json);
+        } catch (e) {
+          out.textContent = toJson({ error: String(e) });
+        }
+      };
+
+      refreshModels();
+    </script>
+  </body>
+</html>

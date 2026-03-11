@@ -1,0 +1,4 @@
+interface:
+  display_name: "Zeko Market Ops"
+  short_description: "Deploy, sync, and operate Zeko markets"
+  default_prompt: "Use $zeko-market-ops to deploy, sync, repair, or operate the Zeko market stack in this repo."

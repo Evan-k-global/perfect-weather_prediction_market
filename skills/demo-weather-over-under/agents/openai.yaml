@@ -1,0 +1,4 @@
+interface:
+  display_name: "Demo Weather Over/Under"
+  short_description: "Atherton weather market UI and adapter"
+  default_prompt: "Use $demo-weather-over-under to modify the Atherton weather demo UI, thresholds, odds rendering, or oracle UX."

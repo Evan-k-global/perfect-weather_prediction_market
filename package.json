@@ -1,0 +1,41 @@
+{
+  "name": "private-prediction-market",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsc -w -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --enable-source-maps dist/demo-local.js",
+    "deploy:zeko": "node --enable-source-maps dist/deploy.js",
+    "sync-state:zeko": "node --enable-source-maps dist/sync-state-zeko.js",
+    "create-market:zeko": "node --enable-source-maps dist/create-market-zeko.js",
+    "ensure-daily-markets:zeko": "node --enable-source-maps dist/ensure-daily-markets-zeko.js",
+    "trade-update:zeko": "node --enable-source-maps dist/trade-update-zeko.js",
+    "claim-payout:zeko": "node --enable-source-maps dist/claim-payout-zeko.js",
+    "resolve-weather:zeko": "node --enable-source-maps dist/resolve-weather-market-zeko.js",
+    "resolve-daily-market:zeko": "node --enable-source-maps dist/resolve-daily-market-zeko.js",
+    "indexer:serve": "node --enable-source-maps dist/market-indexer-server.js",
+    "agent:serve": "node --enable-source-maps dist/agent-marketplace-server.js",
+    "marketplace:serve": "node --enable-source-maps dist/marketplace-server.js",
+    "weather:attest": "node --enable-source-maps dist/weather-attest.js",
+    "weather:sync": "node --enable-source-maps dist/weather-hourly-sync.js",
+    "weather:daemon": "node --enable-source-maps dist/weather-oracle-daemon.js",
+    "weather:daemon:health": "node --enable-source-maps dist/weather-daemon-health.js",
+    "weather:tls:check": "node --enable-source-maps dist/weather-tls-check.js",
+    "demo:local": "node --enable-source-maps dist/demo-local.js",
+    "demo:oracle": "node --enable-source-maps dist/demo-oracle-adapter-local.js",
+    "oracle:build-statement": "node --enable-source-maps dist/resolve-from-attestation.js",
+    "demo:ui": "node --enable-source-maps dist/demo-ui-server.js"
+  },
+  "dependencies": {
+    "o1js": "^2.13.0",
+    "reflect-metadata": "^0.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.3"
+  }
+}
