@@ -4,15 +4,21 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    cargo \
     clang \
     cmake \
     libssl-dev \
     pkg-config \
     python3 \
     ca-certificates \
+    curl \
     openssl \
   && rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo
+ENV PATH=/usr/local/cargo/bin:${PATH}
+
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
 
 RUN corepack enable
 
