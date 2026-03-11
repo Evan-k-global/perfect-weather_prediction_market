@@ -5,6 +5,8 @@ This bundle runs:
 - `marketplace` (API/UI server)
 - `weather-daemon` (persistent TLSN attestation + sync loop)
 
+For Render, use the single-service Docker path in `render.yaml`. It runs both processes in one container so they can share `/app/data`.
+
 ## 1) Prepare env
 
 ```bash
@@ -44,3 +46,4 @@ curl -s http://127.0.0.1:8790/api/health
 - The daemon writes heartbeat to `./data/weather-daemon-heartbeat.json`.
 - Docker healthcheck validates heartbeat freshness via `pnpm weather:daemon:health`.
 - Keep `WEATHER_TLSN_MAX_AGE_MS` tight for production (for example 15m or 60m).
+- Render should use a persistent disk mounted at `/app/data`.

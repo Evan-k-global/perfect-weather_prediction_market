@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: perfect-weather-prediction-market
+    env: docker
+    dockerfilePath: ./deploy/Dockerfile
+    plan: starter
+    disk:
+      name: perfect-weather-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ZKVERIFY_POC_ROOT
+        value: /opt/zk-verify-poc

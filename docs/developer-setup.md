@@ -123,6 +123,44 @@ pnpm resolve-daily-market:zeko -- --market-date 2026-03-11 --state-file ./data/o
   - `marketplace:serve`
   - `weather:daemon`
 - This app currently relies on shared local disk state under `./data`.
+- Strict zkTLS on Render requires the Docker path so the vendored `external/zk-verify-poc/tlsnotary` source and compiled Rust binaries exist in the container.
+- Use the repo-root `render.yaml` and attach a 1 GB persistent disk mounted at `/app/data`.
+
+Recommended Render env vars:
+
+```bash
+ZEKO_GRAPHQL=https://testnet.zeko.io
+ZEKO_NETWORK_ID=testnet
+TX_FEE=1200000000
+
+DEPLOYER_PRIVATE_KEY=<your deployer private key>
+ZKAPP_PRIVATE_KEY=<your zkapp private key>
+RELAYER_PRIVATE_KEY=<same value as DEPLOYER_PRIVATE_KEY>
+
+ORACLE_SOURCE_HASH=15126917236570818645268669871560224562495005605333775632281016101998410458993
+ORACLE_REQUEST_PATH_HASH=14957528108931705932653449500339042047303125375030890702920435972538498433663
+
+PRIVACY_MODE=zk_strong
+RELAYER_REIMBURSE_DISABLED=1
+PRIVATE_BATCH_INTERVAL_MS=30000
+PRIVATE_BATCH_MAX_ITEMS=64
+
+WEATHER_REQUIRE_TLSN=1
+WEATHER_TLSN_ATTESTATION_FILE=./data/tlsn-output/latest/attestation.json
+WEATHER_TLSN_MAX_AGE_MS=3600000
+WEATHER_ORACLE_STALE_MS=7200000
+WEATHER_ORACLE_EXPIRED_MS=14400000
+
+WEATHER_DAEMON_INTERVAL_MS=900000
+WEATHER_DAEMON_RETRY_MS=120000
+
+CLEANUP_DATA_INTERVAL_MS=21600000
+CLEANUP_KEEP_CONTEST_DAYS=14
+CLEANUP_KEEP_OPERATOR_BACKUPS=3
+CLEANUP_KEEP_BATCH_HISTORY=200
+
+ZKVERIFY_POC_ROOT=/opt/zk-verify-poc
+```
 
 ## More Detail
 
