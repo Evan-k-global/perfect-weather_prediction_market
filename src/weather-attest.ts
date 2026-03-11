@@ -7,6 +7,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import dns from 'node:dns/promises';
+import tls from 'node:tls';
 import { NWS_94027_REQUEST_PATH, NWS_94027_SERVER_NAME } from './weather-service.js';
 
 const execFileAsync = promisify(execFile);
@@ -60,30 +61,54 @@ async function patchTlsnProverHttpVersion(proverPath: string): Promise<boolean> 
   return true;
 }
 
-async function extractRootLikeCertPem(host: string, port: number, outPath: string): Promise<void> {
-  const shell =
-    `openssl s_client -showcerts -servername ${host} -connect ${host}:${port} < /dev/null 2>/dev/null`;
-  let stdout = '';
-  try {
-    const result = await execFileAsync('/bin/zsh', ['-lc', shell], {
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024
-    });
-    stdout = result.stdout;
-  } catch (error) {
-    // openssl s_client can return non-zero even when it printed a valid cert chain.
-    const candidate = error as { stdout?: string };
-    stdout = candidate.stdout || '';
-  }
+function derToPem(raw: Buffer): string {
+  const b64 = raw.toString('base64');
+  const lines = b64.match(/.{1,64}/g) || [];
+  return `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----`;
+}
 
-  const matches = stdout.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) || [];
-  if (matches.length === 0) {
-    throw new Error('failed to fetch TLS certificate chain via openssl');
+async function extractRootLikeCertPem(host: string, port: number, outPath: string): Promise<void> {
+  const pemChain = await new Promise<string[]>((resolve, reject) => {
+    const socket = tls.connect(
+      {
+        host,
+        port,
+        servername: host,
+        rejectUnauthorized: false
+      },
+      () => {
+        try {
+          const certs: string[] = [];
+          let current = socket.getPeerCertificate(true) as tls.DetailedPeerCertificate | tls.PeerCertificate;
+          const seen = new Set<string>();
+          while (current && 'raw' in current && current.raw && current.raw.length > 0) {
+            const fingerprint = 'fingerprint256' in current ? current.fingerprint256 : '';
+            if (fingerprint && seen.has(fingerprint)) break;
+            if (fingerprint) seen.add(fingerprint);
+            certs.push(derToPem(current.raw));
+            const issuer = 'issuerCertificate' in current ? current.issuerCertificate : undefined;
+            if (!issuer || issuer === current) break;
+            current = issuer as tls.DetailedPeerCertificate;
+          }
+          socket.end();
+          resolve(certs);
+        } catch (error) {
+          reject(error);
+        }
+      }
+    );
+    socket.once('error', reject);
+    socket.setTimeout(15000, () => {
+      socket.destroy(new Error('timed out fetching TLS certificate chain'));
+    });
+  });
+
+  if (pemChain.length === 0) {
+    throw new Error('failed to fetch TLS certificate chain via node tls');
   }
 
   await mkdir(path.dirname(outPath), { recursive: true });
-  // Preserve full chain to maximize compatibility with rustls root store loading.
-  await writeFile(outPath, `${matches.join('\n')}\n`, 'utf8');
+  await writeFile(outPath, `${pemChain.join('\n')}\n`, 'utf8');
 }
 
 function waitForExit(child: import('node:child_process').ChildProcess): Promise<number> {
