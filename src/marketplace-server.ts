@@ -876,6 +876,29 @@ function attachOnChainDailyMarketState(
   });
 }
 
+function deriveDailyMarketsFromOnChainState(
+  state: Awaited<ReturnType<typeof loadOperatorState>>
+): DemoDailyMarket[] {
+  const views = toMarketViews(state, 0);
+  return views
+    .map((market) => {
+      const match = /^Atherton, CA - (\d{4}-\d{2}-\d{2}) Over\/Under (\d+)F$/.exec(market.title || '');
+      if (!match) return null;
+      return {
+        marketDate: match[1],
+        marketKey: String(market.marketKey),
+        thresholdF: Number(match[2]),
+        lockedAtUnixMs: Number.isFinite(market.createdAtUnixMs) ? Number(market.createdAtUnixMs) : 0,
+        sourceDayIndexWhenLocked: 0,
+        sourceForecastHighFWhenLocked: Number(match[2]),
+        totalPositionBet: Number.isFinite(Number(market.totalPositionBet)) ? Number(market.totalPositionBet) : 0,
+        totalYesPositionBet: Number.isFinite(Number(market.totalYesPositionBet)) ? Number(market.totalYesPositionBet) : 0
+      } satisfies DemoDailyMarket;
+    })
+    .filter((market): market is DemoDailyMarket => Boolean(market))
+    .sort((a, b) => (a.marketDate < b.marketDate ? -1 : a.marketDate > b.marketDate ? 1 : 0));
+}
+
 async function runProjectCommand(projectRoot: string, args: string[]): Promise<string> {
   const { stdout, stderr } = await execFileAsync('pnpm', args, {
     cwd: projectRoot,
@@ -2328,8 +2351,12 @@ async function main(): Promise<void> {
         const selectedDate = url.searchParams.get('market_date') || currentLocalDate();
         const snapshot = await loadWeatherSnapshot();
         const oracle = getOracleFreshness(snapshot, Date.now());
+        const baseDailyMarkets =
+          snapshot || Object.keys(await loadDemoDailyMarkets()).length > 0
+            ? await ensureDemoDailyMarketsFromSnapshot(snapshot)
+            : deriveDailyMarketsFromOnChainState(state);
         const dailyMarkets = attachOnChainDailyMarketState(
-          await withDailySettlementInfo(withCurrentForecast(await ensureDemoDailyMarketsFromSnapshot(snapshot), snapshot)),
+          await withDailySettlementInfo(withCurrentForecast(baseDailyMarkets, snapshot)),
           state
         );
         let contest = await loadContestState(selectedDate, 15, contestStateFileForDate(selectedDate));
@@ -2366,8 +2393,12 @@ async function main(): Promise<void> {
       if (req.method === 'GET' && url.pathname === '/api/demo/daily-markets') {
         const snapshot = await loadWeatherSnapshot();
         const state = await loadOperatorState(defaultStatePath);
+        const baseDailyMarkets =
+          snapshot || Object.keys(await loadDemoDailyMarkets()).length > 0
+            ? await ensureDemoDailyMarketsFromSnapshot(snapshot)
+            : deriveDailyMarketsFromOnChainState(state);
         const dailyMarkets = attachOnChainDailyMarketState(
-          await withDailySettlementInfo(withCurrentForecast(await ensureDemoDailyMarketsFromSnapshot(snapshot), snapshot)),
+          await withDailySettlementInfo(withCurrentForecast(baseDailyMarkets, snapshot)),
           state
         );
         writeJson(res, 200, {
