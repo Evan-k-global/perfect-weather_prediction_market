@@ -274,7 +274,6 @@
             </div>
             <p class="tiny">Pool and market OVER/UNDER odds are on-chain aggregate values synced from the market state.</p>
             <div class="tiny hidden" id="betProgress"></div>
-            <div class="tiny">Bet queued privately. Automatic settlement when oracle synced and market reaches determination.</div>
           </section>
 
           <section class="card">
@@ -964,7 +963,7 @@
             out.textContent = toJson({ queued, batchKick });
             await refreshMarket();
             await refreshWeather();
-            setBetProgress("Queued privately", false);
+            setBetProgress("", false);
             return;
           }
 
