@@ -742,6 +742,32 @@
         wireWeatherDayClicks();
       }
 
+      function renderOracleFallbackFromDailyMarkets() {
+        latestOracleRows = (dailyMarkets || []).slice(0, 6).map((m, idx) => {
+          const total = Number(m.onChainPoolTmina);
+          const over = Number(m.onChainOverTmina);
+          const marketProb = Number.isFinite(total) && total > 0 ? over / total : 0.5;
+          const yesPct = Math.round((marketProb * 1000)) / 10;
+          const noPct = Math.round(((1 - marketProb) * 1000)) / 10;
+          return {
+            dayIndex: idx,
+            marketDate: m.marketDate,
+            highLabel: "n/a",
+            lowLabel: "n/a",
+            thresholdLabel: `${m.thresholdF}F`,
+            yesPct,
+            noPct,
+            yesWidth: Math.max(0, Math.min(100, yesPct)),
+            potLabel: Number.isFinite(total) ? `${total} tMINA` : "0 tMINA",
+            settled: Boolean(m.settlement?.settled),
+            settlementLabel: m.settlement?.settled
+              ? `settled${Number.isFinite(Number(m.settlement?.observedHighF)) ? ` @ ${m.settlement.observedHighF}F` : ""}`
+              : "open"
+          };
+        });
+        renderOracleTable();
+      }
+
       async function claimResolvedPosition(position) {
         try {
           const walletKey = await ensureWalletConnected();
@@ -806,7 +832,17 @@
       }
 
       async function refreshWeather() {
-        const data = await req(`/api/weather/94027?threshold_f=${encodeURIComponent(currentThresholdF)}`);
+        let data;
+        try {
+          data = await req(`/api/weather/94027?threshold_f=${encodeURIComponent(currentThresholdF)}`);
+        } catch (e) {
+          setOraclePill({ state: "missing", ageMs: null, reason: "weather refresh unavailable" });
+          if (weatherMetaEl) {
+            weatherMetaEl.textContent = "Weather snapshot unavailable. Showing locked market data only.";
+          }
+          renderOracleFallbackFromDailyMarkets();
+          return;
+        }
         const s = data.snapshot;
         if (s) {
           latestWeather = data;
@@ -817,9 +853,12 @@
           if (latestWeather && latestWeather.snapshot) {
             weatherMetaEl.textContent =
               `Using last snapshot from ${new Date(latestWeather.snapshot.fetchedAtUnixMs).toLocaleString()} while oracle refresh is pending/failing.`;
+            if (!latestOracleRows.length) {
+              renderOracleFallbackFromDailyMarkets();
+            }
           } else {
-            weatherMetaEl.textContent = "No weather snapshot yet. Click Sync Oracle.";
-            weatherTableEl.innerHTML = "";
+            weatherMetaEl.textContent = "No weather snapshot yet. Showing locked market data while oracle loads.";
+            renderOracleFallbackFromDailyMarkets();
             renderWeatherVisualizer();
           }
           return;
@@ -985,11 +1024,20 @@
       setupLoopingVideo(bgVideoEl);
 
       async function refreshPageState() {
-        await refreshPrivacyMode();
-        await refreshDailyMarkets();
-        await refreshMarket();
-        await refreshWeather();
-        await refreshResolvedMarkets();
+        const steps = [
+          refreshPrivacyMode,
+          refreshDailyMarkets,
+          refreshMarket,
+          refreshWeather,
+          refreshResolvedMarkets
+        ];
+        for (const step of steps) {
+          try {
+            await step();
+          } catch (e) {
+            out.textContent = toJson({ error: String(e) });
+          }
+        }
         try {
           const q = await req("/api/private-bets/status");
           setBatchPill(q);
