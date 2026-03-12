@@ -137,6 +137,33 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function runPreflightFetch(url: string): Promise<void> {
+  const attempts = Number.parseInt(process.env.WEATHER_PREFLIGHT_ATTEMPTS || '3', 10);
+  let lastError: unknown = null;
+  for (let i = 1; i <= attempts; i += 1) {
+    try {
+      const pre = await fetch(url, {
+        headers: {
+          'user-agent': 'private-prediction-market/weather-attest-preflight',
+          connection: 'close'
+        }
+      });
+      const body = await pre.text();
+      console.log(
+        `Preflight HTTP status: ${pre.status} ${pre.statusText}, body bytes: ${Buffer.byteLength(body, 'utf8')}`
+      );
+      return;
+    } catch (error) {
+      lastError = error;
+      console.warn(`[weather-attest] preflight attempt ${i}/${attempts} failed: ${String(error)}`);
+      if (i < attempts) {
+        await sleep(1000 * i);
+      }
+    }
+  }
+  console.warn(`[weather-attest] continuing without successful preflight: ${String(lastError)}`);
+}
+
 async function waitForExitWithTimeout(
   child: import('node:child_process').ChildProcess,
   timeoutMs: number,
@@ -188,20 +215,7 @@ export async function runWeatherAttestation(): Promise<void> {
 
   const preflightUrl = `https://${serverDomain}${endpoint}`;
   console.log('Preflight target URL:', preflightUrl);
-  try {
-    const pre = await fetch(preflightUrl, {
-      headers: {
-        'user-agent': 'private-prediction-market/weather-attest-preflight',
-        connection: 'close'
-      }
-    });
-    const body = await pre.text();
-    console.log(
-      `Preflight HTTP status: ${pre.status} ${pre.statusText}, body bytes: ${Buffer.byteLength(body, 'utf8')}`
-    );
-  } catch (error) {
-    throw new Error(`preflight fetch failed for ${preflightUrl}: ${String(error)}`);
-  }
+  await runPreflightFetch(preflightUrl);
 
   if (!(await exists(tlsnRoot))) {
     throw new Error(`tlsnotary repo not found: ${tlsnRoot}. Set ZKVERIFY_POC_ROOT to your zk-verify-poc path.`);

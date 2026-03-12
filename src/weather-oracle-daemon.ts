@@ -36,7 +36,7 @@ async function writeHeartbeat(
 }
 
 export async function runWeatherOracleDaemon(): Promise<void> {
-  const intervalMs = envInt('WEATHER_DAEMON_INTERVAL_MS', 15 * 60 * 1000);
+  const intervalMs = envInt('WEATHER_DAEMON_INTERVAL_MS', 30 * 60 * 1000);
   const retryMs = envInt('WEATHER_DAEMON_RETRY_MS', 2 * 60 * 1000);
   const startDelayMs = envInt('WEATHER_DAEMON_START_DELAY_MS', 0);
   const cleanupIntervalMs = envInt('CLEANUP_DATA_INTERVAL_MS', 6 * 60 * 60 * 1000);

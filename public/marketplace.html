@@ -90,12 +90,16 @@
       .tiny { font-size: 11px; margin-top: 4px; }
       .oracle-meta-line {
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
+        justify-content: space-between;
         gap: 10px;
         align-items: center;
         font-size: 12px;
         color: var(--muted);
         margin: 0 0 6px;
+      }
+      .oracle-meta-line > span {
+        white-space: nowrap;
       }
       .odds-wrap { margin-top: 8px; }
       .odds-bar {
@@ -146,6 +150,7 @@
       .ghost { background: rgba(229, 243, 255, 0.96); }
       #connectWallet { padding: 7px 10px; font-size: 13px; align-self: end; }
       .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+      .action-row { margin-bottom: 12px; }
 
       .market {
         border: 1px solid var(--line);
@@ -214,8 +219,8 @@
       <section class="top">
         <div class="brand">
           <b>Perfect Weather Prediction Market</b>
-          <span class="sub">zkTLS weather oracle + daily high temperature prediction market.</span>
-          <span class="sub" id="privacyStatus">Privacy mode: private commit queue, batched settlement</span>
+          <span class="sub">zkTLS weather oracle + temperature prediction market.</span>
+          <span class="sub" id="privacyStatus">Private betting queue, batched settlement</span>
         </div>
         <div class="field">
           <label>Wallet</label>
@@ -232,9 +237,6 @@
         <section class="stack">
           <section class="card">
             <h3>Atherton, CA - Over/Under Market (On-Chain)</h3>
-            <p class="hint">Place an over/under bet: OVER = daily high is over <span id="thresholdLabel">68</span>F. UNDER = <span id="thresholdLabelNo">68</span>F or lower.</p>
-            <p class="tiny">Pool and market OVER/UNDER odds below are on-chain aggregate values synced from the market state.</p>
-            <div class="small" id="marketSummary">Loading market...</div>
             <div class="row">
               <div class="field">
                 <label for="marketDateSelect">Market Date (Locked Threshold)</label>
@@ -265,17 +267,18 @@
                 </div>
               </div>
             </div>
-            <div class="row">
+            <div class="row action-row">
               <button class="buy" id="placeMarketBet">Place Bet</button>
               <button id="refreshWeatherTop" class="ghost">Sync Oracle</button>
             </div>
+            <p class="tiny">Pool and market OVER/UNDER odds are on-chain aggregate values synced from the market state.</p>
+            <div class="small" id="marketSummary">Loading market...</div>
             <div class="tiny" id="betProgress">Idle</div>
-            <div class="tiny">Settlement is automatic during oracle sync once the oracle is fresh and market reaches determination.</div>
+            <div class="tiny">Bet queued privately. Automatic settlement when oracle synced and market reaches determination.</div>
           </section>
 
           <section class="card">
             <h3>Oracle + Forecast Context (94027)</h3>
-            <p class="hint">Read-only data context for the market above. No separate betting in this section.</p>
             <div class="oracle-meta-line">
               <span>Trusted source: <a href="https://forecast.weather.gov/MapClick.php?lat=37.4534&lon=-122.1942&lg=english&&FcstType=digital" target="_blank">NWS Forecast (94027)</a></span>
               <span id="weatherMeta"></span>
@@ -381,7 +384,7 @@
         if (privacyStatusEl) {
           privacyStatusEl.textContent =
             privacyMode === "zk_strong"
-              ? "Privacy mode: private commit queue, batched settlement"
+              ? "Private betting queue, batched settlement"
               : "Privacy mode: direct per-user tx path";
         }
         if (privacyMode === "zk_strong" && !zkappFundingAddress) {
