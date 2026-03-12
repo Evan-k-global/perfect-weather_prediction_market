@@ -170,6 +170,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function waitForLogMatch(
+  getLogs: () => string,
+  pattern: RegExp,
+  timeoutMs: number
+): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (pattern.test(getLogs())) return true;
+    await sleep(50);
+  }
+  return false;
+}
+
 async function pickAvailablePort(host: string): Promise<number> {
   return await new Promise<number>((resolve, reject) => {
     const server = net.createServer();
@@ -240,6 +253,10 @@ export async function runWeatherAttestation(): Promise<void> {
   const proverBin = path.resolve(tlsnRoot, 'target', 'debug', 'prover');
   const maxRecvData = Number.parseInt(process.env.TLSN_MAX_RECV_DATA || '262144', 10);
   const proverTimeoutMs = Number.parseInt(process.env.TLSN_PROVER_TIMEOUT_MS || '120000', 10);
+  const notaryReadyWaitMs = Number.parseInt(
+    process.env.TLSN_NOTARY_READY_WAIT_MS || (process.env.RENDER ? '1500' : '300'),
+    10
+  );
 
   const notaryHost = envOrDefault('TLSN_NOTARY_HOST', '127.0.0.1');
   const configuredNotaryPort = process.env.TLSN_NOTARY_PORT;
@@ -369,7 +386,10 @@ export async function runWeatherAttestation(): Promise<void> {
   });
 
   try {
-    await sleep(300);
+    const sawListenLog = await waitForLogMatch(() => notaryLogs, /listening on /i, notaryReadyWaitMs);
+    if (!sawListenLog) {
+      await sleep(notaryReadyWaitMs);
+    }
     if (notarySpawnError) {
       await writeTlsnStatus({ stage: 'notary-error', ok: false, ts: new Date().toISOString(), message: notarySpawnError, serverHost, serverDomain, endpoint }, statusPath);
       throw new Error(`notary failed to start: ${notarySpawnError}`);
