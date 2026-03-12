@@ -370,8 +370,14 @@
 
       async function req(path, opts = {}) {
         const res = await fetch(base + path, { cache: "no-store", ...opts });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error || "request failed");
+        const text = await res.text();
+        let json = null;
+        try {
+          json = text ? JSON.parse(text) : null;
+        } catch {
+          throw new Error(`request ${path} failed with non-JSON response (${res.status}): ${text.slice(0, 160)}`);
+        }
+        if (!res.ok) throw new Error((json && json.error) || `request ${path} failed`);
         return json;
       }
 
@@ -952,21 +958,19 @@
                 thresholdF: currentThresholdF
               })
             });
-            let batchKick = null;
-            try {
-              setBetProgress("Queueing batch settlement...", true);
-              batchKick = await req("/api/private-bets/process-batch", {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ maxItems: 64 })
-              });
-            } catch (e) {
-              batchKick = { warning: String(e) };
-            }
-            out.textContent = toJson({ queued, batchKick });
+            out.textContent = toJson({
+              queued,
+              note: "Private bet queued. Background batch processor will settle it shortly."
+            });
             await refreshMarket();
             await refreshWeather();
-            setBetProgress("", false);
+            try {
+              const q = await req("/api/private-bets/status");
+              setBatchPill(q);
+            } catch {
+              setBatchPill(null);
+            }
+            setBetProgress("Bet queued privately", false);
             return;
           }
 
