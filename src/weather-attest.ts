@@ -243,7 +243,10 @@ export async function runWeatherAttestation(): Promise<void> {
   const endpoint = envOrDefault('TLSN_ENDPOINT', NWS_94027_REQUEST_PATH);
   let serverHost = configuredServerHost;
   try {
-    if (process.env.TLSN_FORCE_SERVER_IP === '1' && configuredServerHost === NWS_94027_SERVER_NAME) {
+    const shouldPreferIpv4 =
+      process.env.TLSN_USE_HOSTNAME_CONNECT !== '1' &&
+      configuredServerHost === NWS_94027_SERVER_NAME;
+    if ((process.env.TLSN_FORCE_SERVER_IP === '1' || shouldPreferIpv4) && configuredServerHost === NWS_94027_SERVER_NAME) {
       const resolved = await dns.lookup(configuredServerHost, { family: 4 });
       serverHost = resolved.address;
       console.log(`Resolved ${configuredServerHost} to IPv4 ${serverHost} for prover TCP connect.`);
