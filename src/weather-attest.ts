@@ -232,7 +232,7 @@ export async function runWeatherAttestation(): Promise<void> {
   const notaryBin = path.resolve(tlsnRoot, 'target', 'debug', 'notary');
   const proverBin = path.resolve(tlsnRoot, 'target', 'debug', 'prover');
   const maxRecvData = Number.parseInt(process.env.TLSN_MAX_RECV_DATA || '262144', 10);
-  const proverTimeoutMs = Number.parseInt(process.env.TLSN_PROVER_TIMEOUT_MS || '300000', 10);
+  const proverTimeoutMs = Number.parseInt(process.env.TLSN_PROVER_TIMEOUT_MS || '120000', 10);
 
   const notaryHost = envOrDefault('TLSN_NOTARY_HOST', '127.0.0.1');
   const notaryPort = Number.parseInt(envOrDefault('TLSN_NOTARY_PORT', '7047'), 10);
@@ -405,6 +405,11 @@ export async function runWeatherAttestation(): Promise<void> {
 
     const proverCode = await waitForExitWithTimeout(prover, proverTimeoutMs, () => {
       prover.kill('SIGTERM');
+      setTimeout(() => {
+        if (!proverExited) {
+          prover.kill('SIGKILL');
+        }
+      }, 5_000);
     });
     await persistTlsnLogs(outputDir, proverLogs, notaryLogs);
     if (proverSpawnError) {
