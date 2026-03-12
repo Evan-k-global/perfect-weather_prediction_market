@@ -1,7 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
-mkdir -p /app/data/tlsn-output/latest /app/data/tlsn-certs
+cd /app
+
+mkdir -p ./data/tlsn-output/latest ./data/tlsn-certs
 
 STATE_FILE="${STATE_FILE:-./data/operator-state.json}"
 
