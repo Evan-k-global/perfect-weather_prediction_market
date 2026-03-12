@@ -1,6 +1,6 @@
 import './env.js';
 import { randomBytes } from 'node:crypto';
-import { access, copyFile, mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
+import { access, copyFile, mkdir, readFile, writeFile, readdir, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
@@ -43,6 +43,15 @@ async function exists(pathname: string): Promise<boolean> {
   try {
     await access(pathname, constants.F_OK);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function newerThan(pathA: string, pathB: string): Promise<boolean> {
+  try {
+    const [a, b] = await Promise.all([stat(pathA), stat(pathB)]);
+    return a.mtimeMs > b.mtimeMs;
   } catch {
     return false;
   }
@@ -181,28 +190,6 @@ async function pickAvailablePort(host: string): Promise<number> {
   });
 }
 
-async function waitForTcpReady(host: string, port: number, timeoutMs: number): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const socket = net.connect({ host, port }, () => {
-          socket.end();
-          resolve();
-        });
-        socket.once('error', reject);
-        socket.setTimeout(1000, () => {
-          socket.destroy(new Error('tcp readiness timeout'));
-        });
-      });
-      return;
-    } catch {
-      await sleep(200);
-    }
-  }
-  throw new Error(`timed out waiting for TCP readiness on ${host}:${port}`);
-}
-
 async function runPreflightFetch(url: string): Promise<void> {
   const attempts = Number.parseInt(process.env.WEATHER_PREFLIGHT_ATTEMPTS || '3', 10);
   let lastError: unknown = null;
@@ -329,7 +316,11 @@ export async function runWeatherAttestation(): Promise<void> {
   }
 
   const forceRebuild = process.env.TLSN_FORCE_REBUILD === '1';
-  if (forceRebuild || !(await exists(notaryBin)) || !(await exists(proverBin))) {
+  const sourceChanged =
+    (await newerThan(proverSource, proverBin)) ||
+    (await newerThan(path.resolve(tlsnRoot, 'src', 'bin', 'notary.rs'), notaryBin)) ||
+    (await newerThan(path.resolve(tlsnRoot, 'Cargo.toml'), proverBin));
+  if (forceRebuild || sourceChanged || !(await exists(notaryBin)) || !(await exists(proverBin))) {
     console.log('Building tlsnotary binaries...');
     await runChecked('cargo', ['build', '--manifest-path', path.resolve(tlsnRoot, 'Cargo.toml')], tlsnRoot);
   } else {
@@ -378,7 +369,7 @@ export async function runWeatherAttestation(): Promise<void> {
   });
 
   try {
-    await waitForTcpReady(notaryHost, notaryPort, 10_000);
+    await sleep(300);
     if (notarySpawnError) {
       await writeTlsnStatus({ stage: 'notary-error', ok: false, ts: new Date().toISOString(), message: notarySpawnError, serverHost, serverDomain, endpoint }, statusPath);
       throw new Error(`notary failed to start: ${notarySpawnError}`);

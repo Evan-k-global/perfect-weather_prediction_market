@@ -2,7 +2,7 @@ use std::{
     fs::File,
     io::BufReader,
     path::Path,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -135,65 +135,30 @@ async fn main() -> Result<()> {
     )?;
     let cert_path =
         std::env::var("TLSN_ROOT_CERT_PATH").unwrap_or_else(|_| "../mock-server/cert.pem".to_string());
-    let notaryConnectTimeoutMs = std::env::var("TLSN_NOTARY_CONNECT_TIMEOUT_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(10_000);
-    let commit_timeout_ms = std::env::var("TLSN_COMMIT_TIMEOUT_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(20_000);
-    let serverConnectTimeoutMs = std::env::var("TLSN_SERVER_CONNECT_TIMEOUT_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(20_000);
 
     let root_store = load_root_cert_store(Path::new(&cert_path))?;
 
-    println!(
-        "[prover] connecting to notary {}:{} timeout={}ms",
-        notary_host, notary_port, notaryConnectTimeoutMs
-    );
-    let notary_socket = tokio::time::timeout(
-        Duration::from_millis(notaryConnectTimeoutMs),
-        tokio::net::TcpStream::connect((notary_host.as_str(), notary_port)),
-    )
-    .await
-    .map_err(|_| anyhow!("timed out connecting to notary after {}ms", notaryConnectTimeoutMs))??;
+    let notary_socket = tokio::net::TcpStream::connect((notary_host.as_str(), notary_port)).await?;
     println!("[prover] connected to notary {}:{}", notary_host, notary_port);
     let session = Session::new(notary_socket.compat());
     let (driver, mut handle) = session.split();
     let driver_task = tokio::spawn(driver);
 
-    println!("[prover] creating prover commit timeout={}ms", commit_timeout_ms);
-    let prover = tokio::time::timeout(
-        Duration::from_millis(commit_timeout_ms),
-        handle
-            .new_prover(ProverConfig::builder().build()?)?
-            .commit(
-                TlsCommitConfig::builder()
-                    .protocol(
-                        MpcTlsConfig::builder()
-                            .max_sent_data(MAX_SENT_DATA)
-                            .max_recv_data(MAX_RECV_DATA)
-                            .build()?,
-                    )
-                    .build()?,
-            ),
-    )
-    .await
-    .map_err(|_| anyhow!("timed out creating prover commit after {}ms", commit_timeout_ms))??;
+    let prover = handle
+        .new_prover(ProverConfig::builder().build()?)?
+        .commit(
+            TlsCommitConfig::builder()
+                .protocol(
+                    MpcTlsConfig::builder()
+                        .max_sent_data(MAX_SENT_DATA)
+                        .max_recv_data(MAX_RECV_DATA)
+                        .build()?,
+                )
+                .build()?,
+        )
+        .await?;
 
-    println!(
-        "[prover] connecting to server {}:{} ({}) timeout={}ms",
-        server_host, server_port, server_domain, serverConnectTimeoutMs
-    );
-    let client_socket = tokio::time::timeout(
-        Duration::from_millis(serverConnectTimeoutMs),
-        tokio::net::TcpStream::connect((server_host.as_str(), server_port)),
-    )
-    .await
-    .map_err(|_| anyhow!("timed out connecting to server {}:{} after {}ms", server_host, server_port, serverConnectTimeoutMs))??;
+    let client_socket = tokio::net::TcpStream::connect((server_host.as_str(), server_port)).await?;
     println!("[prover] connected to server {}:{} ({})", server_host, server_port, server_domain);
 
     let (tls_connection, prover_task_fut) = prover.connect(
