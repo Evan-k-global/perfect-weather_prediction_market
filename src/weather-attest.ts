@@ -245,6 +245,26 @@ async function waitForExitWithTimeout(
   ]);
 }
 
+async function terminateChild(
+  child: import('node:child_process').ChildProcess,
+  timeoutMs: number
+): Promise<void> {
+  let exited = false;
+  child.once('exit', () => {
+    exited = true;
+  });
+  child.kill('SIGTERM');
+  await Promise.race([
+    waitForExit(child).catch(() => undefined),
+    (async () => {
+      await sleep(timeoutMs);
+      if (!exited) {
+        child.kill('SIGKILL');
+      }
+    })()
+  ]);
+}
+
 export async function runWeatherAttestation(): Promise<void> {
   const pocRoot = await detectPocRoot();
   const tlsnRoot = path.resolve(pocRoot, 'tlsnotary');
@@ -466,8 +486,7 @@ export async function runWeatherAttestation(): Promise<void> {
       );
     }
   } finally {
-    notary.kill('SIGTERM');
-    await waitForExit(notary).catch(() => undefined);
+    await terminateChild(notary, 5_000).catch(() => undefined);
   }
 
   if (!(await exists(outputAttestation))) {
