@@ -3,6 +3,11 @@ set -eu
 
 mkdir -p /app/data/tlsn-output/latest /app/data/tlsn-certs
 
+STATE_FILE="${STATE_FILE:-./data/operator-state.json}"
+
+echo "[render-start] syncing on-chain operator state into ${STATE_FILE}"
+node --enable-source-maps /app/dist/sync-state-zeko.js -- --state-file "${STATE_FILE}"
+
 node --enable-source-maps /app/dist/marketplace-server.js &
 MARKETPLACE_PID=$!
 
