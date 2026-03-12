@@ -88,6 +88,7 @@
       .hint { font-size: 12px; margin: 0 0 8px; }
       .small { font-size: 12px; margin-top: 4px; }
       .tiny { font-size: 11px; margin-top: 4px; }
+      .hidden { display: none; }
       .oracle-meta-line {
         display: flex;
         flex-wrap: nowrap;
@@ -272,8 +273,7 @@
               <button id="refreshWeatherTop" class="ghost">Sync Oracle</button>
             </div>
             <p class="tiny">Pool and market OVER/UNDER odds are on-chain aggregate values synced from the market state.</p>
-            <div class="small" id="marketSummary">Loading market...</div>
-            <div class="tiny" id="betProgress">Idle</div>
+            <div class="tiny hidden" id="betProgress"></div>
             <div class="tiny">Bet queued privately. Automatic settlement when oracle synced and market reaches determination.</div>
           </section>
 
@@ -330,7 +330,6 @@
       const out = document.getElementById("out");
       const weatherMetaEl = document.getElementById("weatherMeta");
       const weatherTableEl = document.getElementById("weatherTable");
-      const marketSummaryEl = document.getElementById("marketSummary");
       const marketDateSelectEl = document.getElementById("marketDateSelect");
       const oraclePill = document.getElementById("oraclePill");
       const batchPill = document.getElementById("batchPill");
@@ -414,7 +413,10 @@
       }
 
       function setBetProgress(text, busy = false) {
-        if (betProgressEl) betProgressEl.textContent = text;
+        if (betProgressEl) {
+          betProgressEl.textContent = text;
+          betProgressEl.classList.toggle("hidden", !text || text === "Idle");
+        }
         if (placeMarketBetBtn) {
           placeMarketBetBtn.disabled = busy;
           placeMarketBetBtn.textContent = busy ? text : "Place Bet";
@@ -523,7 +525,6 @@
         const markets = Array.isArray(data.markets) ? data.markets : [];
         const market = markets.find((m) => String(m.marketKey) === String(currentMarketKey)) || null;
         if (!market) {
-          marketSummaryEl.textContent = `No on-chain market found for ${currentMarketDate || "selected date"}. Run the per-date market creation step first.`;
           placeMarketBetBtn.disabled = true;
           currentMarketResolved = false;
           return;
@@ -534,8 +535,6 @@
         const noPct = Math.round((100 - yesPct) * 10) / 10;
         currentMarketYesPct = yesPct;
         currentMarketNoPct = noPct;
-        marketSummaryEl.textContent =
-          `${market.title} | Pool: ${market.totalPositionBet} tMINA`;
         marketOddsBarEl.style.setProperty("--yesw", `${Math.max(0, Math.min(100, yesPct))}%`);
         marketOddsLabelEl.textContent = `OVER ${yesPct.toFixed(1)}% / UNDER ${noPct.toFixed(1)}%`;
         placeMarketBetBtn.disabled = Boolean(market.resolved);
@@ -569,7 +568,6 @@
           selectedPayoutLabelEl.textContent = `Winning odds: OVER ${overPayout} | UNDER ${underPayout} | Pot ${potLabel}`;
         }
         if (!selected.onChainCreated) {
-          marketSummaryEl.textContent = `No on-chain market exists yet for ${currentMarketDate}. Create the per-date market before betting.`;
           placeMarketBetBtn.disabled = true;
         }
       }
