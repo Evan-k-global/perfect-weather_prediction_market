@@ -644,13 +644,64 @@ async function autoSettleDailyContestsFromSnapshot(
   return settledDates;
 }
 
+function mergeDemoDailyMarketsWithOnChainState(
+  markets: Record<string, DemoDailyMarket>,
+  state: Awaited<ReturnType<typeof loadOperatorState>>
+): { merged: Record<string, DemoDailyMarket>; changed: boolean } {
+  const derived = deriveDailyMarketsFromOnChainState(state);
+  if (derived.length === 0) {
+    return { merged: markets, changed: false };
+  }
+  const merged: Record<string, DemoDailyMarket> = { ...markets };
+  let changed = false;
+  for (const onChain of derived) {
+    const existing = merged[onChain.marketDate];
+    const next: DemoDailyMarket = {
+      marketDate: onChain.marketDate,
+      marketKey: onChain.marketKey,
+      thresholdF: onChain.thresholdF,
+      lockedAtUnixMs: existing?.lockedAtUnixMs ?? onChain.lockedAtUnixMs,
+      sourceDayIndexWhenLocked: existing?.sourceDayIndexWhenLocked ?? onChain.sourceDayIndexWhenLocked,
+      sourceForecastHighFWhenLocked: existing?.sourceForecastHighFWhenLocked ?? onChain.sourceForecastHighFWhenLocked,
+      totalPositionBet: onChain.totalPositionBet,
+      totalYesPositionBet: onChain.totalYesPositionBet
+    };
+    if (
+      !existing ||
+      existing.marketKey !== next.marketKey ||
+      Math.round(existing.thresholdF) !== Math.round(next.thresholdF) ||
+      Number(existing.totalPositionBet || 0) !== next.totalPositionBet ||
+      Number(existing.totalYesPositionBet || 0) !== next.totalYesPositionBet
+    ) {
+      merged[onChain.marketDate] = next;
+      changed = true;
+    }
+  }
+  return { merged, changed };
+}
+
 async function loadDemoDailyMarkets(filePath: string = DEMO_DAILY_MARKETS_FILE): Promise<Record<string, DemoDailyMarket>> {
   try {
     const raw = await readFile(filePath, 'utf8');
-    const parsed = JSON.parse(raw) as Record<string, DemoDailyMarket>;
-    return parsed || {};
+    const parsed = (JSON.parse(raw) as Record<string, DemoDailyMarket>) || {};
+    try {
+      const state = await loadOperatorState(process.env.STATE_FILE || DEFAULT_STATE_FILE);
+      const { merged, changed } = mergeDemoDailyMarketsWithOnChainState(parsed, state);
+      if (changed) {
+        await saveDemoDailyMarkets(merged, filePath);
+      }
+      return merged;
+    } catch {
+      return parsed;
+    }
   } catch {
-    return {};
+    try {
+      const state = await loadOperatorState(process.env.STATE_FILE || DEFAULT_STATE_FILE);
+      const { merged } = mergeDemoDailyMarketsWithOnChainState({}, state);
+      return merged;
+    } catch {
+      return {};
+    }
   }
 }
 

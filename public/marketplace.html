@@ -325,7 +325,10 @@
     </main>
 
     <script>
-      const base = "http://127.0.0.1:8790";
+      const base =
+        window.location.protocol === "file:"
+          ? "http://127.0.0.1:8790"
+          : window.location.origin;
       const out = document.getElementById("out");
       const weatherMetaEl = document.getElementById("weatherMeta");
       const weatherTableEl = document.getElementById("weatherTable");
