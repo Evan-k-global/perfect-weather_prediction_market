@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AccountUpdate, Bool, Field, Mina, Poseidon, PrivateKey, PublicKey, UInt32, UInt64, fetchAccount } from 'o1js';
@@ -816,6 +816,18 @@ function getOracleFreshness(snapshot: Awaited<ReturnType<typeof loadWeatherSnaps
 }
 
 function toMarketViews(state: Awaited<ReturnType<typeof loadOperatorState>>, currentSlot: number) {
+  let demoDailyByMarketKey: Record<string, DemoDailyMarket> = {};
+  try {
+    const raw = readFileSync(DEMO_DAILY_MARKETS_FILE, 'utf8');
+    const parsed = JSON.parse(raw) as Record<string, DemoDailyMarket>;
+    demoDailyByMarketKey = Object.fromEntries(
+      Object.values(parsed || {})
+        .filter((market) => market && typeof market.marketKey === 'string')
+        .map((market) => [String(market.marketKey), market])
+    );
+  } catch {
+    demoDailyByMarketKey = {};
+  }
   return Object.entries(state.markets).map(([marketKey, leaf]) => {
     const total = Number(leaf.totalPositionBet);
     const yes = Number(leaf.totalYesPositionBet);
@@ -823,18 +835,27 @@ function toMarketViews(state: Awaited<ReturnType<typeof loadOperatorState>>, cur
     const thresholdValueTenthC = Number(leaf.thresholdValueTenthC);
     const thresholdF = Math.round(((thresholdValueTenthC / 10) * 9) / 5 + 32);
     const meta = state.marketMeta?.[marketKey];
+    const fallbackDemoDaily = demoDailyByMarketKey[String(marketKey)];
     const closeSlot = Number(leaf.closeSlot);
     const expirySlot = Number(leaf.expirySlot);
     const determinationSlot = Number(meta?.determinationSlot || leaf.expirySlot);
-    const defaultTitle = marketKey === '1002' ? 'Atherton, CA - Temp Market' : `Market ${marketKey}`;
+    const defaultTitle = fallbackDemoDaily
+      ? `Atherton, CA - ${fallbackDemoDaily.marketDate} Over/Under ${fallbackDemoDaily.thresholdF}F`
+      : marketKey === '1002'
+        ? 'Atherton, CA - Temp Market'
+        : `Market ${marketKey}`;
     const defaultSource =
-      marketKey === '1002' ? 'https://api.weather.gov/gridpoints/MTR/86,107/forecast' : 'unknown';
+      fallbackDemoDaily || marketKey === '1002'
+        ? 'https://api.weather.gov/gridpoints/MTR/86,107/forecast'
+        : 'unknown';
     return {
       marketKey,
       title: meta?.title || defaultTitle,
       rulesPrimary:
         meta?.rulesPrimary ||
-        'Will observed weather value be greater than threshold at determination time?',
+        (fallbackDemoDaily
+          ? `Resolves OVER if observed daily high on ${fallbackDemoDaily.marketDate} is greater than locked threshold ${fallbackDemoDaily.thresholdF}F.`
+          : 'Will observed weather value be greater than threshold at determination time?'),
       settlementSource: meta?.settlementSource || defaultSource,
       closeSlot,
       expirySlot,

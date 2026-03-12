@@ -28,6 +28,7 @@ COPY public ./public
 COPY examples ./examples
 COPY external/zk-verify-poc /opt/zk-verify-poc
 COPY deploy/start-render.sh /app/deploy/start-render.sh
+COPY deploy/demo-daily-threshold-markets.seed.json /app/deploy/demo-daily-threshold-markets.seed.json
 
 RUN pnpm install --frozen-lockfile
 RUN pnpm build

@@ -1,0 +1,62 @@
+{
+  "2026-03-12": {
+    "marketDate": "2026-03-12",
+    "thresholdF": 68,
+    "lockedAtUnixMs": 1773093509749,
+    "sourceDayIndexWhenLocked": 3,
+    "sourceForecastHighFWhenLocked": 68,
+    "totalPositionBet": 7,
+    "totalYesPositionBet": 4,
+    "marketKey": "13725503365044647120330665725770078747186553884291829887733853008014722481092"
+  },
+  "2026-03-13": {
+    "marketDate": "2026-03-13",
+    "thresholdF": 67,
+    "lockedAtUnixMs": 1773093509749,
+    "sourceDayIndexWhenLocked": 4,
+    "sourceForecastHighFWhenLocked": 67,
+    "totalPositionBet": 6,
+    "totalYesPositionBet": 2,
+    "marketKey": "26090979787320128995639608221276583887052752456026462062306060937901862436694"
+  },
+  "2026-03-14": {
+    "marketDate": "2026-03-14",
+    "thresholdF": 69,
+    "lockedAtUnixMs": 1773093509749,
+    "sourceDayIndexWhenLocked": 5,
+    "sourceForecastHighFWhenLocked": 69,
+    "totalPositionBet": 4,
+    "totalYesPositionBet": 3,
+    "marketKey": "28676758431034804813262068611531296015510081509048701208110645746846845703306"
+  },
+  "2026-03-15": {
+    "marketDate": "2026-03-15",
+    "thresholdF": 71,
+    "lockedAtUnixMs": 1773093509749,
+    "sourceDayIndexWhenLocked": 6,
+    "sourceForecastHighFWhenLocked": 71,
+    "totalPositionBet": 9,
+    "totalYesPositionBet": 6,
+    "marketKey": "6706942851519918004894328469109101696045835940467643801009499486136973494642"
+  },
+  "2026-03-16": {
+    "marketDate": "2026-03-16",
+    "thresholdF": 74,
+    "lockedAtUnixMs": 1773158233656,
+    "sourceDayIndexWhenLocked": 6,
+    "sourceForecastHighFWhenLocked": 74,
+    "totalPositionBet": 6,
+    "totalYesPositionBet": 4,
+    "marketKey": "3460960921272826672453386404190888408120206395647033282540200076686975307334"
+  },
+  "2026-03-11": {
+    "marketDate": "2026-03-11",
+    "marketKey": "7549163416886278057768601839471526928117459602337393282414393464681410917832",
+    "thresholdF": 66,
+    "lockedAtUnixMs": 1773332866530,
+    "sourceDayIndexWhenLocked": 0,
+    "sourceForecastHighFWhenLocked": 66,
+    "totalPositionBet": 0,
+    "totalYesPositionBet": 0
+  }
+}

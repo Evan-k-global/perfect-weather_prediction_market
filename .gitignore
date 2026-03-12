@@ -12,3 +12,4 @@ data/
 /node
 data/private-bet-queue.json
 data/private-batch-history.json
+external/zk-verify-poc/tlsnotary/target/
