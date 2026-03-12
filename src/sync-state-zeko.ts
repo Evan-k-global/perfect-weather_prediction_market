@@ -112,7 +112,6 @@ async function main(): Promise<void> {
   });
   Mina.setActiveInstance(network);
 
-  await PredictionMarketPlatform.compile();
   const zkapp = new PredictionMarketPlatform(zkappAddress);
   const existingState = await loadOperatorState(stateFile);
 
