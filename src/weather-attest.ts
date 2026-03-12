@@ -161,6 +161,26 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function pickAvailablePort(host: string): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.once('error', reject);
+    server.listen(0, host, () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close(() => reject(new Error('failed to pick available port')));
+        return;
+      }
+      const port = address.port;
+      server.close((err) => {
+        if (err) reject(err);
+        else resolve(port);
+      });
+    });
+  });
+}
+
 async function waitForTcpReady(host: string, port: number, timeoutMs: number): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -235,7 +255,10 @@ export async function runWeatherAttestation(): Promise<void> {
   const proverTimeoutMs = Number.parseInt(process.env.TLSN_PROVER_TIMEOUT_MS || '120000', 10);
 
   const notaryHost = envOrDefault('TLSN_NOTARY_HOST', '127.0.0.1');
-  const notaryPort = Number.parseInt(envOrDefault('TLSN_NOTARY_PORT', '7047'), 10);
+  const configuredNotaryPort = process.env.TLSN_NOTARY_PORT;
+  const notaryPort = configuredNotaryPort
+    ? Number.parseInt(configuredNotaryPort, 10)
+    : await pickAvailablePort(notaryHost);
 
   const configuredServerHost = envOrDefault('TLSN_SERVER_HOST', NWS_94027_SERVER_NAME);
   const serverDomain = envOrDefault('TLSN_SERVER_DOMAIN', NWS_94027_SERVER_NAME);

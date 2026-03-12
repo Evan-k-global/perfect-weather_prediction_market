@@ -1,4 +1,4 @@
-use std::{fs::File, io::BufReader, path::Path};
+use std::{fs::File, io::BufReader, path::Path, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
 use futures::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -68,15 +68,26 @@ where
     let driver_task = tokio::spawn(driver);
 
     let verifier_config = VerifierConfig::builder().root_store(root_store).build()?;
+    let commit_timeout_ms = std::env::var("TLSN_NOTARY_COMMIT_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(20_000);
 
-    let verifier = handle
-        .new_verifier(verifier_config)?
-        .commit()
-        .await?
-        .accept()
-        .await?
-        .run()
-        .await?;
+    println!("[notary] creating verifier commit timeout={}ms", commit_timeout_ms);
+    let verifier = tokio::time::timeout(
+        Duration::from_millis(commit_timeout_ms),
+        handle
+            .new_verifier(verifier_config)?
+            .commit(),
+    )
+    .await
+    .map_err(|_| anyhow!("timed out creating verifier commit after {}ms", commit_timeout_ms))??;
+    let verifier = tokio::time::timeout(Duration::from_millis(commit_timeout_ms), verifier.accept())
+        .await
+        .map_err(|_| anyhow!("timed out accepting verifier commit after {}ms", commit_timeout_ms))??;
+    let verifier = tokio::time::timeout(Duration::from_millis(commit_timeout_ms), verifier.run())
+        .await
+        .map_err(|_| anyhow!("timed out running verifier after {}ms", commit_timeout_ms))??;
     println!("[notary] verifier run complete");
 
     let (
