@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import dns from 'node:dns/promises';
 import tls from 'node:tls';
+import net from 'node:net';
 import { NWS_94027_REQUEST_PATH, NWS_94027_SERVER_NAME } from './weather-service.js';
 
 const execFileAsync = promisify(execFile);
@@ -143,6 +144,28 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function waitForTcpReady(host: string, port: number, timeoutMs: number): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const socket = net.connect({ host, port }, () => {
+          socket.end();
+          resolve();
+        });
+        socket.once('error', reject);
+        socket.setTimeout(1000, () => {
+          socket.destroy(new Error('tcp readiness timeout'));
+        });
+      });
+      return;
+    } catch {
+      await sleep(200);
+    }
+  }
+  throw new Error(`timed out waiting for TCP readiness on ${host}:${port}`);
+}
+
 async function runPreflightFetch(url: string): Promise<void> {
   const attempts = Number.parseInt(process.env.WEATHER_PREFLIGHT_ATTEMPTS || '3', 10);
   let lastError: unknown = null;
@@ -203,7 +226,7 @@ export async function runWeatherAttestation(): Promise<void> {
   const endpoint = envOrDefault('TLSN_ENDPOINT', NWS_94027_REQUEST_PATH);
   let serverHost = configuredServerHost;
   try {
-    if (configuredServerHost === NWS_94027_SERVER_NAME) {
+    if (process.env.TLSN_FORCE_SERVER_IP === '1' && configuredServerHost === NWS_94027_SERVER_NAME) {
       const resolved = await dns.lookup(configuredServerHost, { family: 4 });
       serverHost = resolved.address;
       console.log(`Resolved ${configuredServerHost} to IPv4 ${serverHost} for prover TCP connect.`);
@@ -298,7 +321,7 @@ export async function runWeatherAttestation(): Promise<void> {
   });
 
   try {
-    await sleep(1200);
+    await waitForTcpReady(notaryHost, notaryPort, 10_000);
     if (notarySpawnError) {
       throw new Error(`notary failed to start: ${notarySpawnError}`);
     }
