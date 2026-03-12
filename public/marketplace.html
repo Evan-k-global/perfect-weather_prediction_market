@@ -312,7 +312,7 @@
 
           <section class="card">
             <h3>Resolved Markets</h3>
-            <p class="hint">Winning claims are public payout transactions. Use this panel after a market resolves.</p>
+            <p class="hint">Winning claims are public payout transactions. Use this panel after a market resolves at midnight UTC+8.</p>
             <div id="resolvedMarketsPanel" class="small">Connect wallet to load resolved claimable positions.</div>
           </section>
 
@@ -574,7 +574,7 @@
 
       async function refreshDailyMarkets() {
         const res = await req("/api/demo/daily-markets");
-        const todayIso = new Date().toISOString().slice(0, 10);
+        const todayIso = currentPacificDateIso();
         dailyMarkets = (Array.isArray(res.dailyMarkets) ? res.dailyMarkets : [])
           .filter((m) => typeof m.marketDate === "string" && m.marketDate >= todayIso)
           .slice(0, 6);
@@ -621,6 +621,19 @@
         const m = String(next.getUTCMonth() + 1).padStart(2, "0");
         const d = String(next.getUTCDate()).padStart(2, "0");
         return `${y}-${m}-${d}`;
+      }
+
+      function currentPacificDateIso() {
+        const parts = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "America/Los_Angeles",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit"
+        }).formatToParts(new Date());
+        const year = parts.find((p) => p.type === "year")?.value || "0000";
+        const month = parts.find((p) => p.type === "month")?.value || "00";
+        const day = parts.find((p) => p.type === "day")?.value || "00";
+        return `${year}-${month}-${day}`;
       }
 
       function renderIntradaySvg(curve) {
@@ -700,10 +713,20 @@
 
       function wireWeatherDayClicks() {
         document.querySelectorAll(".day-row").forEach((row) => {
-          row.onclick = () => {
+          row.onclick = async () => {
             selectedWeatherDay = Number(row.getAttribute("data-day") || "0");
             document.querySelectorAll(".day-row").forEach((r) => r.classList.remove("active"));
             row.classList.add("active");
+            const selectedRow = latestOracleRows[selectedWeatherDay] || null;
+            if (selectedRow && marketDateSelectEl) {
+              marketDateSelectEl.value = selectedRow.marketDate;
+              applySelectedDailyMarket();
+              try {
+                await refreshMarket();
+              } catch (e) {
+                out.textContent = toJson({ error: String(e) });
+              }
+            }
             renderWeatherVisualizer();
           };
         });
@@ -722,8 +745,7 @@
                   <div class="odds-yes"></div>
                   <div class="odds-no"></div>
                 </div>
-                <div class="tiny">OVER ${row.yesPct.toFixed(1)}% / UNDER ${row.noPct.toFixed(1)}%</div>
-                <div class="tiny">Pot ${row.potLabel}</div>
+                <div class="tiny">OVER ${row.yesPct.toFixed(1)}% / UNDER ${row.noPct.toFixed(1)}% | Pot ${row.potLabel}</div>
               </td>
             </tr>`
           ))
