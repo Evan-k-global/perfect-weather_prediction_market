@@ -4,6 +4,12 @@ import { runWeatherSync } from './weather-hourly-sync.js';
 import { cleanupData } from './cleanup-data.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { loadOperatorState } from './state-store.js';
+import { currentLocalDate, nowLocalHour } from './weather-service.js';
+
+const execFileAsync = promisify(execFile);
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -22,9 +28,63 @@ async function runOnce(cycle: number): Promise<void> {
 
   await runWeatherAttestation();
   await runWeatherSync();
+  await maybeEnsureForwardDailyMarkets();
+  await maybeResolvePassedDailyMarkets();
 
   const ended = new Date().toISOString();
   console.log(`[weather-daemon] cycle=${cycle} done=${ended}`);
+}
+
+function marketDateFromTitle(title: string | undefined): string | null {
+  if (!title) return null;
+  const match = /^Atherton, CA - (\d{4}-\d{2}-\d{2}) Over\/Under \d+F$/.exec(title);
+  return match ? match[1] : null;
+}
+
+async function maybeResolvePassedDailyMarkets(): Promise<void> {
+  const stateFile = process.env.STATE_FILE || './data/operator-state.json';
+  const attestation = process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json';
+  const state = await loadOperatorState(stateFile);
+  const todayIso = currentLocalDate();
+  const nowHour = nowLocalHour();
+  const projectRoot = process.cwd();
+  for (const [marketKey, stored] of Object.entries(state.markets || {})) {
+    if (stored.resolved === '1') continue;
+    const meta = state.marketMeta?.[marketKey];
+    const marketDate = marketDateFromTitle(meta?.title);
+    if (!marketDate) continue;
+    const shouldResolve = marketDate < todayIso || (marketDate === todayIso && nowHour >= 19);
+    if (!shouldResolve) continue;
+    console.log(`[weather-daemon] resolving on-chain daily market for ${marketDate}`);
+    const { stdout, stderr } = await execFileAsync(
+      'pnpm',
+      ['resolve-daily-market:zeko', '--', '--market-date', marketDate, '--attestation', attestation, '--state-file', stateFile],
+      { cwd: projectRoot, env: process.env }
+    );
+    if (stdout.trim()) console.log(stdout.trim());
+    if (stderr.trim()) console.error(stderr.trim());
+  }
+}
+
+async function maybeEnsureForwardDailyMarkets(): Promise<void> {
+  const stateFile = process.env.STATE_FILE || './data/operator-state.json';
+  const dailyMarketsFile = process.env.DEMO_DAILY_MARKETS_FILE || './data/demo-daily-threshold-markets.json';
+  const projectRoot = process.cwd();
+  console.log('[weather-daemon] ensuring forward daily markets are created on-chain');
+  const { stdout, stderr } = await execFileAsync(
+    'pnpm',
+    [
+      'ensure-daily-markets:zeko',
+      '--',
+      '--state-file',
+      stateFile,
+      '--daily-markets-file',
+      dailyMarketsFile
+    ],
+    { cwd: projectRoot, env: process.env }
+  );
+  if (stdout.trim()) console.log(stdout.trim());
+  if (stderr.trim()) console.error(stderr.trim());
 }
 
 async function writeHeartbeat(
