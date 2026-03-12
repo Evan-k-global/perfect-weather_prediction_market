@@ -33,8 +33,10 @@ function unique(values: string[]): string[] {
 
 function detectPocRootCandidates(): string[] {
   const envRoot = process.env.ZKVERIFY_POC_ROOT || '';
+  const bundled = path.resolve(PROJECT_ROOT, 'external', 'zk-verify-poc');
+  const container = '/opt/zk-verify-poc';
   const fixed = '/Users/evankereiakes/Documents/Codex/tokenized-asset-protocol/external/zk-verify-poc';
-  return unique([envRoot, fixed]);
+  return unique([envRoot, container, bundled, fixed]);
 }
 
 async function detectAttestationPath(): Promise<{ selected: string | null; copiedFrom?: string }> {

@@ -15,11 +15,26 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 
-const defaultPocRoot =
-  '/Users/evankereiakes/Documents/Codex/tokenized-asset-protocol/external/zk-verify-poc';
-
 function envOrDefault(name: string, fallback: string): string {
   return process.env[name] || fallback;
+}
+
+async function detectPocRoot(): Promise<string> {
+  const candidates = [
+    process.env.ZKVERIFY_POC_ROOT || '',
+    '/opt/zk-verify-poc',
+    path.resolve(projectRoot, 'external', 'zk-verify-poc'),
+    '/Users/evankereiakes/Documents/Codex/tokenized-asset-protocol/external/zk-verify-poc'
+  ].filter((value) => value.length > 0);
+
+  for (const candidate of candidates) {
+    const tlsnRoot = path.resolve(candidate, 'tlsnotary');
+    if (await exists(tlsnRoot)) {
+      return candidate;
+    }
+  }
+
+  return candidates[0] || path.resolve(projectRoot, 'external', 'zk-verify-poc');
 }
 
 async function exists(pathname: string): Promise<boolean> {
@@ -138,7 +153,7 @@ async function waitForExitWithTimeout(
 }
 
 export async function runWeatherAttestation(): Promise<void> {
-  const pocRoot = envOrDefault('ZKVERIFY_POC_ROOT', defaultPocRoot);
+  const pocRoot = await detectPocRoot();
   const tlsnRoot = path.resolve(pocRoot, 'tlsnotary');
   const proverSource = path.resolve(tlsnRoot, 'src', 'bin', 'prover.rs');
   const notaryBin = path.resolve(tlsnRoot, 'target', 'debug', 'notary');
