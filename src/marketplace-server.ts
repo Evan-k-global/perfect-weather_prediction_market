@@ -708,6 +708,16 @@ async function loadTlsnStatus(
   }
 }
 
+async function loadDisplayWeatherSnapshot(): Promise<Awaited<ReturnType<typeof loadWeatherSnapshot>>> {
+  const snapshot = await loadWeatherSnapshot();
+  if (snapshot) return snapshot;
+  try {
+    return await fetchNws94027Snapshot(NWS_94027_STRICT_URL);
+  } catch {
+    return null;
+  }
+}
+
 async function savePrivateBatchHistory(
   entries: PrivateBatchHistoryEntry[],
   filePath: string = PRIVATE_BATCH_HISTORY_FILE
@@ -1954,7 +1964,7 @@ async function main(): Promise<void> {
         const statePath = url.searchParams.get('state_file') || defaultStatePath;
         const state = await loadOperatorState(statePath);
         const markets = toMarketViews(state, currentSlot);
-        const snapshot = await loadWeatherSnapshot();
+        const snapshot = await loadDisplayWeatherSnapshot();
         const oracle = getOracleFreshness(snapshot, Date.now());
         writeJson(res, 200, { count: markets.length, markets, oracle, oraclePolicy: getOraclePolicy() });
         return;
@@ -2391,7 +2401,7 @@ async function main(): Promise<void> {
         const defaultThresholdF = resolvePrimaryMarketThresholdF(state);
         const thresholdF = Number.parseFloat(url.searchParams.get('threshold_f') || String(defaultThresholdF));
         const selectedDate = url.searchParams.get('market_date') || currentLocalDate();
-        const snapshot = await loadWeatherSnapshot();
+        const snapshot = await loadDisplayWeatherSnapshot();
         const tlsnStatus = await loadTlsnStatus();
         const oracle = getOracleFreshness(snapshot, Date.now());
         const baseDailyMarkets =
