@@ -139,6 +139,10 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(10_000);
+    let commit_timeout_ms = std::env::var("TLSN_COMMIT_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(20_000);
     let serverConnectTimeoutMs = std::env::var("TLSN_SERVER_CONNECT_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -161,19 +165,24 @@ async fn main() -> Result<()> {
     let (driver, mut handle) = session.split();
     let driver_task = tokio::spawn(driver);
 
-    let prover = handle
-        .new_prover(ProverConfig::builder().build()?)?
-        .commit(
-            TlsCommitConfig::builder()
-                .protocol(
-                    MpcTlsConfig::builder()
-                        .max_sent_data(MAX_SENT_DATA)
-                        .max_recv_data(MAX_RECV_DATA)
-                        .build()?,
-                )
-                .build()?,
-        )
-        .await?;
+    println!("[prover] creating prover commit timeout={}ms", commit_timeout_ms);
+    let prover = tokio::time::timeout(
+        Duration::from_millis(commit_timeout_ms),
+        handle
+            .new_prover(ProverConfig::builder().build()?)?
+            .commit(
+                TlsCommitConfig::builder()
+                    .protocol(
+                        MpcTlsConfig::builder()
+                            .max_sent_data(MAX_SENT_DATA)
+                            .max_recv_data(MAX_RECV_DATA)
+                            .build()?,
+                    )
+                    .build()?,
+            ),
+    )
+    .await
+    .map_err(|_| anyhow!("timed out creating prover commit after {}ms", commit_timeout_ms))??;
 
     println!(
         "[prover] connecting to server {}:{} ({}) timeout={}ms",
