@@ -342,8 +342,6 @@
       const resolvedMarketsPanelEl = document.getElementById("resolvedMarketsPanel");
       const placeMarketBetBtn = document.getElementById("placeMarketBet");
       const betProgressEl = document.getElementById("betProgress");
-      const thresholdLabelEl = document.getElementById("thresholdLabel");
-      const thresholdLabelNoEl = document.getElementById("thresholdLabelNo");
       const betYesOptionEl = document.getElementById("betYesOption");
       const betNoOptionEl = document.getElementById("betNoOption");
       const marketOddsBarEl = document.getElementById("marketOddsBar");
@@ -555,8 +553,6 @@
         currentMarketKey = String(selected.marketKey || "");
         currentMarketResolved = Boolean(selected.onChainResolved);
         currentThresholdF = Number.isFinite(Number(selected.thresholdF)) ? Number(selected.thresholdF) : 68;
-        thresholdLabelEl.textContent = String(currentThresholdF);
-        thresholdLabelNoEl.textContent = String(currentThresholdF);
         betYesOptionEl.textContent = `OVER (Over ${currentThresholdF}F)`;
         betNoOptionEl.textContent = `UNDER (${currentThresholdF}F or Lower)`;
         const total = Number(selected.onChainCreated ? selected.onChainPoolTmina : selected.totalPositionBet);
