@@ -1,6 +1,6 @@
 import './env.js';
 import { randomBytes } from 'node:crypto';
-import { access, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
@@ -51,6 +51,12 @@ async function runChecked(cmd: string, args: string[], cwd?: string): Promise<vo
     cwd,
     env: process.env
   });
+}
+
+async function persistTlsnLogs(outputDir: string, proverLogs: string, notaryLogs: string): Promise<void> {
+  await mkdir(outputDir, { recursive: true });
+  await writeFile(path.join(outputDir, 'last-prover.log'), proverLogs, 'utf8');
+  await writeFile(path.join(outputDir, 'last-notary.log'), notaryLogs, 'utf8');
 }
 
 async function patchTlsnProverLimits(proverPath: string, maxRecvData: number): Promise<boolean> {
@@ -208,6 +214,7 @@ export async function runWeatherAttestation(): Promise<void> {
 
   const outputDir = path.resolve(projectRoot, 'data', 'tlsn-output', 'latest');
   const outputAttestation = path.resolve(outputDir, 'attestation.json');
+  const archiveDir = path.resolve(projectRoot, 'data', 'tlsn-output', 'archive');
   const localAttestation = path.resolve(projectRoot, 'data', 'weather-attestation.json');
   const certPath = path.resolve(projectRoot, 'data', 'tlsn-certs', `${serverDomain}.pem`);
 
@@ -221,6 +228,17 @@ export async function runWeatherAttestation(): Promise<void> {
     throw new Error(`tlsnotary repo not found: ${tlsnRoot}. Set ZKVERIFY_POC_ROOT to your zk-verify-poc path.`);
   }
 
+  console.log('[weather-attest] tlsn config:');
+  console.log(`  pocRoot=${pocRoot}`);
+  console.log(`  tlsnRoot=${tlsnRoot}`);
+  console.log(`  notaryBin=${notaryBin}`);
+  console.log(`  proverBin=${proverBin}`);
+  console.log(`  certPath=${certPath}`);
+  console.log(`  outputDir=${outputDir}`);
+  console.log(`  serverHost=${serverHost}`);
+  console.log(`  serverDomain=${serverDomain}`);
+  console.log(`  endpoint=${endpoint}`);
+
   if (await exists(proverSource)) {
     const patched = await patchTlsnProverLimits(proverSource, maxRecvData);
     if (patched) {
@@ -232,12 +250,12 @@ export async function runWeatherAttestation(): Promise<void> {
     }
   }
 
-  if (!(await exists(notaryBin)) || !(await exists(proverBin))) {
+  const forceRebuild = process.env.TLSN_FORCE_REBUILD === '1';
+  if (forceRebuild || !(await exists(notaryBin)) || !(await exists(proverBin))) {
     console.log('Building tlsnotary binaries...');
     await runChecked('cargo', ['build', '--manifest-path', path.resolve(tlsnRoot, 'Cargo.toml')], tlsnRoot);
   } else {
-    // Rebuild to ensure potential source patch is applied.
-    await runChecked('cargo', ['build', '--manifest-path', path.resolve(tlsnRoot, 'Cargo.toml')], tlsnRoot);
+    console.log('Using existing tlsnotary binaries.');
   }
 
   console.log('Preparing trust anchor certificate...');
@@ -249,6 +267,7 @@ export async function runWeatherAttestation(): Promise<void> {
     cwd: tlsnRoot,
     env: {
       ...process.env,
+      RUST_BACKTRACE: process.env.RUST_BACKTRACE || '1',
       RUST_LOG: process.env.TLSN_NOTARY_RUST_LOG || process.env.RUST_LOG || 'info',
       TLSN_NOTARY_HOST: notaryHost,
       TLSN_NOTARY_PORT: String(notaryPort),
@@ -292,6 +311,7 @@ export async function runWeatherAttestation(): Promise<void> {
       cwd: tlsnRoot,
       env: {
         ...process.env,
+        RUST_BACKTRACE: process.env.RUST_BACKTRACE || '1',
         RUST_LOG:
           process.env.TLSN_PROVER_RUST_LOG || process.env.RUST_LOG || 'info,mpc_tls::leader=error',
         TLSN_NOTARY_HOST: notaryHost,
@@ -307,6 +327,8 @@ export async function runWeatherAttestation(): Promise<void> {
     });
 
     let proverLogs = '';
+    let proverSpawnError: string | null = null;
+    let proverExited = false;
     prover.stdout?.on('data', (chunk) => {
       const s = chunk.toString('utf8');
       proverLogs += s;
@@ -317,13 +339,28 @@ export async function runWeatherAttestation(): Promise<void> {
       proverLogs += s;
       process.stderr.write(s);
     });
+    prover.on('error', (err) => {
+      proverSpawnError = String(err);
+    });
+    prover.on('exit', () => {
+      proverExited = true;
+    });
 
     const proverCode = await waitForExitWithTimeout(prover, proverTimeoutMs, () => {
       prover.kill('SIGTERM');
     });
+    await persistTlsnLogs(outputDir, proverLogs, notaryLogs);
+    if (proverSpawnError) {
+      throw new Error(`prover failed to start: ${proverSpawnError}. Logs written to ${outputDir}`);
+    }
+    if (!proverExited && proverCode === 124) {
+      throw new Error(`prover timed out after ${proverTimeoutMs}ms. Logs written to ${outputDir}`);
+    }
     if (proverCode !== 0) {
       throw new Error(
-        `prover exited with code ${proverCode}. Logs:\n${proverLogs || '(no prover logs)'}`
+        `prover exited with code ${proverCode}. Logs written to ${outputDir}.\nProver logs:\n${
+          proverLogs || '(no prover logs)'
+        }\nNotary logs:\n${notaryLogs || '(no notary logs)'}`
       );
     }
   } finally {
@@ -336,6 +373,7 @@ export async function runWeatherAttestation(): Promise<void> {
   }
 
   await copyFile(outputAttestation, localAttestation);
+  await archiveAttestation(outputAttestation, archiveDir);
 
   console.log('Weather attestation generated.');
   console.log('Attestation file:', localAttestation);
@@ -343,6 +381,50 @@ export async function runWeatherAttestation(): Promise<void> {
   console.log('export WEATHER_REQUIRE_TLSN=1');
   console.log(`export WEATHER_TLSN_ATTESTATION_FILE=${localAttestation}`);
   console.log('pnpm weather:sync');
+}
+
+function sanitizeTsForPath(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toISOString().replace(/[:.]/g, '-');
+}
+
+async function archiveAttestation(sourcePath: string, archiveDir: string): Promise<void> {
+  const raw = await readFile(sourcePath, 'utf8');
+  const parsed = JSON.parse(raw) as { timestamp?: number; request_path?: string };
+  const ts = typeof parsed.timestamp === 'number' && Number.isFinite(parsed.timestamp)
+    ? parsed.timestamp
+    : Math.floor(Date.now() / 1000);
+  await mkdir(archiveDir, { recursive: true });
+  const archived = path.join(archiveDir, `${sanitizeTsForPath(ts)}-attestation.json`);
+  await copyFile(sourcePath, archived);
+}
+
+export async function findArchivedAttestationForMarketDate(
+  marketDateIso: string,
+  archiveDir: string = path.resolve(projectRoot, 'data', 'tlsn-output', 'archive')
+): Promise<string | null> {
+  if (!(await exists(archiveDir))) return null;
+  const entries = (await readdir(archiveDir))
+    .filter((name) => name.endsWith('-attestation.json'))
+    .sort()
+    .reverse();
+  for (const name of entries) {
+    const fullPath = path.join(archiveDir, name);
+    try {
+      const raw = await readFile(fullPath, 'utf8');
+      const parsed = JSON.parse(raw) as { response_body?: string };
+      if (typeof parsed.response_body !== 'string') continue;
+      const responseJson = JSON.parse(parsed.response_body) as {
+        properties?: { periods?: Array<{ startTime?: string }> };
+      };
+      const periods = responseJson.properties?.periods || [];
+      if (periods.some((period) => typeof period.startTime === 'string' && period.startTime.slice(0, 10) === marketDateIso)) {
+        return fullPath;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }
 
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {

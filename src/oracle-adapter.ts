@@ -30,6 +30,7 @@ export interface WeatherObservationSelection {
   thresholdTenthC: bigint;
   observedAtSlot: bigint;
   nonce: Field;
+  marketDateIso?: string;
 }
 
 export function hashUtf8StringPoseidon(value: string): Field {
@@ -112,11 +113,39 @@ export function assertAttestationPolicy(
 
 export function extractObservedTempTenthC(
   attestation: TlsnWeatherAttestation,
-  jsonPath: string[]
+  jsonPath: string[],
+  marketDateIso?: string
 ): UInt64 {
   const responseJson = toObject(JSON.parse(attestation.response_body), 'response_body');
-  const raw = readPath(responseJson, jsonPath);
-  const tempC = toFiniteNumber(raw, `response_body.${jsonPath.join('.')}`);
+  let tempF: number | null = null;
+
+  if (marketDateIso) {
+    const properties = toObject(responseJson.properties, 'response_body.properties');
+    const periods = properties.periods;
+    if (!Array.isArray(periods)) {
+      throw new Error('response_body.properties.periods must be an array');
+    }
+    const matches = periods.filter((value) => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+      const period = value as Record<string, unknown>;
+      const startTime = typeof period.startTime === 'string' ? period.startTime : '';
+      const temperature = period.temperature;
+      const isDaytime = period.isDaytime;
+      if (!startTime || typeof temperature !== 'number' || !Number.isFinite(temperature)) return false;
+      if (typeof isDaytime === 'boolean' && !isDaytime) return false;
+      const day = startTime.slice(0, 10);
+      return day === marketDateIso;
+    }) as Array<Record<string, unknown>>;
+    if (matches.length === 0) {
+      throw new Error(`forecast period for market date ${marketDateIso} not found`);
+    }
+    tempF = Math.max(...matches.map((period) => Number(period.temperature)));
+  } else {
+    const raw = readPath(responseJson, jsonPath);
+    tempF = toFiniteNumber(raw, `response_body.${jsonPath.join('.')}`);
+  }
+
+  const tempC = ((tempF - 32) * 5) / 9;
   const tenthC = Math.round(tempC * 10);
   // Bound weather feed values to a sane operational range.
   if (tenthC < 0 || tenthC > 800) {
@@ -137,7 +166,11 @@ export function buildWeatherOracleStatementFromAttestation(
   requestPathHash: Field;
 } {
   assertAttestationPolicy(attestation, policy, nowMs);
-  const observedValueTenthC = extractObservedTempTenthC(attestation, selection.jsonPath);
+  const observedValueTenthC = extractObservedTempTenthC(
+    attestation,
+    selection.jsonPath,
+    selection.marketDateIso
+  );
   const thresholdValueTenthC = UInt64.from(selection.thresholdTenthC);
   const outcome = observedValueTenthC.greaterThan(thresholdValueTenthC);
 

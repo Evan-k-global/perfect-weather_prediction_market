@@ -138,6 +138,8 @@ async function main(): Promise<void> {
     );
   }
   const meta = state.marketMeta?.[marketKey.toString()];
+  const marketDateMatch = /^Atherton, CA - (\d{4}-\d{2}-\d{2}) Over\/Under \d+F$/.exec(meta?.title || '');
+  const marketDateIso = marketDateMatch ? marketDateMatch[1] : undefined;
   if (meta) {
     if (!meta.settlementSource.includes(allowedServerName)) {
       throw new Error('allowed server does not match market settlement source');
@@ -160,10 +162,11 @@ async function main(): Promise<void> {
       maxAgeMs
     },
     {
-      jsonPath: ['current', 'temp_c'],
+      jsonPath: ['properties', 'periods'],
       thresholdTenthC: BigInt(oldLeaf.thresholdValueTenthC.toString()),
       observedAtSlot,
-      nonce
+      nonce,
+      marketDateIso
     },
     Date.now()
   );

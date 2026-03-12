@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { Field } from 'o1js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
+import { findArchivedAttestationForMarketDate } from './weather-attest.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -42,10 +43,14 @@ function deriveMarketKey(dateIso: string): string {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const marketDate = parseArgValue(args, 'market-date');
-  const attestation = parseOptionalArgValue(args, 'attestation') || './data/tlsn-output/latest/attestation.json';
+  const explicitAttestation = parseOptionalArgValue(args, 'attestation');
   const stateFile = parseOptionalArgValue(args, 'state-file') || './data/operator-state.json';
   const observedAtSlot = parseOptionalArgValue(args, 'observed-at-slot');
   const projectRoot = process.cwd();
+  const attestation =
+    explicitAttestation ||
+    (await findArchivedAttestationForMarketDate(marketDate)) ||
+    './data/tlsn-output/latest/attestation.json';
   await readFile(attestation, 'utf8');
   const marketKey = deriveMarketKey(marketDate);
   const commandArgs = [
@@ -69,6 +74,7 @@ async function main(): Promise<void> {
   if (stderr.trim()) console.error(stderr.trim());
   console.log('Resolved daily market date:', marketDate);
   console.log('Market key:', marketKey);
+  console.log('Attestation:', attestation);
 }
 
 main().catch((error: unknown) => {
