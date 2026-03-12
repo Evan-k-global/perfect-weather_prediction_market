@@ -15,6 +15,7 @@ const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
+const DEFAULT_TLSN_STATUS_PATH = path.resolve(projectRoot, 'data', 'tlsn-output', 'latest', 'status.json');
 
 function envOrDefault(name: string, fallback: string): string {
   return process.env[name] || fallback;
@@ -58,6 +59,22 @@ async function persistTlsnLogs(outputDir: string, proverLogs: string, notaryLogs
   await mkdir(outputDir, { recursive: true });
   await writeFile(path.join(outputDir, 'last-prover.log'), proverLogs, 'utf8');
   await writeFile(path.join(outputDir, 'last-notary.log'), notaryLogs, 'utf8');
+}
+
+async function writeTlsnStatus(
+  status: {
+    stage: string;
+    ok: boolean;
+    ts: string;
+    message?: string;
+    serverHost?: string;
+    serverDomain?: string;
+    endpoint?: string;
+  },
+  filePath: string = DEFAULT_TLSN_STATUS_PATH
+): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, JSON.stringify(status, null, 2), 'utf8');
 }
 
 async function patchTlsnProverLimits(proverPath: string, maxRecvData: number): Promise<boolean> {
@@ -242,9 +259,21 @@ export async function runWeatherAttestation(): Promise<void> {
   const certPath = path.resolve(projectRoot, 'data', 'tlsn-certs', `${serverDomain}.pem`);
 
   const signingKeyHex = process.env.TLSNOTARY_SIGNING_KEY_HEX || randomBytes(32).toString('hex');
+  const statusPath = process.env.TLSN_STATUS_FILE || DEFAULT_TLSN_STATUS_PATH;
 
   const preflightUrl = `https://${serverDomain}${endpoint}`;
   console.log('Preflight target URL:', preflightUrl);
+  await writeTlsnStatus(
+    {
+      stage: 'preflight',
+      ok: false,
+      ts: new Date().toISOString(),
+      serverHost,
+      serverDomain,
+      endpoint
+    },
+    statusPath
+  );
   await runPreflightFetch(preflightUrl);
 
   if (!(await exists(tlsnRoot))) {
@@ -282,10 +311,12 @@ export async function runWeatherAttestation(): Promise<void> {
   }
 
   console.log('Preparing trust anchor certificate...');
+  await writeTlsnStatus({ stage: 'prepare-cert', ok: false, ts: new Date().toISOString(), serverHost, serverDomain, endpoint }, statusPath);
   await extractRootLikeCertPem(serverDomain, serverPort, certPath);
   await mkdir(outputDir, { recursive: true });
 
   console.log('Starting tlsnotary notary...');
+  await writeTlsnStatus({ stage: 'notary-starting', ok: false, ts: new Date().toISOString(), serverHost, serverDomain, endpoint }, statusPath);
   const notary = spawn(notaryBin, [], {
     cwd: tlsnRoot,
     env: {
@@ -323,13 +354,16 @@ export async function runWeatherAttestation(): Promise<void> {
   try {
     await waitForTcpReady(notaryHost, notaryPort, 10_000);
     if (notarySpawnError) {
+      await writeTlsnStatus({ stage: 'notary-error', ok: false, ts: new Date().toISOString(), message: notarySpawnError, serverHost, serverDomain, endpoint }, statusPath);
       throw new Error(`notary failed to start: ${notarySpawnError}`);
     }
     if (notaryExited) {
+      await writeTlsnStatus({ stage: 'notary-exited', ok: false, ts: new Date().toISOString(), message: notaryLogs || '(no notary logs)', serverHost, serverDomain, endpoint }, statusPath);
       throw new Error(`notary exited early. Logs:\n${notaryLogs || '(no notary logs)'}`);
     }
 
     console.log('Running tlsnotary prover against weather source...');
+    await writeTlsnStatus({ stage: 'prover-starting', ok: false, ts: new Date().toISOString(), serverHost, serverDomain, endpoint }, statusPath);
     const prover = spawn(proverBin, [], {
       cwd: tlsnRoot,
       env: {
@@ -374,12 +408,15 @@ export async function runWeatherAttestation(): Promise<void> {
     });
     await persistTlsnLogs(outputDir, proverLogs, notaryLogs);
     if (proverSpawnError) {
+      await writeTlsnStatus({ stage: 'prover-error', ok: false, ts: new Date().toISOString(), message: proverSpawnError, serverHost, serverDomain, endpoint }, statusPath);
       throw new Error(`prover failed to start: ${proverSpawnError}. Logs written to ${outputDir}`);
     }
     if (!proverExited && proverCode === 124) {
+      await writeTlsnStatus({ stage: 'prover-timeout', ok: false, ts: new Date().toISOString(), message: `timed out after ${proverTimeoutMs}ms`, serverHost, serverDomain, endpoint }, statusPath);
       throw new Error(`prover timed out after ${proverTimeoutMs}ms. Logs written to ${outputDir}`);
     }
     if (proverCode !== 0) {
+      await writeTlsnStatus({ stage: 'prover-exited', ok: false, ts: new Date().toISOString(), message: `exit code ${proverCode}`, serverHost, serverDomain, endpoint }, statusPath);
       throw new Error(
         `prover exited with code ${proverCode}. Logs written to ${outputDir}.\nProver logs:\n${
           proverLogs || '(no prover logs)'
@@ -392,11 +429,13 @@ export async function runWeatherAttestation(): Promise<void> {
   }
 
   if (!(await exists(outputAttestation))) {
+    await writeTlsnStatus({ stage: 'attestation-missing', ok: false, ts: new Date().toISOString(), message: `missing ${outputAttestation}`, serverHost, serverDomain, endpoint }, statusPath);
     throw new Error(`attestation output missing at ${outputAttestation}`);
   }
 
   await copyFile(outputAttestation, localAttestation);
   await archiveAttestation(outputAttestation, archiveDir);
+  await writeTlsnStatus({ stage: 'done', ok: true, ts: new Date().toISOString(), serverHost, serverDomain, endpoint }, statusPath);
 
   console.log('Weather attestation generated.');
   console.log('Attestation file:', localAttestation);

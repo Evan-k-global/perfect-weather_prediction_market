@@ -75,6 +75,7 @@ const DEMO_DAILY_MARKETS_FILE = './data/demo-daily-threshold-markets.json';
 const PRIVATE_BET_QUEUE_FILE = './data/private-bet-queue.json';
 const PRIVATE_BATCH_HISTORY_FILE = './data/private-batch-history.json';
 const DAILY_SETTLE_STATE_FILE = './data/daily-settle-state.json';
+const TLSN_STATUS_FILE = './data/tlsn-output/latest/status.json';
 
 type AgentModel = {
   id: string;
@@ -684,6 +685,26 @@ async function loadPrivateBatchHistory(filePath: string = PRIVATE_BATCH_HISTORY_
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
+  }
+}
+
+async function loadTlsnStatus(
+  filePath: string = TLSN_STATUS_FILE
+): Promise<{ stage: string; ok: boolean; ts: string; message?: string } | null> {
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    const parsed = JSON.parse(raw) as { stage?: string; ok?: boolean; ts?: string; message?: string };
+    if (typeof parsed.stage !== 'string' || typeof parsed.ok !== 'boolean' || typeof parsed.ts !== 'string') {
+      return null;
+    }
+    return {
+      stage: parsed.stage,
+      ok: parsed.ok,
+      ts: parsed.ts,
+      message: typeof parsed.message === 'string' ? parsed.message : undefined
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -2371,6 +2392,7 @@ async function main(): Promise<void> {
         const thresholdF = Number.parseFloat(url.searchParams.get('threshold_f') || String(defaultThresholdF));
         const selectedDate = url.searchParams.get('market_date') || currentLocalDate();
         const snapshot = await loadWeatherSnapshot();
+        const tlsnStatus = await loadTlsnStatus();
         const oracle = getOracleFreshness(snapshot, Date.now());
         const baseDailyMarkets =
           snapshot || Object.keys(await loadDemoDailyMarkets()).length > 0
@@ -2400,6 +2422,7 @@ async function main(): Promise<void> {
           sourceUrl: NWS_94027_DIGITAL_URL,
           strictSettlementSourceUrl: NWS_94027_STRICT_URL,
           snapshot,
+          tlsnStatus,
           oracle,
           oraclePolicy: getOraclePolicy(),
           thresholdF,
