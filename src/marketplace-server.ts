@@ -708,6 +708,28 @@ async function loadTlsnStatus(
   }
 }
 
+function normalizeTlsnStatus(
+  snapshot: Awaited<ReturnType<typeof loadWeatherSnapshot>>,
+  tlsnStatus: Awaited<ReturnType<typeof loadTlsnStatus>>
+) {
+  if (
+    snapshot &&
+    snapshot.verified &&
+    snapshot.verificationMode === 'zktls' &&
+    tlsnStatus &&
+    Number.isFinite(Date.parse(tlsnStatus.ts)) &&
+    snapshot.fetchedAtUnixMs >= Date.parse(tlsnStatus.ts)
+  ) {
+    return {
+      stage: 'done',
+      ok: true,
+      ts: new Date(snapshot.fetchedAtUnixMs).toISOString(),
+      message: 'latest zkTLS snapshot verified'
+    };
+  }
+  return tlsnStatus;
+}
+
 async function loadDisplayWeatherSnapshot(): Promise<Awaited<ReturnType<typeof loadWeatherSnapshot>>> {
   const snapshot = await loadWeatherSnapshot();
   if (snapshot) return snapshot;
@@ -920,6 +942,9 @@ function attachOnChainDailyMarketState(
     const onChain = views.get(String(market.marketKey)) || null;
     return {
       ...market,
+      thresholdF: onChain ? Number(onChain.thresholdF) : market.thresholdF,
+      totalPositionBet: onChain ? Number(onChain.totalPositionBet) : market.totalPositionBet,
+      totalYesPositionBet: onChain ? Number(onChain.totalYesPositionBet) : market.totalYesPositionBet,
       onChainCreated: Boolean(onChain),
       onChainResolved: onChain ? Boolean(onChain.resolved) : false,
       onChainPoolTmina: onChain ? Number(onChain.totalPositionBet) : 0,
@@ -2402,7 +2427,7 @@ async function main(): Promise<void> {
         const thresholdF = Number.parseFloat(url.searchParams.get('threshold_f') || String(defaultThresholdF));
         const selectedDate = url.searchParams.get('market_date') || currentLocalDate();
         const snapshot = await loadDisplayWeatherSnapshot();
-        const tlsnStatus = await loadTlsnStatus();
+        const tlsnStatus = normalizeTlsnStatus(snapshot, await loadTlsnStatus());
         const oracle = getOracleFreshness(snapshot, Date.now());
         const baseDailyMarkets =
           snapshot || Object.keys(await loadDemoDailyMarkets()).length > 0
