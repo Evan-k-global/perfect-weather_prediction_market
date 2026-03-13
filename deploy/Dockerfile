@@ -28,12 +28,13 @@ COPY public ./public
 COPY examples ./examples
 COPY external/zk-verify-poc /opt/zk-verify-poc
 COPY deploy/start-render.sh /app/deploy/start-render.sh
+COPY deploy/start-operator-worker.sh /app/deploy/start-operator-worker.sh
 COPY deploy/demo-daily-threshold-markets.seed.json /app/deploy/demo-daily-threshold-markets.seed.json
 
 RUN pnpm install --frozen-lockfile
 RUN pnpm build
 RUN cargo build --manifest-path /opt/zk-verify-poc/tlsnotary/Cargo.toml
-RUN chmod +x /app/deploy/start-render.sh
+RUN chmod +x /app/deploy/start-render.sh /app/deploy/start-operator-worker.sh
 
 ENV NODE_ENV=production
 ENV ZKVERIFY_POC_ROOT=/opt/zk-verify-poc

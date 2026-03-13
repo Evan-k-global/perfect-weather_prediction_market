@@ -109,6 +109,13 @@ Recommended once you want stricter operational boundaries:
   - on-chain market creation
   - on-chain resolution
 
+The repo now includes this split mode directly for Render:
+
+- web service:
+  - `perfect-weather-prediction-market`
+- worker service:
+  - `perfect-weather-operator-worker`
+
 Why split:
 
 - isolates user traffic from proving spikes

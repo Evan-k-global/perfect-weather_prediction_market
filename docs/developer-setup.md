@@ -149,7 +149,7 @@ Recommended for production-hardening:
   - `marketplace:serve`
   - optional oracle read APIs
 - worker/operator service:
-  - `weather:daemon`
+  - hosted operator worker
   - private batch proving
   - ensure/resolve scripts
 
@@ -158,6 +158,32 @@ Tradeoff:
 - more moving parts
 - cleaner failure isolation
 - lower risk of web-instance OOM during proving
+
+Current repo support:
+
+- `render.yaml` now includes:
+  - web service: `perfect-weather-prediction-market`
+  - worker service: `perfect-weather-operator-worker`
+- worker entrypoint:
+  - `pnpm operator:worker`
+
+Required worker env:
+
+```bash
+OPERATOR_BASE_URL=https://perfect-weather-prediction-market-w6k6.onrender.com
+OPERATOR_ACTION_TOKEN=<same token configured on web service>
+OPERATOR_WORKER_INTERVAL_MS=30000
+OPERATOR_WORKER_RETRY_MS=120000
+```
+
+Recommended split settings:
+
+- web service:
+  - `PRIVATE_BATCH_INTERVAL_MS=0`
+  - `WEATHER_DAEMON_CHAIN_ACTIONS=0`
+- worker service:
+  - use `OPERATOR_BASE_URL`
+  - use the same `OPERATOR_ACTION_TOKEN`
 
 Recommended Render env vars:
 

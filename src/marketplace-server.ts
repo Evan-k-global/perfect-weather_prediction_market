@@ -2,7 +2,7 @@ import './env.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -1052,6 +1052,27 @@ async function refreshState(projectRoot: string): Promise<void> {
   await runProjectCommand(projectRoot, ['sync-state:zeko', '--', '--state-file', './data/operator-state.json']);
 }
 
+function getOperatorActionToken(): string | null {
+  const raw = process.env.OPERATOR_ACTION_TOKEN;
+  if (!raw) return null;
+  const token = raw.trim();
+  return token.length > 0 ? token : null;
+}
+
+function requireOperatorAuthorization(req: IncomingMessage, body: Record<string, unknown> | null): void {
+  const expected = getOperatorActionToken();
+  if (!expected) {
+    throw new Error('operator actions disabled: set OPERATOR_ACTION_TOKEN');
+  }
+  const headerToken = req.headers['x-operator-token'];
+  const supplied =
+    (typeof headerToken === 'string' ? headerToken : Array.isArray(headerToken) ? headerToken[0] : null) ||
+    (body && typeof body.operatorToken === 'string' ? body.operatorToken : null);
+  if (!supplied || supplied !== expected) {
+    throw new Error('operator authorization failed');
+  }
+}
+
 async function loadUserPositions(filePath: string): Promise<UserPositions> {
   try {
     const raw = await readFile(filePath, 'utf8');
@@ -1867,6 +1888,26 @@ async function main(): Promise<void> {
         return;
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/operator/process-private-batch') {
+        if (getPrivacyMode() !== 'zk_strong') {
+          throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
+        }
+        const body = await readJsonBody(req);
+        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        const result = await processPrivateBetBatch({
+          stateFile: defaultStatePath,
+          maxItems: Number.parseInt(process.env.PRIVATE_BATCH_MAX_ITEMS || '64', 10)
+        });
+        await refreshState(projectRoot);
+        writeJson(res, 200, {
+          ok: true,
+          privacyMode: 'zk_strong',
+          result,
+          queueDepth: privateBetQueue.length
+        });
+        return;
+      }
+
       // Hidden baseline: committee-based oracle consensus path (disabled by default).
       if (req.method === 'POST' && url.pathname === '/api/internal/oracle-committee/commit') {
         if (!committeeEnabled) throw new Error('oracle committee path disabled');
@@ -2480,6 +2521,99 @@ async function main(): Promise<void> {
           contest,
           autoSettledDates,
           note: 'Data source: NWS digital forecast page; zkTLS enforced when WEATHER_REQUIRE_TLSN=1.'
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/operator/resolve-daily-market') {
+        const body = await readJsonBody(req);
+        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        const marketDate = requireString(body.marketDate, 'marketDate');
+        const output = await runProjectCommand(projectRoot, [
+          'resolve-daily-market:zeko',
+          '--',
+          '--market-date',
+          marketDate,
+          '--attestation',
+          process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json',
+          '--state-file',
+          './data/operator-state.json'
+        ]);
+        await refreshState(projectRoot);
+        writeJson(res, 200, {
+          ok: true,
+          marketDate,
+          output
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/operator/ensure-daily-markets') {
+        const body = await readJsonBody(req);
+        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        const output = await runProjectCommand(projectRoot, [
+          'ensure-daily-markets:zeko',
+          '--',
+          '--state-file',
+          './data/operator-state.json',
+          '--daily-markets-file',
+          process.env.DEMO_DAILY_MARKETS_FILE || './data/demo-daily-threshold-markets.json'
+        ]);
+        await refreshState(projectRoot);
+        writeJson(res, 200, {
+          ok: true,
+          output
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/public/resolve-daily-market') {
+        const body = await readJsonBody(req);
+        const marketDate = requireString(body.marketDate, 'marketDate');
+        const state = await loadOperatorState(defaultStatePath);
+        const views = toMarketViews(state, 0);
+        const market = views.find((m) => {
+          const title = typeof m.title === 'string' ? m.title : '';
+          return title.startsWith(`Atherton, CA - ${marketDate} Over/Under `);
+        });
+        if (!market) {
+          throw new Error(`market for ${marketDate} not found`);
+        }
+        if (market.resolved) {
+          writeJson(res, 200, {
+            ok: true,
+            ignored: true,
+            marketDate,
+            reason: 'market already resolved'
+          });
+          return;
+        }
+        const todayIso = currentLocalDate();
+        const eligible = marketDate < todayIso || (marketDate === todayIso && nowLocalHour() >= 19);
+        if (!eligible) {
+          writeJson(res, 200, {
+            ok: true,
+            ignored: true,
+            marketDate,
+            reason: `market not yet eligible for resolution; today is ${todayIso}`
+          });
+          return;
+        }
+        const output = await runProjectCommand(projectRoot, [
+          'resolve-daily-market:zeko',
+          '--',
+          '--market-date',
+          marketDate,
+          '--attestation',
+          process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json',
+          '--state-file',
+          './data/operator-state.json'
+        ]);
+        await refreshState(projectRoot);
+        writeJson(res, 200, {
+          ok: true,
+          marketDate,
+          output
         });
         return;
       }
