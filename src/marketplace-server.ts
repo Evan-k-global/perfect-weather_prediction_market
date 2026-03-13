@@ -230,6 +230,10 @@ function getPrivateBatchIntervalMs(): number {
     const parsed = Number.parseInt(explicit, 10);
     return Number.isFinite(parsed) ? parsed : 0;
   }
+  // Do not run memory-heavy proving in the long-lived hosted web process by default.
+  if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
+    return 0;
+  }
   return 30000;
 }
 
