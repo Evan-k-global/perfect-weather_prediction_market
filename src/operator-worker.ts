@@ -129,9 +129,26 @@ async function maybeResolveDueMarkets(): Promise<void> {
 
 async function runCycle(cycle: number): Promise<void> {
   console.log(`[operator-worker] cycle=${cycle} start=${new Date().toISOString()}`);
-  await maybeEnsureDailyMarkets();
-  await maybeProcessPrivateQueue();
-  await maybeResolveDueMarkets();
+  try {
+    await maybeProcessPrivateQueue();
+  } catch (error) {
+    console.error(`[operator-worker] cycle=${cycle} private queue step failed:`, error);
+  }
+
+  try {
+    await maybeResolveDueMarkets();
+  } catch (error) {
+    console.error(`[operator-worker] cycle=${cycle} resolve step failed:`, error);
+  }
+
+  const ensureEvery = envInt('OPERATOR_WORKER_ENSURE_EVERY', 10);
+  if (ensureEvery > 0 && cycle % ensureEvery === 0) {
+    try {
+      await maybeEnsureDailyMarkets();
+    } catch (error) {
+      console.error(`[operator-worker] cycle=${cycle} ensure step failed:`, error);
+    }
+  }
   console.log(`[operator-worker] cycle=${cycle} done=${new Date().toISOString()}`);
 }
 
