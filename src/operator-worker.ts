@@ -33,7 +33,17 @@ async function req(path: string, init: RequestInit = {}): Promise<any> {
     headers
   });
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  let data: any = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      const snippet = text.slice(0, 160).replace(/\s+/g, ' ').trim();
+      throw new Error(
+        `request ${path} returned non-JSON response (status ${res.status}): ${snippet}`
+      );
+    }
+  }
   if (!res.ok) {
     throw new Error((data && data.error) || `request ${path} failed with status ${res.status}`);
   }
@@ -128,8 +138,15 @@ async function runCycle(cycle: number): Promise<void> {
 async function main(): Promise<void> {
   const intervalMs = envInt('OPERATOR_WORKER_INTERVAL_MS', 30000);
   const retryMs = envInt('OPERATOR_WORKER_RETRY_MS', 120000);
+  const startDelayMs = envInt('OPERATOR_WORKER_START_DELAY_MS', 20000);
   console.log(`[operator-worker] base_url=${baseUrl}`);
-  console.log(`[operator-worker] interval_ms=${intervalMs} retry_ms=${retryMs}`);
+  console.log(
+    `[operator-worker] interval_ms=${intervalMs} retry_ms=${retryMs} start_delay_ms=${startDelayMs}`
+  );
+  if (startDelayMs > 0) {
+    console.log(`[operator-worker] initial delay ${startDelayMs}ms`);
+    await sleep(startDelayMs);
+  }
   let cycle = 0;
   while (true) {
     cycle += 1;
