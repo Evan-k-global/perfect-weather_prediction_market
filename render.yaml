@@ -3,7 +3,6 @@ services:
     name: perfect-weather-prediction-market
     env: docker
     dockerfilePath: ./deploy/Dockerfile
-    plan: starter
     disk:
       name: perfect-weather-data
       mountPath: /app/data
@@ -19,7 +18,6 @@ services:
     name: perfect-weather-operator-worker
     env: docker
     dockerfilePath: ./deploy/Dockerfile
-    plan: starter
     dockerCommand: /app/deploy/start-operator-worker.sh
     envVars:
       - key: NODE_ENV
@@ -30,7 +28,6 @@ services:
     name: perfect-weather-oracle-worker
     env: docker
     dockerfilePath: ./deploy/Dockerfile
-    plan: starter
     dockerCommand: /app/deploy/start-oracle-worker.sh
     envVars:
       - key: NODE_ENV
