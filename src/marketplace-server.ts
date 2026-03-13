@@ -7,7 +7,7 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AccountUpdate, Bool, Field, Mina, Poseidon, PrivateKey, PublicKey, UInt32, UInt64, fetchAccount } from 'o1js';
+import { AccountUpdate, Bool, Field, Mina, Poseidon, PrivateKey, PublicKey, UInt32, UInt64, fetchAccount, fetchTransactionStatus } from 'o1js';
 import { DEFAULT_STATE_FILE, loadOperatorState } from './state-store.js';
 import {
   NWS_94027_DIGITAL_URL,
@@ -1177,9 +1177,13 @@ async function listResolvedClaimablePositions(walletPublicKey: string, stateFile
     payoutTmina: number;
     resolvedOutcome: 'over' | 'under';
     claimed: boolean;
+    claimStatus: 'claimable' | 'submitted' | 'confirmed';
+    claimTxHash: string | null;
+    claimSubmittedAtUnixMs: number | null;
+    claimConfirmedAtUnixMs: number | null;
   }>
 > {
-  const state = await loadOperatorState(stateFile);
+  const state = await reconcileSubmittedPayoutClaims(stateFile);
   const result: Array<{
     positionKey: string;
     marketKey: string;
@@ -1190,6 +1194,10 @@ async function listResolvedClaimablePositions(walletPublicKey: string, stateFile
     payoutTmina: number;
     resolvedOutcome: 'over' | 'under';
     claimed: boolean;
+    claimStatus: 'claimable' | 'submitted' | 'confirmed';
+    claimTxHash: string | null;
+    claimSubmittedAtUnixMs: number | null;
+    claimConfirmedAtUnixMs: number | null;
   }> = [];
   for (const [positionKey, meta] of Object.entries(state.positionMeta || {})) {
     if (!meta || meta.walletPublicKey !== walletPublicKey) continue;
@@ -1216,7 +1224,15 @@ async function listResolvedClaimablePositions(walletPublicKey: string, stateFile
       totalPotTmina: Number(totalPot),
       payoutTmina: Number(payout),
       resolvedOutcome,
-      claimed: positionLeaf.claimed.toBoolean()
+      claimed: positionLeaf.claimed.toBoolean(),
+      claimStatus: positionLeaf.claimed.toBoolean()
+        ? 'confirmed'
+        : meta.claimStatus === 'submitted'
+          ? 'submitted'
+          : 'claimable',
+      claimTxHash: meta.claimTxHash || null,
+      claimSubmittedAtUnixMs: meta.claimSubmittedAtUnixMs || null,
+      claimConfirmedAtUnixMs: meta.claimConfirmedAtUnixMs || null
     });
   }
   return result.sort((a, b) => {
@@ -1224,6 +1240,55 @@ async function listResolvedClaimablePositions(walletPublicKey: string, stateFile
     const bd = b.marketDate || '';
     return ad < bd ? 1 : ad > bd ? -1 : 0;
   });
+}
+
+function markPositionClaimConfirmed(state: Awaited<ReturnType<typeof loadOperatorState>>, positionKey: string, confirmedAtUnixMs: number) {
+  const existingPosition = state.positions[positionKey];
+  if (!existingPosition) return false;
+  const existingLeaf = deserializePositionLeaf(existingPosition);
+  if (!existingLeaf.claimed.toBoolean()) {
+    const claimedLeaf = new PositionLeaf({
+      marketKey: existingLeaf.marketKey,
+      sideOver: existingLeaf.sideOver,
+      stake: existingLeaf.stake,
+      ownerCommitment: existingLeaf.ownerCommitment,
+      claimed: Bool(true)
+    });
+    state.positions[positionKey] = serializePositionLeaf(claimedLeaf);
+  }
+  state.positionMeta = state.positionMeta || {};
+  const meta = state.positionMeta[positionKey];
+  if (meta) {
+    meta.claimStatus = 'confirmed';
+    meta.claimConfirmedAtUnixMs = confirmedAtUnixMs;
+  }
+  return true;
+}
+
+async function reconcileSubmittedPayoutClaims(stateFile: string) {
+  setActiveZekoNetwork();
+  const state = await loadOperatorState(stateFile);
+  const pendingClaims = Object.entries(state.positionMeta || {}).filter(([, meta]) => {
+    return Boolean(meta?.claimStatus === 'submitted' && meta?.claimTxHash);
+  });
+  if (!pendingClaims.length) return state;
+  const { graphql } = getNetworkConfig();
+  let dirty = false;
+  for (const [positionKey, meta] of pendingClaims) {
+    if (!meta?.claimTxHash) continue;
+    try {
+      const status = await fetchTransactionStatus(meta.claimTxHash, graphql);
+      if (status === 'INCLUDED') {
+        dirty = markPositionClaimConfirmed(state, positionKey, Date.now()) || dirty;
+      }
+    } catch {
+      // Leave claim pending if status cannot be fetched yet.
+    }
+  }
+  if (dirty) {
+    await saveOperatorState(stateFile, state);
+  }
+  return state;
 }
 
 async function buildWalletFeePayerMarketBetTx(params: {
@@ -2313,7 +2378,23 @@ async function main(): Promise<void> {
             fundingTxHash: txHash
           };
         } else if (intent.type === 'payout-claim') {
-          state.positions[intent.positionKey] = intent.newPositionLeaf;
+          state.positionMeta = state.positionMeta || {};
+          const existingMeta = state.positionMeta[intent.positionKey];
+          if (!existingMeta) throw new Error('position metadata missing for payout claim');
+          existingMeta.claimStatus = 'submitted';
+          existingMeta.claimTxHash = txHash;
+          existingMeta.claimSubmittedAtUnixMs = Date.now();
+          existingMeta.claimConfirmedAtUnixMs = null;
+          try {
+            setActiveZekoNetwork();
+            const { graphql } = getNetworkConfig();
+            const claimTxStatus = await fetchTransactionStatus(txHash, graphql);
+            if (claimTxStatus === 'INCLUDED') {
+              markPositionClaimConfirmed(state, intent.positionKey, Date.now());
+            }
+          } catch {
+            // Leave claim in submitted state until a later refresh confirms inclusion.
+          }
         }
         await saveOperatorState(defaultStatePath, state);
 
@@ -2344,7 +2425,11 @@ async function main(): Promise<void> {
           type: intent.type,
           marketKey: intent.marketKey,
           userId: intent.userId,
-          userNetPosition: intent.userNetPositionAfter
+          userNetPosition: intent.userNetPositionAfter,
+          claimStatus:
+            intent.type === 'payout-claim'
+              ? state.positionMeta?.[intent.positionKey]?.claimStatus || 'submitted'
+              : undefined
         });
         return;
       }

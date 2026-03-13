@@ -15,6 +15,7 @@
     "ensure-daily-markets:zeko": "node --enable-source-maps dist/ensure-daily-markets-zeko.js",
     "trade-update:zeko": "node --enable-source-maps dist/trade-update-zeko.js",
     "claim-payout:zeko": "node --enable-source-maps dist/claim-payout-zeko.js",
+    "repair-legacy-claim-state": "node --enable-source-maps dist/repair-legacy-claim-state.js",
     "resolve-weather:zeko": "node --enable-source-maps dist/resolve-weather-market-zeko.js",
     "resolve-daily-market:zeko": "node --enable-source-maps dist/resolve-daily-market-zeko.js",
     "indexer:serve": "node --enable-source-maps dist/market-indexer-server.js",
