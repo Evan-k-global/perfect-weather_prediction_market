@@ -224,6 +224,19 @@ function getPrivacyMode(): PrivacyMode {
   return 'zk_strong';
 }
 
+function getPrivateBatchIntervalMs(): number {
+  const explicit = process.env.PRIVATE_BATCH_INTERVAL_MS;
+  if (explicit !== undefined) {
+    const parsed = Number.parseInt(explicit, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  // Do not run memory-heavy proving in the long-lived hosted web process by default.
+  if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
+    return 0;
+  }
+  return 30000;
+}
+
 function getRelayerPrivateKey(): PrivateKey | null {
   const deployer = process.env.DEPLOYER_PRIVATE_KEY;
   const relayer = process.env.RELAYER_PRIVATE_KEY;
@@ -2630,7 +2643,7 @@ async function main(): Promise<void> {
       console.warn('[private-batch] signer inspection failed:', error instanceof Error ? error.message : String(error));
     }
     if (getPrivacyMode() === 'zk_strong') {
-      const intervalMs = Number.parseInt(process.env.PRIVATE_BATCH_INTERVAL_MS || '30000', 10);
+      const intervalMs = getPrivateBatchIntervalMs();
       if (intervalMs > 0) {
         console.log(`[private-batch] enabled interval processor every ${intervalMs}ms`);
         setInterval(async () => {
