@@ -81,6 +81,40 @@ If you want the weather oracle loop running too:
 pnpm weather:daemon
 ```
 
+## Deployment Modes
+
+### Unified demo service
+
+Recommended for demos and small hosted deployments:
+
+- one service runs:
+  - `marketplace:serve`
+  - `weather:daemon`
+  - private batch proving
+  - on-chain daily market ensure/resolve
+- simpler operations
+- higher RAM requirement
+
+This is the current recommended Render mode if you want the full product behavior in one place. Use enough memory headroom for o1js proving and daemon activity.
+
+### Split production services
+
+Recommended once you want stricter operational boundaries:
+
+- web service:
+  - UI/API
+  - oracle status and market display
+- worker/operator service:
+  - private batch proving
+  - on-chain market creation
+  - on-chain resolution
+
+Why split:
+
+- isolates user traffic from proving spikes
+- reduces web-service memory pressure
+- gives better control over settlement/operator jobs
+
 ## Developer Docs
 
 - protocol vs demo: `docs/protocol-vs-demo.md`

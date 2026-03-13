@@ -119,12 +119,45 @@ pnpm resolve-daily-market:zeko -- --market-date 2026-03-11 --state-file ./data/o
 ## Docker / Render Notes
 
 - Docker and compose files are in `deploy/` and repo root.
-- Current Render recommendation is a single web service that runs both:
+- Strict zkTLS on Render requires the Docker path so the vendored `external/zk-verify-poc/tlsnotary` source and compiled Rust binaries exist in the container.
+- This app currently relies on shared local disk state under `./data`.
+
+### Unified hosted service
+
+Recommended for demo use:
+
+- one Render web service runs both:
   - `marketplace:serve`
   - `weather:daemon`
-- This app currently relies on shared local disk state under `./data`.
-- Strict zkTLS on Render requires the Docker path so the vendored `external/zk-verify-poc/tlsnotary` source and compiled Rust binaries exist in the container.
-- Use the repo-root `render.yaml` and attach a 1 GB persistent disk mounted at `/app/data`.
+- the same service also handles:
+  - private batch processing
+  - forward daily market creation
+  - on-chain resolution
+
+Tradeoff:
+
+- simplest operations
+- highest memory usage
+
+For this mode, use the repo-root `render.yaml`, attach a persistent disk at `/app/data`, and provision enough RAM for o1js proving.
+
+### Split hosted services
+
+Recommended for production-hardening:
+
+- web service:
+  - `marketplace:serve`
+  - optional oracle read APIs
+- worker/operator service:
+  - `weather:daemon`
+  - private batch proving
+  - ensure/resolve scripts
+
+Tradeoff:
+
+- more moving parts
+- cleaner failure isolation
+- lower risk of web-instance OOM during proving
 
 Recommended Render env vars:
 
@@ -161,6 +194,8 @@ CLEANUP_KEEP_BATCH_HISTORY=200
 
 ZKVERIFY_POC_ROOT=/opt/zk-verify-poc
 ```
+
+If you intentionally split services later, move the heavy operator jobs out of the web service instead of just lowering these intervals.
 
 ## More Detail
 

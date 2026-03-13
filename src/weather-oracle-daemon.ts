@@ -22,32 +22,14 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function isHostedRender(): boolean {
-  return process.env.RENDER === 'true' || process.env.IS_RENDER === 'true';
-}
-
-function chainActionsEnabled(): boolean {
-  const explicit = process.env.WEATHER_DAEMON_CHAIN_ACTIONS;
-  if (explicit !== undefined) {
-    return !['0', 'false', 'no', 'off'].includes(explicit.trim().toLowerCase());
-  }
-  // Hosted web service should not run memory-heavy o1js compile/prove tasks by default.
-  // Keep local operator behavior unchanged.
-  return !isHostedRender();
-}
-
 async function runOnce(cycle: number): Promise<void> {
   const started = new Date().toISOString();
   console.log(`[weather-daemon] cycle=${cycle} start=${started}`);
 
   await runWeatherAttestation();
   await runWeatherSync();
-  if (chainActionsEnabled()) {
-    await maybeEnsureForwardDailyMarkets();
-    await maybeResolvePassedDailyMarkets();
-  } else {
-    console.log('[weather-daemon] chain actions disabled; skipping on-chain ensure/resolve steps');
-  }
+  await maybeEnsureForwardDailyMarkets();
+  await maybeResolvePassedDailyMarkets();
 
   const ended = new Date().toISOString();
   console.log(`[weather-daemon] cycle=${cycle} done=${ended}`);
@@ -135,9 +117,6 @@ export async function runWeatherOracleDaemon(): Promise<void> {
   );
   console.log(
     `[weather-daemon] strict=${process.env.WEATHER_REQUIRE_TLSN} attestation_file=${process.env.WEATHER_TLSN_ATTESTATION_FILE}`
-  );
-  console.log(
-    `[weather-daemon] chain_actions=${chainActionsEnabled() ? 'enabled' : 'disabled'}`
   );
 
   if (startDelayMs > 0) {
