@@ -13,12 +13,25 @@ services:
         value: production
       - key: ZKVERIFY_POC_ROOT
         value: /opt/zk-verify-poc
+      - key: WEATHER_DAEMON_ENABLED
+        value: "0"
   - type: worker
     name: perfect-weather-operator-worker
     env: docker
     dockerfilePath: ./deploy/Dockerfile
     plan: starter
     dockerCommand: /app/deploy/start-operator-worker.sh
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ZKVERIFY_POC_ROOT
+        value: /opt/zk-verify-poc
+  - type: worker
+    name: perfect-weather-oracle-worker
+    env: docker
+    dockerfilePath: ./deploy/Dockerfile
+    plan: starter
+    dockerCommand: /app/deploy/start-oracle-worker.sh
     envVars:
       - key: NODE_ENV
         value: production

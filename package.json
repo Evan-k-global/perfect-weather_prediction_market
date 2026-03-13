@@ -21,6 +21,7 @@
     "agent:serve": "node --enable-source-maps dist/agent-marketplace-server.js",
     "marketplace:serve": "node --enable-source-maps dist/marketplace-server.js",
     "operator:worker": "node --enable-source-maps dist/operator-worker.js",
+    "oracle:worker": "node --enable-source-maps dist/oracle-worker.js",
     "weather:attest": "node --enable-source-maps dist/weather-attest.js",
     "weather:sync": "node --enable-source-maps dist/weather-hourly-sync.js",
     "weather:daemon": "node --enable-source-maps dist/weather-oracle-daemon.js",

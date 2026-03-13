@@ -14,6 +14,7 @@ import {
   NWS_94027_REQUEST_PATH,
   NWS_94027_SERVER_NAME,
   NWS_94027_STRICT_URL,
+  type WeatherSnapshot,
   buildSevenDayHighProbabilities,
   currentLocalDate,
   fetchNws94027Snapshot,
@@ -141,6 +142,16 @@ type DailySettlementInfo = {
   settled: boolean;
   observedHighF: number | null;
   settledAtUnixMs: number | null;
+};
+
+type OracleWorkerSyncPayload = {
+  snapshot: WeatherSnapshot;
+  tlsnStatus?: {
+    stage: string;
+    ok: boolean;
+    ts: string;
+    message?: string;
+  } | null;
 };
 
 type DailyPayoutReadiness = {
@@ -772,6 +783,22 @@ async function loadTlsnStatus(
   }
 }
 
+async function saveTlsnStatus(
+  status: { stage: string; ok: boolean; ts: string; message?: string } | null,
+  filePath: string = TLSN_STATUS_FILE
+): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  if (!status) {
+    try {
+      await writeFile(filePath, '', 'utf8');
+    } catch {
+      // ignore
+    }
+    return;
+  }
+  await writeFile(filePath, JSON.stringify(status, null, 2), 'utf8');
+}
+
 function normalizeTlsnStatus(
   snapshot: Awaited<ReturnType<typeof loadWeatherSnapshot>>,
   tlsnStatus: Awaited<ReturnType<typeof loadTlsnStatus>>
@@ -792,6 +819,42 @@ function normalizeTlsnStatus(
     };
   }
   return tlsnStatus;
+}
+
+function parseOracleWorkerSyncPayload(body: Record<string, unknown>): OracleWorkerSyncPayload {
+  const snapshot = body.snapshot;
+  if (!snapshot || typeof snapshot !== 'object') {
+    throw new Error('snapshot must be provided');
+  }
+  const candidate = snapshot as Record<string, unknown>;
+  if (typeof candidate.sourceUrl !== 'string') throw new Error('snapshot.sourceUrl must be a string');
+  if (typeof candidate.fetchedAtUnixMs !== 'number' || !Number.isFinite(candidate.fetchedAtUnixMs)) {
+    throw new Error('snapshot.fetchedAtUnixMs must be a finite number');
+  }
+  if (typeof candidate.localDate !== 'string') throw new Error('snapshot.localDate must be a string');
+  if (typeof candidate.timezone !== 'string') throw new Error('snapshot.timezone must be a string');
+  if (!Array.isArray(candidate.hourlyTempsF) || !Array.isArray(candidate.dailyHighsF)) {
+    throw new Error('snapshot.hourlyTempsF and snapshot.dailyHighsF must be arrays');
+  }
+  if (typeof candidate.verified !== 'boolean') throw new Error('snapshot.verified must be a boolean');
+  if (candidate.verificationMode !== 'zktls' && candidate.verificationMode !== 'insecure-direct-fetch') {
+    throw new Error('snapshot.verificationMode must be zktls or insecure-direct-fetch');
+  }
+  const parsedSnapshot = candidate as WeatherSnapshot;
+  const tlsnStatusRaw = body.tlsnStatus;
+  const tlsnStatus =
+    tlsnStatusRaw && typeof tlsnStatusRaw === 'object'
+      ? {
+          stage: requireString((tlsnStatusRaw as Record<string, unknown>).stage, 'tlsnStatus.stage'),
+          ok: Boolean((tlsnStatusRaw as Record<string, unknown>).ok),
+          ts: requireString((tlsnStatusRaw as Record<string, unknown>).ts, 'tlsnStatus.ts'),
+          message:
+            typeof (tlsnStatusRaw as Record<string, unknown>).message === 'string'
+              ? String((tlsnStatusRaw as Record<string, unknown>).message)
+              : undefined
+        }
+      : null;
+  return { snapshot: parsedSnapshot, tlsnStatus };
 }
 
 async function loadDisplayWeatherSnapshot(): Promise<Awaited<ReturnType<typeof loadWeatherSnapshot>>> {
@@ -2521,6 +2584,28 @@ async function main(): Promise<void> {
           contest,
           autoSettledDates,
           note: 'Data source: NWS digital forecast page; zkTLS enforced when WEATHER_REQUIRE_TLSN=1.'
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/operator/weather-sync') {
+        const body = await readJsonBody(req);
+        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        const { snapshot, tlsnStatus } = parseOracleWorkerSyncPayload(body);
+        await saveWeatherSnapshot(snapshot as NonNullable<typeof snapshot>);
+        await saveTlsnStatus(tlsnStatus ?? null);
+        await ensureDemoDailyMarketsFromSnapshot(snapshot);
+        const selectedDate = snapshot.localDate || currentLocalDate();
+        let contest = await loadContestState(selectedDate, 15, contestStateFileForDate(selectedDate));
+        contest = maybeAutoSettleContest(contest, snapshot, nowLocalHour(), Date.now());
+        await saveContestState(contest, contestStateFileForDate(selectedDate));
+        const autoSettledDates = await autoSettleDailyContestsFromSnapshot(snapshot);
+        dailySettleState = await recordDailySettleRun(dailySettleState, 'operator-weather-sync', autoSettledDates);
+        writeJson(res, 200, {
+          ok: true,
+          snapshotVerified: snapshot.verified,
+          verificationMode: snapshot.verificationMode,
+          autoSettledDates
         });
         return;
       }

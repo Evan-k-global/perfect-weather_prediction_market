@@ -18,13 +18,26 @@ node --enable-source-maps /app/dist/sync-state-zeko.js -- --state-file "${STATE_
 node --enable-source-maps /app/dist/marketplace-server.js &
 MARKETPLACE_PID=$!
 
-node --enable-source-maps /app/dist/weather-oracle-daemon.js &
-DAEMON_PID=$!
+DAEMON_PID=""
+if [ "${WEATHER_DAEMON_ENABLED:-1}" != "0" ]; then
+  node --enable-source-maps /app/dist/weather-oracle-daemon.js &
+  DAEMON_PID=$!
+else
+  echo "[render-start] weather daemon disabled in web service (WEATHER_DAEMON_ENABLED=0)"
+fi
 
 cleanup() {
-  kill "$MARKETPLACE_PID" "$DAEMON_PID" 2>/dev/null || true
+  if [ -n "$DAEMON_PID" ]; then
+    kill "$MARKETPLACE_PID" "$DAEMON_PID" 2>/dev/null || true
+  else
+    kill "$MARKETPLACE_PID" 2>/dev/null || true
+  fi
 }
 
 trap cleanup INT TERM
 
-wait "$MARKETPLACE_PID" "$DAEMON_PID"
+if [ -n "$DAEMON_PID" ]; then
+  wait "$MARKETPLACE_PID" "$DAEMON_PID"
+else
+  wait "$MARKETPLACE_PID"
+fi
