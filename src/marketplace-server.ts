@@ -1696,7 +1696,10 @@ async function main(): Promise<void> {
   const projectRoot = path.resolve(__dirname, '..');
   const pagePath = path.resolve(projectRoot, 'public', 'marketplace.html');
   const publicRoot = path.resolve(projectRoot, 'public');
-  const port = Number.parseInt(process.env.PORT || process.env.MARKETPLACE_PORT || '8790', 10);
+  const port = Number.parseInt(
+    process.env.MARKETPLACE_PORT || process.env.PORT || '8790',
+    10
+  );
   const host = process.env.MARKETPLACE_HOST || '0.0.0.0';
   const defaultStatePath = process.env.STATE_FILE || DEFAULT_STATE_FILE;
   const committeeEnabled = process.env.ENABLE_ORACLE_COMMITTEE_PATH === '1';
