@@ -67,6 +67,7 @@ import {
 } from './state-store.js';
 import { withTxRetry } from './tx-retry.js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
+import { proveAndSendPrivateQueuedBet } from './private-batch-processor.js';
 
 const execFileAsync = promisify(execFile);
 const USER_POSITIONS_FILE = './data/user-positions.json';
@@ -881,6 +882,117 @@ async function appendPrivateBatchHistory(entry: PrivateBatchHistoryEntry): Promi
   await savePrivateBatchHistory(privateBatchHistory);
 }
 
+async function recordPrivateBatchFailure(error: unknown, marketKey: string | null = privateBetQueue[0]?.marketKey || null) {
+  await appendPrivateBatchHistory({
+    id: randomUUID(),
+    atUnixMs: Date.now(),
+    marketKey,
+    processed: 0,
+    totalPositionBetAdded: 0,
+    totalYesBetAdded: 0,
+    txHash: null,
+    relayerReimbursedNanomina: '0',
+    status: 'failed',
+    error: error instanceof Error ? error.message : String(error)
+  });
+}
+
+async function applySuccessfulPrivateBetBatch(params: {
+  stateFile: string;
+  queuedBet: PrivateQueuedBet;
+  txHash: string | null;
+  relayerReimbursedNanomina: string;
+}) {
+  const { stateFile, queuedBet, txHash, relayerReimbursedNanomina } = params;
+  const state = await loadOperatorState(stateFile);
+  const existing = state.markets[queuedBet.marketKey];
+  if (!existing) throw new Error(`market ${queuedBet.marketKey} missing in ${stateFile}`);
+  const oldLeaf = deserializeMarketLeaf(existing);
+  if (oldLeaf.resolved.toBoolean()) throw new Error('cannot apply private batch on resolved market');
+
+  const newLeaf = new MarketLeaf({
+    configHash: oldLeaf.configHash,
+    closeSlot: oldLeaf.closeSlot,
+    expirySlot: oldLeaf.expirySlot,
+    thresholdValueTenthC: oldLeaf.thresholdValueTenthC,
+    totalPositionBet: oldLeaf.totalPositionBet.add(UInt64.from(queuedBet.addTotalBet)),
+    totalYesPositionBet: oldLeaf.totalYesPositionBet.add(UInt64.from(queuedBet.addYesBet)),
+    resolved: Bool(false),
+    outcome: Bool(false),
+    oracleStatementHash: Field(0)
+  });
+  newLeaf.totalYesPositionBet.lessThanOrEqual(newLeaf.totalPositionBet).assertTrue();
+
+  const positionKey = queuedBet.positionKey;
+  if (state.positions[positionKey]) {
+    throw new Error(`position ${positionKey} already exists in state file`);
+  }
+  const positionLeaf = new PositionLeaf({
+    marketKey: Field(queuedBet.marketKey),
+    sideOver: Bool(queuedBet.addYesBet === queuedBet.addTotalBet),
+    stake: UInt64.from(queuedBet.addTotalBet),
+    ownerCommitment: Field(queuedBet.ownerCommitment),
+    claimed: Bool(false)
+  });
+
+  state.markets[queuedBet.marketKey] = serializeMarketLeaf(newLeaf);
+  state.positions[positionKey] = serializePositionLeaf(positionLeaf);
+  state.positionMeta = state.positionMeta || {};
+  state.positionMeta[positionKey] = {
+    marketKey: queuedBet.marketKey,
+    marketDate: queuedBet.marketDate,
+    walletPublicKey: queuedBet.walletPublicKey,
+    createdAtUnixMs: queuedBet.createdAtUnixMs,
+    fundingTxHash: queuedBet.fundingTxHash
+  };
+  await saveOperatorState(stateFile, state);
+
+  const positions = await loadUserPositions(USER_POSITIONS_FILE);
+  positions[queuedBet.walletPublicKey] = positions[queuedBet.walletPublicKey] || {};
+  const prior = positions[queuedBet.walletPublicKey][queuedBet.marketKey] || 0;
+  positions[queuedBet.walletPublicKey][queuedBet.marketKey] =
+    prior + positionDelta(queuedBet.addTotalBet, queuedBet.addYesBet);
+  await saveUserPositions(USER_POSITIONS_FILE, positions);
+
+  const dailyMarketMap = await loadDemoDailyMarkets();
+  if (queuedBet.marketDate) {
+    const day = dailyMarketMap[queuedBet.marketDate];
+    if (day) {
+      day.totalPositionBet = (Number.isFinite(day.totalPositionBet) ? day.totalPositionBet : 0) + queuedBet.addTotalBet;
+      day.totalYesPositionBet =
+        (Number.isFinite(day.totalYesPositionBet) ? day.totalYesPositionBet : 0) + queuedBet.addYesBet;
+      dailyMarketMap[queuedBet.marketDate] = day;
+    }
+  }
+  await saveDemoDailyMarkets(dailyMarketMap);
+
+  const idx = privateBetQueue.findIndex((q) => q.id === queuedBet.id);
+  if (idx >= 0) privateBetQueue.splice(idx, 1);
+  await savePrivateBetQueue(privateBetQueue);
+
+  const successResult = {
+    processed: 1,
+    txHash,
+    marketKey: queuedBet.marketKey,
+    marketDate: queuedBet.marketDate,
+    totalPositionBetAdded: queuedBet.addTotalBet,
+    totalYesBetAdded: queuedBet.addYesBet,
+    relayerReimbursedNanomina
+  };
+  await appendPrivateBatchHistory({
+    id: randomUUID(),
+    atUnixMs: Date.now(),
+    marketKey: queuedBet.marketKey,
+    processed: 1,
+    totalPositionBetAdded: queuedBet.addTotalBet,
+    totalYesBetAdded: queuedBet.addYesBet,
+    txHash,
+    relayerReimbursedNanomina,
+    status: 'success'
+  });
+  return successResult;
+}
+
 async function ensureDemoDailyMarketsFromSnapshot(
   snapshot: Awaited<ReturnType<typeof loadWeatherSnapshot>>,
   filePath: string = DEMO_DAILY_MARKETS_FILE
@@ -1549,11 +1661,6 @@ async function processPrivateBetBatch(params: {
       relayerReimbursedNanomina: '0'
     };
   }
-  const relayer = getRelayerPrivateKey();
-  if (!relayer) {
-    throw new Error('Missing env RELAYER_PRIVATE_KEY (or DEPLOYER_PRIVATE_KEY fallback) for zk_strong batch processing');
-  }
-
   privateBatchInFlight = true;
   try {
     const first = privateBetQueue[0];
@@ -1568,187 +1675,18 @@ async function processPrivateBetBatch(params: {
         relayerReimbursedNanomina: '0'
       };
     }
-    const marketKey = first.marketKey;
-    const marketDate = first.marketDate ?? null;
-    const addTotalBet = first.addTotalBet;
-    const addYesBet = first.addYesBet;
-    if (!(addYesBet === 0 || addYesBet === addTotalBet)) {
-      throw new Error('claimable payout path requires binary over/under stake; queued item must be full OVER or full UNDER');
-    }
-
-    setActiveZekoNetwork();
-    await ensureContractCompiled();
-    const { txFee } = getNetworkConfig();
-    const zkappAddress = getZkappPublicKey();
-    const zkappSigner = getOptionalZkappPrivateKey();
-    const reimburseEnabled = process.env.RELAYER_REIMBURSE_DISABLED !== '1';
-    const signerMatchesZkapp =
-      zkappSigner !== null && zkappSigner.toPublicKey().toBase58() === zkappAddress.toBase58();
-    const configuredReimburse = BigInt(process.env.RELAYER_REIMBURSE_NANOMINA || txFee);
-    const maxByBatchStake = BigInt(first.addTotalBet) * 1_000_000_000n;
-    const relayerReimbursedNanominaBase = reimburseEnabled && signerMatchesZkapp
-      ? (configuredReimburse < maxByBatchStake ? configuredReimburse : maxByBatchStake)
-      : 0n;
-    const relayerAccount = await fetchAccount({ publicKey: relayer.toPublicKey() });
-    if (relayerAccount.error) {
-      throw new Error(`relayer account not found: ${relayerAccount.error.statusText || 'unknown'}`);
-    }
-
-    const state = await loadOperatorState(params.stateFile);
-    await assertLocalMarketsRootMatchesChain(zkappAddress, state);
-    const existing = state.markets[marketKey];
-    if (!existing) throw new Error(`market ${marketKey} missing in ${params.stateFile}`);
-    const oldLeaf = deserializeMarketLeaf(existing);
-    if (oldLeaf.resolved.toBoolean()) throw new Error('cannot process private batch on resolved market');
-
-    const newLeaf = new MarketLeaf({
-      configHash: oldLeaf.configHash,
-      closeSlot: oldLeaf.closeSlot,
-      expirySlot: oldLeaf.expirySlot,
-      thresholdValueTenthC: oldLeaf.thresholdValueTenthC,
-      totalPositionBet: oldLeaf.totalPositionBet.add(UInt64.from(addTotalBet)),
-      totalYesPositionBet: oldLeaf.totalYesPositionBet.add(UInt64.from(addYesBet)),
-      resolved: Bool(false),
-      outcome: Bool(false),
-      oracleStatementHash: Field(0)
+    const proofResult = await proveAndSendPrivateQueuedBet({
+      queuedBet: first,
+      stateFile: params.stateFile
     });
-    newLeaf.totalYesPositionBet.lessThanOrEqual(newLeaf.totalPositionBet).assertTrue();
-
-    const marketFieldKey = Field(marketKey);
-    const marketsMap = buildMarketsMerkleMap(state);
-    const positionsMap = buildPositionsMerkleMap(state);
-    const positionKey = Field(first.positionKey);
-    if (state.positions[positionKey.toString()]) {
-      throw new Error(`position ${positionKey.toString()} already exists in state file`);
-    }
-    const positionLeaf = new PositionLeaf({
-      marketKey: marketFieldKey,
-      sideOver: Bool(addYesBet === addTotalBet),
-      stake: UInt64.from(addTotalBet),
-      ownerCommitment: Field(first.ownerCommitment),
-      claimed: Bool(false)
+    return await applySuccessfulPrivateBetBatch({
+      stateFile: params.stateFile,
+      queuedBet: first,
+      txHash: proofResult.txHash,
+      relayerReimbursedNanomina: proofResult.relayerReimbursedNanomina
     });
-    const zkapp = new PredictionMarketPlatform(zkappAddress);
-
-    let txHash: string | null = null;
-    const submitBatchTx = async (reimburseNanomina: bigint) => {
-      await withTxRetry(
-        async () => {
-          const useReimburse = reimburseNanomina > 0n && signerMatchesZkapp && zkappSigner !== null;
-          const signers = useReimburse ? [relayer, zkappSigner] : [relayer];
-          const tx = await Mina.transaction({ sender: relayer.toPublicKey(), fee: txFee }, async () => {
-            zkapp.placeClaimableBet(
-              marketFieldKey,
-              oldLeaf,
-              newLeaf,
-              marketsMap.getWitness(marketFieldKey),
-              positionKey,
-              positionLeaf,
-              positionsMap.getWitness(positionKey)
-            );
-            if (useReimburse) {
-              const reimburse = AccountUpdate.createSigned(zkappSigner.toPublicKey());
-              reimburse.send({
-                to: relayer.toPublicKey(),
-                amount: UInt64.from(reimburseNanomina)
-              });
-            }
-          });
-          const feePayerUpdate = (
-            tx as unknown as {
-              feePayer?: { body?: { preconditions?: { account?: { nonce?: unknown } }; useFullCommitment?: unknown } };
-            }
-          ).feePayer;
-          if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
-            feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
-          }
-          if (feePayerUpdate?.body) {
-            feePayerUpdate.body.useFullCommitment = Bool(true);
-          }
-          await tx.prove();
-          const sent = await tx.sign(signers).send();
-          txHash = typeof sent?.hash === 'string' ? sent.hash : null;
-        },
-        { label: 'private-batch:zeko' }
-      );
-    };
-
-    let relayerReimbursedNanomina = relayerReimbursedNanominaBase;
-    try {
-      await submitBatchTx(relayerReimbursedNanomina);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      const shouldRetryWithoutReimburse =
-        relayerReimbursedNanomina > 0n &&
-        /Constraint unsatisfied|insufficient|balance/i.test(msg);
-      if (!shouldRetryWithoutReimburse) throw error;
-      console.warn('[private-batch] reimbursement failed, retrying without reimbursement');
-      relayerReimbursedNanomina = 0n;
-      await submitBatchTx(relayerReimbursedNanomina);
-    }
-
-    state.markets[marketKey] = serializeMarketLeaf(newLeaf);
-    state.positions[positionKey.toString()] = serializePositionLeaf(positionLeaf);
-    state.positionMeta = state.positionMeta || {};
-    state.positionMeta[positionKey.toString()] = {
-      marketKey,
-      marketDate,
-      walletPublicKey: first.walletPublicKey,
-      createdAtUnixMs: first.createdAtUnixMs,
-      fundingTxHash: first.fundingTxHash
-    };
-    await saveOperatorState(params.stateFile, state);
-
-    const dailyMarketMap = await loadDemoDailyMarkets();
-    if (first.marketDate) {
-      const day = dailyMarketMap[first.marketDate];
-      if (day) {
-        day.totalPositionBet = (Number.isFinite(day.totalPositionBet) ? day.totalPositionBet : 0) + first.addTotalBet;
-        day.totalYesPositionBet = (Number.isFinite(day.totalYesPositionBet) ? day.totalYesPositionBet : 0) + first.addYesBet;
-        dailyMarketMap[first.marketDate] = day;
-      }
-    }
-    await saveDemoDailyMarkets(dailyMarketMap);
-
-    const idx = privateBetQueue.findIndex((q) => q.id === first.id);
-    if (idx >= 0) privateBetQueue.splice(idx, 1);
-    await savePrivateBetQueue(privateBetQueue);
-
-    const successResult = {
-      processed: 1,
-      txHash,
-      marketKey,
-      marketDate,
-      totalPositionBetAdded: addTotalBet,
-      totalYesBetAdded: addYesBet,
-      relayerReimbursedNanomina: relayerReimbursedNanomina.toString()
-    };
-    await appendPrivateBatchHistory({
-      id: randomUUID(),
-      atUnixMs: Date.now(),
-      marketKey,
-      processed: 1,
-      totalPositionBetAdded: addTotalBet,
-      totalYesBetAdded: addYesBet,
-      txHash,
-      relayerReimbursedNanomina: relayerReimbursedNanomina.toString(),
-      status: 'success'
-    });
-
-    return successResult;
   } catch (error) {
-    await appendPrivateBatchHistory({
-      id: randomUUID(),
-      atUnixMs: Date.now(),
-      marketKey: privateBetQueue[0]?.marketKey || null,
-      processed: 0,
-      totalPositionBetAdded: 0,
-      totalYesBetAdded: 0,
-      txHash: null,
-      relayerReimbursedNanomina: '0',
-      status: 'failed',
-      error: error instanceof Error ? error.message : String(error)
-    });
+    await recordPrivateBatchFailure(error);
     throw error;
   } finally {
     privateBatchInFlight = false;
@@ -2004,6 +1942,9 @@ async function main(): Promise<void> {
         if (getPrivacyMode() !== 'zk_strong') {
           throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
         }
+        if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
+          throw new Error('direct private batch processing is disabled on the hosted web service; use the operator worker');
+        }
         const body = await readJsonBody(req);
         const maxItemsRaw = typeof body.maxItems === 'number' && Number.isFinite(body.maxItems) ? body.maxItems : 32;
         const result = await processPrivateBetBatch({
@@ -2023,6 +1964,9 @@ async function main(): Promise<void> {
         if (getPrivacyMode() !== 'zk_strong') {
           throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
         }
+        if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
+          throw new Error('direct private batch processing is disabled on the hosted web service; use /api/operator/lease-private-batch from the operator worker');
+        }
         const body = await readJsonBody(req);
         requireOperatorAuthorization(req, body as Record<string, unknown>);
         const result = await processPrivateBetBatch({
@@ -2034,6 +1978,95 @@ async function main(): Promise<void> {
           ok: true,
           privacyMode: 'zk_strong',
           result,
+          queueDepth: privateBetQueue.length
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/operator/lease-private-batch') {
+        if (getPrivacyMode() !== 'zk_strong') {
+          throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
+        }
+        const body = await readJsonBody(req);
+        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        const first = privateBetQueue[0] || null;
+        if (!first) {
+          writeJson(res, 200, {
+            ok: true,
+            leased: false,
+            queueDepth: 0,
+            inFlight: privateBatchInFlight
+          });
+          return;
+        }
+        if (privateBatchInFlight) {
+          writeJson(res, 200, {
+            ok: true,
+            leased: false,
+            queueDepth: privateBetQueue.length,
+            inFlight: true
+          });
+          return;
+        }
+        const state = await loadOperatorState(defaultStatePath);
+        privateBatchInFlight = true;
+        writeJson(res, 200, {
+          ok: true,
+          leased: true,
+          batch: first,
+          queueDepth: privateBetQueue.length,
+          state
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/operator/complete-private-batch') {
+        if (getPrivacyMode() !== 'zk_strong') {
+          throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
+        }
+        const body = await readJsonBody(req);
+        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        const batchId = requireString(body.id, 'id');
+        const txHash =
+          typeof body.txHash === 'string' && body.txHash.trim().length > 0 ? body.txHash.trim() : null;
+        const relayerReimbursedNanomina =
+          typeof body.relayerReimbursedNanomina === 'string' && body.relayerReimbursedNanomina.trim().length > 0
+            ? body.relayerReimbursedNanomina.trim()
+            : '0';
+        const first = privateBetQueue[0];
+        if (!first || first.id !== batchId) {
+          throw new Error('leased private batch no longer matches queue head');
+        }
+        const result = await applySuccessfulPrivateBetBatch({
+          stateFile: defaultStatePath,
+          queuedBet: first,
+          txHash,
+          relayerReimbursedNanomina
+        });
+        privateBatchInFlight = false;
+        writeJson(res, 200, {
+          ok: true,
+          result,
+          queueDepth: privateBetQueue.length
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/operator/fail-private-batch') {
+        if (getPrivacyMode() !== 'zk_strong') {
+          throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
+        }
+        const body = await readJsonBody(req);
+        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        const batchId = requireString(body.id, 'id');
+        const first = privateBetQueue[0];
+        if (!first || first.id !== batchId) {
+          throw new Error('leased private batch no longer matches queue head');
+        }
+        await recordPrivateBatchFailure(body.error, first.marketKey);
+        privateBatchInFlight = false;
+        writeJson(res, 200, {
+          ok: true,
           queueDepth: privateBetQueue.length
         });
         return;

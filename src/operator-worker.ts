@@ -1,5 +1,8 @@
 import './env.js';
 
+import { DEFAULT_STATE_FILE, saveOperatorState } from './state-store.js';
+import { proveAndSendPrivateQueuedBet, type PrivateQueuedBet } from './private-batch-processor.js';
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -21,6 +24,7 @@ function requireEnv(name: string): string {
 
 const baseUrl = requireEnv('OPERATOR_BASE_URL').replace(/\/+$/, '');
 const operatorToken = requireEnv('OPERATOR_ACTION_TOKEN');
+const localStatePath = process.env.STATE_FILE || DEFAULT_STATE_FILE;
 
 async function req(path: string, init: RequestInit = {}): Promise<any> {
   const headers = new Headers(init.headers || {});
@@ -85,11 +89,43 @@ async function maybeProcessPrivateQueue(): Promise<void> {
   const depth = Number(status.queueDepth || 0);
   if (depth <= 0) return;
   console.log(`[operator-worker] processing private queue depth=${depth}`);
-  const result = await req('/api/operator/process-private-batch', {
+  const lease = await req('/api/operator/lease-private-batch', {
     method: 'POST',
     body: JSON.stringify({})
   });
-  console.log(`[operator-worker] processed queue remaining=${result.queueDepth}`);
+  if (!lease?.leased || !lease?.batch || !lease?.state) return;
+
+  const batch = lease.batch as PrivateQueuedBet;
+  try {
+    await saveOperatorState(localStatePath, lease.state);
+    const result = await proveAndSendPrivateQueuedBet({
+      queuedBet: batch,
+      stateFile: localStatePath
+    });
+    const completed = await req('/api/operator/complete-private-batch', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: batch.id,
+        txHash: result.txHash,
+        relayerReimbursedNanomina: result.relayerReimbursedNanomina
+      })
+    });
+    console.log(`[operator-worker] processed queue remaining=${completed.queueDepth}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      await req('/api/operator/fail-private-batch', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: batch.id,
+          error: message
+        })
+      });
+    } catch (releaseError) {
+      console.error('[operator-worker] failed to release leased private batch:', releaseError);
+    }
+    throw error;
+  }
 }
 
 async function maybeEnsureDailyMarkets(): Promise<void> {
