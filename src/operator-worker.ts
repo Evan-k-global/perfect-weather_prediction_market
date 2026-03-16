@@ -14,6 +14,22 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function envEnabled(name: string, fallback = true): boolean {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') return false;
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
+  return fallback;
+}
+
+function envOptionalInt(name: string): number | null {
+  const raw = process.env[name];
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
@@ -129,6 +145,7 @@ async function maybeProcessPrivateQueue(): Promise<void> {
 }
 
 async function maybeEnsureDailyMarkets(): Promise<void> {
+  if (!envEnabled('OPERATOR_WORKER_ENABLE_ENSURE', true)) return;
   console.log('[operator-worker] ensuring forward daily markets');
   const result = await req('/api/operator/ensure-daily-markets', {
     method: 'POST',
@@ -140,6 +157,7 @@ async function maybeEnsureDailyMarkets(): Promise<void> {
 }
 
 async function maybeResolveDueMarkets(): Promise<void> {
+  if (!envEnabled('OPERATOR_WORKER_ENABLE_RESOLVE', true)) return;
   const data = await req('/api/markets', { method: 'GET' });
   const markets = Array.isArray(data?.markets) ? data.markets : [];
   const todayIso = currentPacificDateIso();
@@ -177,7 +195,8 @@ async function runCycle(cycle: number): Promise<void> {
     console.error(`[operator-worker] cycle=${cycle} resolve step failed:`, error);
   }
 
-  const ensureEvery = envInt('OPERATOR_WORKER_ENSURE_EVERY', 10);
+  const ensureEveryOverride = envOptionalInt('OPERATOR_WORKER_ENSURE_EVERY');
+  const ensureEvery = ensureEveryOverride === null ? 10 : ensureEveryOverride;
   if (ensureEvery > 0 && cycle % ensureEvery === 0) {
     try {
       await maybeEnsureDailyMarkets();
@@ -192,9 +211,17 @@ async function main(): Promise<void> {
   const intervalMs = envInt('OPERATOR_WORKER_INTERVAL_MS', 30000);
   const retryMs = envInt('OPERATOR_WORKER_RETRY_MS', 120000);
   const startDelayMs = envInt('OPERATOR_WORKER_START_DELAY_MS', 20000);
+  const resolveEnabled = envEnabled('OPERATOR_WORKER_ENABLE_RESOLVE', true);
+  const ensureEnabled = envEnabled('OPERATOR_WORKER_ENABLE_ENSURE', true);
+  const ensureEveryOverride = envOptionalInt('OPERATOR_WORKER_ENSURE_EVERY');
   console.log(`[operator-worker] base_url=${baseUrl}`);
   console.log(
     `[operator-worker] interval_ms=${intervalMs} retry_ms=${retryMs} start_delay_ms=${startDelayMs}`
+  );
+  console.log(
+    `[operator-worker] resolve_enabled=${resolveEnabled} ensure_enabled=${ensureEnabled} ensure_every=${
+      ensureEveryOverride === null ? 'default(10)' : ensureEveryOverride
+    }`
   );
   if (startDelayMs > 0) {
     console.log(`[operator-worker] initial delay ${startDelayMs}ms`);
