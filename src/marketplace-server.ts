@@ -78,6 +78,7 @@ const PRIVATE_BET_QUEUE_FILE = './data/private-bet-queue.json';
 const PRIVATE_BATCH_HISTORY_FILE = './data/private-batch-history.json';
 const DAILY_SETTLE_STATE_FILE = './data/daily-settle-state.json';
 const TLSN_STATUS_FILE = './data/tlsn-output/latest/status.json';
+const STARTUP_READY_FILE = './data/startup-ready.json';
 
 type AgentModel = {
   id: string;
@@ -882,6 +883,22 @@ async function loadDisplayWeatherSnapshot(): Promise<Awaited<ReturnType<typeof l
     return await fetchNws94027Snapshot(NWS_94027_STRICT_URL);
   } catch {
     return null;
+  }
+}
+
+async function readStartupReadyState(): Promise<{ ready: boolean; reason: string }> {
+  try {
+    const raw = await readFile(STARTUP_READY_FILE, 'utf8');
+    const parsed = JSON.parse(raw) as { ready?: unknown; reason?: unknown };
+    return {
+      ready: parsed.ready === true,
+      reason: typeof parsed.reason === 'string' && parsed.reason.length > 0 ? parsed.reason : 'starting'
+    };
+  } catch {
+    return {
+      ready: process.env.SYNC_STATE_ON_START !== '1',
+      reason: process.env.SYNC_STATE_ON_START === '1' ? 'waiting for startup-ready marker' : 'startup sync not requested'
+    };
   }
 }
 
@@ -1809,6 +1826,18 @@ async function main(): Promise<void> {
             acpCreditEscrowPathEnabled: acpCreditEscrowEnabled,
             manualWeatherRefreshEnabled: !(process.env.RENDER === 'true' || process.env.IS_RENDER === 'true')
           },
+          ts: new Date().toISOString()
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/ready') {
+        const readiness = await readStartupReadyState();
+        const status = readiness.ready ? 200 : 503;
+        writeJson(res, status, {
+          ok: readiness.ready,
+          ready: readiness.ready,
+          reason: readiness.reason,
           ts: new Date().toISOString()
         });
         return;

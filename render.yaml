@@ -3,6 +3,7 @@ services:
     name: perfect-weather-prediction-market
     env: docker
     dockerfilePath: ./deploy/Dockerfile
+    healthCheckPath: /api/ready
     disk:
       name: perfect-weather-data
       mountPath: /app/data

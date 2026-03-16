@@ -21,9 +21,20 @@ run_state_sync() {
   node --enable-source-maps /app/dist/sync-state-zeko.js -- --state-file "${STATE_FILE}"
 }
 
+mark_ready() {
+  printf '{"ready":true,"reason":"%s","at":"%s"}\n' "$1" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" > /app/data/startup-ready.json
+}
+
+mark_not_ready() {
+  printf '{"ready":false,"reason":"%s","at":"%s"}\n' "$1" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" > /app/data/startup-ready.json
+}
+
+mark_not_ready "starting"
+
 if [ "$SYNC_ON_START" = "1" ] && [ "$SYNC_BLOCKING" = "1" ]; then
   echo "[render-start] startup sync mode=blocking"
   run_state_sync
+  mark_ready "blocking startup sync finished"
 fi
 
 node --enable-source-maps /app/dist/marketplace-server.js &
@@ -32,10 +43,17 @@ MARKETPLACE_PID=$!
 if [ "$SYNC_ON_START" = "1" ] && [ "$SYNC_BLOCKING" != "1" ]; then
   echo "[render-start] startup sync mode=background"
   (
-    run_state_sync
-    echo "[render-start] background state sync finished"
+    if run_state_sync; then
+      echo "[render-start] background state sync finished"
+      mark_ready "background startup sync finished"
+    else
+      echo "[render-start] background state sync failed"
+      mark_not_ready "background startup sync failed"
+    fi
   ) &
   SYNC_PID=$!
+elif [ "$SYNC_ON_START" != "1" ]; then
+  mark_ready "startup sync disabled"
 fi
 
 DAEMON_PID=""
