@@ -14,6 +14,10 @@ services:
         value: /opt/zk-verify-poc
       - key: WEATHER_DAEMON_ENABLED
         value: "0"
+      - key: SYNC_STATE_ON_START
+        value: "1"
+      - key: SYNC_STATE_BLOCKING
+        value: "0"
   - type: worker
     name: perfect-weather-operator-worker
     env: docker
