@@ -369,6 +369,7 @@
       let privacyMode = "zk_strong";
       let zkappFundingAddress = null;
       let zkappConfigError = null;
+      let manualWeatherRefreshEnabled = true;
       let latestOracleRows = [];
 
       async function req(path, opts = {}) {
@@ -395,11 +396,19 @@
         privacyMode = String(health.privacyMode || "zk_strong");
         zkappFundingAddress = typeof health.zkappPublicKey === "string" ? health.zkappPublicKey : null;
         zkappConfigError = typeof health.zkappConfigError === "string" ? health.zkappConfigError : null;
+        manualWeatherRefreshEnabled = health?.features?.manualWeatherRefreshEnabled !== false;
         if (privacyStatusEl) {
           privacyStatusEl.textContent =
             privacyMode === "zk_strong"
               ? "Private betting queue, batched settlement"
               : "Privacy mode: direct per-user tx path";
+        }
+        if (refreshWeatherTopBtn) {
+          refreshWeatherTopBtn.disabled = !manualWeatherRefreshEnabled;
+          refreshWeatherTopBtn.textContent = manualWeatherRefreshEnabled ? "Sync Oracle" : "Oracle Worker Syncs";
+          refreshWeatherTopBtn.title = manualWeatherRefreshEnabled
+            ? "Refresh oracle data now"
+            : "Manual refresh is disabled on the hosted market service because the oracle worker syncs weather in the background.";
         }
         if (privacyMode === "zk_strong" && !zkappFundingAddress) {
           placeMarketBetBtn.disabled = true;
@@ -854,18 +863,27 @@
         const res = await req(`/api/payouts/resolved-markets?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
         const positions = Array.isArray(res.positions) ? res.positions : [];
         if (!positions.length) {
-          resolvedMarketsPanelEl.textContent = "No resolved winning positions are currently available for claim.";
+          resolvedMarketsPanelEl.textContent = "No resolved positions found for this wallet yet.";
           return;
         }
         resolvedMarketsPanelEl.innerHTML = positions.map((p, idx) => {
           const claimed = Boolean(p.claimed);
+          const won = Boolean(p.won);
+          const canClaim = won && !claimed && p.claimStatus !== "submitted";
+          const buttonLabel = won
+            ? claimed
+              ? "Claimed"
+              : p.claimStatus === "submitted"
+                ? "Claim Submitted"
+                : "Claim Payout"
+            : "No Payout";
           return `
             <div class="market" style="margin-bottom:${idx === positions.length - 1 ? "0" : "8px"};">
-              <div class="small"><b>${p.marketDate || "Resolved market"}</b> | ${String(p.side || "").toUpperCase()} won</div>
-              <div class="tiny">Stake ${p.stakeTmina} tMINA | Pot ${p.totalPotTmina} tMINA | Payout ${p.payoutTmina} tMINA</div>
+              <div class="small"><b>${p.marketDate || "Resolved market"}</b> | You picked ${String(p.side || "").toUpperCase()} | Result ${String(p.resolvedOutcome || "").toUpperCase()} ${won ? "won" : "lost"}</div>
+              <div class="tiny">Stake ${p.stakeTmina} tMINA | Pot ${p.totalPotTmina} tMINA | ${won ? `Payout ${p.payoutTmina} tMINA` : "No payout on losing side"}</div>
               <div class="tiny">Market ${p.marketKey} | Position ${p.positionKey}</div>
               <div class="row" style="grid-template-columns: 1fr;">
-                <button class="${claimed ? "ghost" : "buy"}" data-claim-idx="${idx}" ${claimed ? "disabled" : ""}>${claimed ? "Claimed" : "Claim Payout"}</button>
+                <button class="${canClaim ? "buy" : "ghost"}" data-claim-idx="${idx}" ${canClaim ? "" : "disabled"}>${buttonLabel}</button>
               </div>
             </div>`;
         }).join("");
@@ -873,6 +891,7 @@
           el.onclick = () => {
             const idx = Number(el.getAttribute("data-claim-idx"));
             if (!Number.isFinite(idx) || idx < 0 || idx >= positions.length) return;
+            if (!positions[idx].won) return;
             claimResolvedPosition(positions[idx]);
           };
         });
@@ -1037,6 +1056,12 @@
       };
 
       refreshWeatherTopBtn.onclick = async () => {
+        if (!manualWeatherRefreshEnabled) {
+          out.textContent = toJson({
+            note: "Manual oracle refresh is disabled on the hosted market service. The oracle worker syncs forecast data automatically."
+          });
+          return;
+        }
         try {
           const res = await req("/api/weather/94027/refresh", {
             method: "POST",

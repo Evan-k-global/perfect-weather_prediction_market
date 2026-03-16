@@ -206,6 +206,23 @@ type PrivateBatchHistoryEntry = {
   error?: string;
 };
 
+type ResolvedWalletPosition = {
+  positionKey: string;
+  marketKey: string;
+  marketDate: string | null;
+  side: 'over' | 'under';
+  stakeTmina: number;
+  totalPotTmina: number;
+  payoutTmina: number;
+  resolvedOutcome: 'over' | 'under';
+  won: boolean;
+  claimed: boolean;
+  claimStatus: 'claimable' | 'submitted' | 'confirmed' | 'not-applicable';
+  claimTxHash: string | null;
+  claimSubmittedAtUnixMs: number | null;
+  claimConfirmedAtUnixMs: number | null;
+};
+
 // Agent plug-in surface:
 // - register new agents via /api/agents/register
 // - accept private prompts via /api/orders/create
@@ -1278,39 +1295,12 @@ function payoutNanominaForStake(totalPositionBet: bigint, totalYesPositionBet: b
   return (totalPositionBet * stake) / pool;
 }
 
-async function listResolvedClaimablePositions(walletPublicKey: string, stateFile: string): Promise<
-  Array<{
-    positionKey: string;
-    marketKey: string;
-    marketDate: string | null;
-    side: 'over' | 'under';
-    stakeTmina: number;
-    totalPotTmina: number;
-    payoutTmina: number;
-    resolvedOutcome: 'over' | 'under';
-    claimed: boolean;
-    claimStatus: 'claimable' | 'submitted' | 'confirmed';
-    claimTxHash: string | null;
-    claimSubmittedAtUnixMs: number | null;
-    claimConfirmedAtUnixMs: number | null;
-  }>
-> {
+async function listResolvedWalletPositions(
+  walletPublicKey: string,
+  stateFile: string
+): Promise<ResolvedWalletPosition[]> {
   const state = await reconcileSubmittedPayoutClaims(stateFile);
-  const result: Array<{
-    positionKey: string;
-    marketKey: string;
-    marketDate: string | null;
-    side: 'over' | 'under';
-    stakeTmina: number;
-    totalPotTmina: number;
-    payoutTmina: number;
-    resolvedOutcome: 'over' | 'under';
-    claimed: boolean;
-    claimStatus: 'claimable' | 'submitted' | 'confirmed';
-    claimTxHash: string | null;
-    claimSubmittedAtUnixMs: number | null;
-    claimConfirmedAtUnixMs: number | null;
-  }> = [];
+  const result: ResolvedWalletPosition[] = [];
   for (const [positionKey, meta] of Object.entries(state.positionMeta || {})) {
     if (!meta || meta.walletPublicKey !== walletPublicKey) continue;
     const storedPosition = state.positions[positionKey];
@@ -1322,11 +1312,11 @@ async function listResolvedClaimablePositions(walletPublicKey: string, stateFile
     if (!marketLeaf.resolved.toBoolean()) continue;
     const resolvedOutcome = marketLeaf.outcome.toBoolean() ? 'over' : 'under';
     const side = positionLeaf.sideOver.toBoolean() ? 'over' : 'under';
-    if (side !== resolvedOutcome) continue;
     const totalPot = BigInt(marketLeaf.totalPositionBet.toString());
     const totalYes = BigInt(marketLeaf.totalYesPositionBet.toString());
     const stake = BigInt(positionLeaf.stake.toString());
-    const payout = payoutNanominaForStake(totalPot, totalYes, marketLeaf.outcome.toBoolean(), stake);
+    const won = side === resolvedOutcome;
+    const payout = won ? payoutNanominaForStake(totalPot, totalYes, marketLeaf.outcome.toBoolean(), stake) : 0n;
     result.push({
       positionKey,
       marketKey: meta.marketKey,
@@ -1336,12 +1326,15 @@ async function listResolvedClaimablePositions(walletPublicKey: string, stateFile
       totalPotTmina: Number(totalPot),
       payoutTmina: Number(payout),
       resolvedOutcome,
+      won,
       claimed: positionLeaf.claimed.toBoolean(),
-      claimStatus: positionLeaf.claimed.toBoolean()
-        ? 'confirmed'
-        : meta.claimStatus === 'submitted'
-          ? 'submitted'
-          : 'claimable',
+      claimStatus: won
+        ? positionLeaf.claimed.toBoolean()
+          ? 'confirmed'
+          : meta.claimStatus === 'submitted'
+            ? 'submitted'
+            : 'claimable'
+        : 'not-applicable',
       claimTxHash: meta.claimTxHash || null,
       claimSubmittedAtUnixMs: meta.claimSubmittedAtUnixMs || null,
       claimConfirmedAtUnixMs: meta.claimConfirmedAtUnixMs || null
@@ -1813,7 +1806,8 @@ async function main(): Promise<void> {
           features: {
             oracleCommitteePathEnabled: committeeEnabled,
             governancePathEnabled: governanceEnabled,
-            acpCreditEscrowPathEnabled: acpCreditEscrowEnabled
+            acpCreditEscrowPathEnabled: acpCreditEscrowEnabled,
+            manualWeatherRefreshEnabled: !(process.env.RENDER === 'true' || process.env.IS_RENDER === 'true')
           },
           ts: new Date().toISOString()
         });
@@ -1947,13 +1941,13 @@ async function main(): Promise<void> {
 
       if (req.method === 'GET' && url.pathname === '/api/payouts/resolved-markets') {
         const walletPublicKey = requireString(url.searchParams.get('walletPublicKey'), 'walletPublicKey');
-        const claimables = await listResolvedClaimablePositions(walletPublicKey, defaultStatePath);
+        const positions = await listResolvedWalletPositions(walletPublicKey, defaultStatePath);
         writeJson(res, 200, {
           ok: true,
           walletPublicKey,
-          count: claimables.length,
-          positions: claimables,
-          note: 'Payout claims are public claim transactions. Current live default still prioritizes private bet intent.'
+          count: positions.length,
+          positions,
+          note: 'Winning resolved positions can be claimed publicly. Losing resolved positions are shown for history.'
         });
         return;
       }
@@ -2084,6 +2078,8 @@ async function main(): Promise<void> {
           throw new Error('leased private batch no longer matches queue head');
         }
         await recordPrivateBatchFailure(body.error, first.marketKey);
+        privateBetQueue.shift();
+        await savePrivateBetQueue(privateBetQueue);
         privateBatchInFlight = false;
         writeJson(res, 200, {
           ok: true,
@@ -2688,6 +2684,9 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/weather/94027/refresh') {
+        if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
+          throw new Error('manual weather refresh is disabled on the hosted market service; the oracle worker syncs forecast data automatically');
+        }
         let refreshed: Awaited<ReturnType<typeof refreshWeatherWithOptionalTlsn>>;
         try {
           refreshed = await refreshWeatherWithOptionalTlsn(undefined);
