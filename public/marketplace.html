@@ -318,7 +318,7 @@
 
           <section class="card">
             <h3>Your Activity</h3>
-            <pre id="out">{}</pre>
+            <div id="out" class="small">Connect wallet to view activity.</div>
           </section>
 
         </section>
@@ -531,6 +531,15 @@
         return `${value.slice(0, 8)}...${value.slice(-6)}`;
       }
 
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
       function setBatchPill(status) {
         if (!batchPill) return;
         const recent = status?.recentBatch || null;
@@ -556,7 +565,7 @@
           currentMarketOnChainCreated = false;
           setMarketAvailabilityNote(
             currentMarketDate
-              ? `Locked market ${currentMarketDate} is not active on-chain yet. Betting opens after operator market creation.`
+              ? `Locked market ${currentMarketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
               : "Select a market date to see when betting is available."
           );
           return;
@@ -564,12 +573,27 @@
         currentMarketKey = String(market.marketKey);
         currentMarketResolved = Boolean(market.resolved);
         currentMarketOnChainCreated = true;
-        const yesPct = Math.round((Number(market.impliedProbability || 0) * 1000)) / 10;
+        const selectedDaily = dailyMarkets.find((m) => m.marketDate === currentMarketDate) || null;
+        const displayedTotal = Number(
+          selectedDaily && Number.isFinite(Number(selectedDaily.projectedPoolTmina))
+            ? selectedDaily.projectedPoolTmina
+            : Number(market.totalPositionBet || 0)
+        );
+        const displayedOver = Number(
+          selectedDaily && Number.isFinite(Number(selectedDaily.projectedOverTmina))
+            ? selectedDaily.projectedOverTmina
+            : Number(market.totalYesPositionBet || 0)
+        );
+        const implied = Number.isFinite(displayedTotal) && displayedTotal > 0 ? displayedOver / displayedTotal : Number(market.impliedProbability || 0);
+        const pendingTotal = Number(selectedDaily?.pendingPrivatePoolTmina || 0);
+        const yesPct = Math.round((implied * 1000)) / 10;
         const noPct = Math.round((100 - yesPct) * 10) / 10;
         currentMarketYesPct = yesPct;
         currentMarketNoPct = noPct;
         marketOddsBarEl.style.setProperty("--yesw", `${Math.max(0, Math.min(100, yesPct))}%`);
-        marketOddsLabelEl.textContent = `OVER ${yesPct.toFixed(1)}% / UNDER ${noPct.toFixed(1)}%`;
+        marketOddsLabelEl.textContent =
+          `OVER ${yesPct.toFixed(1)}% / UNDER ${noPct.toFixed(1)}%` +
+          (pendingTotal > 0 ? ` | incl. ${pendingTotal} tMINA pending` : "");
         placeMarketBetBtn.disabled = Boolean(market.resolved);
         if (market.resolved) {
           out.textContent = toJson({
@@ -591,8 +615,21 @@
         currentThresholdF = Number.isFinite(Number(selected.thresholdF)) ? Number(selected.thresholdF) : 68;
         betYesOptionEl.textContent = `OVER (Over ${currentThresholdF}F)`;
         betNoOptionEl.textContent = `UNDER (${currentThresholdF}F or Lower)`;
-        const total = Number(selected.onChainCreated ? selected.onChainPoolTmina : selected.totalPositionBet);
-        const overStake = Number(selected.onChainCreated ? selected.onChainOverTmina : selected.totalYesPositionBet);
+        const total = Number(
+          Number.isFinite(Number(selected.projectedPoolTmina))
+            ? selected.projectedPoolTmina
+            : selected.onChainCreated
+              ? selected.onChainPoolTmina
+              : selected.totalPositionBet
+        );
+        const overStake = Number(
+          Number.isFinite(Number(selected.projectedOverTmina))
+            ? selected.projectedOverTmina
+            : selected.onChainCreated
+              ? selected.onChainOverTmina
+              : selected.totalYesPositionBet
+        );
+        const pendingTotal = Number(selected.pendingPrivatePoolTmina || 0);
         const underStake = Number.isFinite(total) && Number.isFinite(overStake) ? total - overStake : NaN;
         const overPayout = Number.isFinite(total) && total > 0 && Number.isFinite(overStake) && overStake > 0
           ? `${(total / overStake).toFixed(2)}`
@@ -602,12 +639,14 @@
           : "n/a";
         if (selectedPayoutLabelEl) {
           const potLabel = Number.isFinite(total) ? `${total} tMINA` : "n/a";
-          selectedPayoutLabelEl.textContent = `Winning odds: OVER ${overPayout} | UNDER ${underPayout} | Pot ${potLabel}`;
+          selectedPayoutLabelEl.textContent =
+            `Winning odds: OVER ${overPayout} | UNDER ${underPayout} | Pot ${potLabel}` +
+            (pendingTotal > 0 ? ` | includes ${pendingTotal} tMINA pending private queue` : "");
         }
         if (!selected.onChainCreated) {
           placeMarketBetBtn.disabled = true;
           setMarketAvailabilityNote(
-            `Locked threshold is ${currentThresholdF}F, but this market is not active on-chain yet. Wait for operator market creation.`
+            `Locked threshold is ${currentThresholdF}F, but this date is not active on-chain yet. It opens automatically once the daily market creation cycle reaches it.`
           );
         }
       }
@@ -785,7 +824,7 @@
                   <div class="odds-yes"></div>
                   <div class="odds-no"></div>
                 </div>
-                <div class="tiny">OVER ${row.yesPct.toFixed(1)}% / UNDER ${row.noPct.toFixed(1)}% | Pot ${row.potLabel}</div>
+                <div class="tiny">OVER ${row.yesPct.toFixed(1)}% / UNDER ${row.noPct.toFixed(1)}% | Pot ${row.potLabel}${row.pendingLabel ? ` | ${row.pendingLabel}` : ""}</div>
               </td>
             </tr>`
           ))
@@ -800,8 +839,13 @@
 
       function renderOracleFallbackFromDailyMarkets() {
         latestOracleRows = (dailyMarkets || []).slice(0, 6).map((m, idx) => {
-          const total = Number(m.onChainPoolTmina);
-          const over = Number(m.onChainOverTmina);
+          const total = Number(
+            Number.isFinite(Number(m.projectedPoolTmina)) ? m.projectedPoolTmina : m.onChainPoolTmina
+          );
+          const over = Number(
+            Number.isFinite(Number(m.projectedOverTmina)) ? m.projectedOverTmina : m.onChainOverTmina
+          );
+          const pending = Number(m.pendingPrivatePoolTmina || 0);
           const marketProb = Number.isFinite(total) && total > 0 ? over / total : 0.5;
           const yesPct = Math.round((marketProb * 1000)) / 10;
           const noPct = Math.round(((1 - marketProb) * 1000)) / 10;
@@ -815,6 +859,7 @@
             noPct,
             yesWidth: Math.max(0, Math.min(100, yesPct)),
             potLabel: Number.isFinite(total) ? `${total} tMINA` : "0 tMINA",
+            pendingLabel: pending > 0 ? `${pending} tMINA pending` : "",
             settled: Boolean(m.settlement?.settled),
             settlementLabel: m.settlement?.settled
               ? `settled${Number.isFinite(Number(m.settlement?.observedHighF)) ? ` @ ${m.settlement.observedHighF}F` : ""}`
@@ -904,7 +949,36 @@
           return;
         }
         const activity = await req(`/api/wallet/activity?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
-        out.textContent = toJson(activity);
+        const queued = Array.isArray(activity.queued) ? activity.queued : [];
+        const positions = Array.isArray(activity.positions) ? activity.positions : [];
+        if (!queued.length && !positions.length) {
+          out.textContent = "No queued or on-chain activity for this wallet yet.";
+          return;
+        }
+        const sections = [];
+        if (queued.length) {
+          sections.push(`
+            <div class="small" style="margin-bottom:8px;"><b>Queued Private Bets</b></div>
+            ${queued.map((item) => `
+              <div class="market" style="margin-bottom:8px;">
+                <div class="small"><b>${escapeHtml(item.marketDate || "Queued market")}</b> | ${escapeHtml(String(item.side || "").toUpperCase())} | ${escapeHtml(String(item.stakeTmina))} tMINA</div>
+                <div class="tiny">Status ${escapeHtml(item.status || "QUEUED")} | Funding tx ${escapeHtml(item.fundingTxHash || "pending")}</div>
+              </div>
+            `).join("")}
+          `);
+        }
+        if (positions.length) {
+          sections.push(`
+            <div class="small" style="margin:${queued.length ? "12px" : "0"} 0 8px;"><b>On-Chain Positions</b></div>
+            ${positions.map((item) => `
+              <div class="market" style="margin-bottom:8px;">
+                <div class="small"><b>${escapeHtml(item.marketDate || "On-chain market")}</b> | ${escapeHtml(String(item.side || "").toUpperCase())} | ${escapeHtml(String(item.stakeTmina ?? "n/a"))} tMINA</div>
+                <div class="tiny">${item.resolved ? `Resolved ${escapeHtml(String(item.resolvedOutcome || "").toUpperCase())} ${item.won ? "(won)" : "(lost)"}` : "Open on-chain"}${item.claimed ? " | Claimed" : ""}</div>
+              </div>
+            `).join("")}
+          `);
+        }
+        out.innerHTML = sections.join("");
       }
 
       async function refreshWeather() {
@@ -955,14 +1029,19 @@
             }));
 
         latestOracleRows = perDate.map((r, idx) => {
-          const onChainTotal = Number(r.onChainPoolTmina);
-          const onChainOver = Number(r.onChainOverTmina);
-          const marketProb = Number.isFinite(onChainTotal) && onChainTotal > 0 ? onChainOver / onChainTotal : 0.5;
+          const displayedTotal = Number(
+            Number.isFinite(Number(r.projectedPoolTmina)) ? r.projectedPoolTmina : r.onChainPoolTmina
+          );
+          const displayedOver = Number(
+            Number.isFinite(Number(r.projectedOverTmina)) ? r.projectedOverTmina : r.onChainOverTmina
+          );
+          const pending = Number(r.pendingPrivatePoolTmina || 0);
+          const marketProb = Number.isFinite(displayedTotal) && displayedTotal > 0 ? displayedOver / displayedTotal : 0.5;
           const yesPct = Math.round((marketProb * 1000)) / 10;
           const noPct = Math.round(((1 - marketProb) * 1000)) / 10;
           const high = Number(r.currentForecastHighF);
           const low = Number.isFinite(high) ? buildIntradayCurve(high, idx).lowF : NaN;
-          const total = Number.isFinite(onChainTotal) ? onChainTotal : 0;
+          const total = Number.isFinite(displayedTotal) ? displayedTotal : 0;
           const settlement = r.settlement || null;
           return {
             dayIndex: idx,
@@ -974,6 +1053,7 @@
             noPct,
             yesWidth: Math.max(0, Math.min(100, yesPct)),
             potLabel: Number.isFinite(total) ? `${total} tMINA` : "n/a",
+            pendingLabel: pending > 0 ? `${pending} tMINA pending` : "",
             settled: Boolean(settlement?.settled),
             settlementLabel: settlement?.settled
               ? `settled${Number.isFinite(Number(settlement.observedHighF)) ? ` @ ${settlement.observedHighF}F` : ""}`
@@ -996,7 +1076,7 @@
           if (privacyMode === "zk_strong") {
             if (!currentMarketOnChainCreated) {
               throw new Error(
-                `Locked market ${currentMarketDate} is not active on-chain yet. Wait for market creation before funding and queueing a private bet.`
+                `Locked market ${currentMarketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
               );
             }
             setBetProgress("Funding private pool...", true);
@@ -1141,7 +1221,7 @@
         refreshPageState().catch((e) => {
           console.warn("interval refresh failed", e);
         });
-      }, 60000);
+      }, 15000);
     </script>
   </body>
 </html>

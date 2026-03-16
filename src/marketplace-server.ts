@@ -1249,7 +1249,8 @@ function resolvePrimaryMarketThresholdF(state: Awaited<ReturnType<typeof loadOpe
 
 function attachOnChainDailyMarketState(
   dailyMarkets: Array<DemoDailyMarket & { settlement?: DailySettlementInfo; currentForecastHighF?: number | null; pOverThreshold?: number; pAtOrBelowThreshold?: number; currentDayIndex?: number | null }>,
-  state: Awaited<ReturnType<typeof loadOperatorState>>
+  state: Awaited<ReturnType<typeof loadOperatorState>>,
+  pendingPrivateByDate: Record<string, { totalPositionBet: number; totalYesPositionBet: number }> = {}
 ) {
   const viewList = toMarketViews(state, 0);
   const viewsByKey = new Map(viewList.map((m) => [String(m.marketKey), m]));
@@ -1260,18 +1261,39 @@ function attachOnChainDailyMarketState(
   );
   return dailyMarkets.map((market) => {
     const onChain = viewsByKey.get(String(market.marketKey)) || viewsByDate.get(market.marketDate) || null;
+    const pending = pendingPrivateByDate[market.marketDate] || { totalPositionBet: 0, totalYesPositionBet: 0 };
+    const basePoolTmina = onChain ? Number(onChain.totalPositionBet) : market.totalPositionBet;
+    const baseOverTmina = onChain ? Number(onChain.totalYesPositionBet) : market.totalYesPositionBet;
+    const projectedPoolTmina = basePoolTmina + pending.totalPositionBet;
+    const projectedOverTmina = baseOverTmina + pending.totalYesPositionBet;
     return {
       ...market,
       marketKey: onChain ? String(onChain.marketKey) : market.marketKey,
       thresholdF: onChain ? Number(onChain.thresholdF) : market.thresholdF,
-      totalPositionBet: onChain ? Number(onChain.totalPositionBet) : market.totalPositionBet,
-      totalYesPositionBet: onChain ? Number(onChain.totalYesPositionBet) : market.totalYesPositionBet,
+      totalPositionBet: basePoolTmina,
+      totalYesPositionBet: baseOverTmina,
       onChainCreated: Boolean(onChain),
       onChainResolved: onChain ? Boolean(onChain.resolved) : false,
       onChainPoolTmina: onChain ? Number(onChain.totalPositionBet) : 0,
-      onChainOverTmina: onChain ? Number(onChain.totalYesPositionBet) : 0
+      onChainOverTmina: onChain ? Number(onChain.totalYesPositionBet) : 0,
+      pendingPrivatePoolTmina: pending.totalPositionBet,
+      pendingPrivateOverTmina: pending.totalYesPositionBet,
+      projectedPoolTmina,
+      projectedOverTmina
     };
   });
+}
+
+function summarizePendingPrivateBetsByDate() {
+  const byDate: Record<string, { totalPositionBet: number; totalYesPositionBet: number }> = {};
+  for (const bet of privateBetQueue) {
+    if (!bet.marketDate) continue;
+    const current = byDate[bet.marketDate] || { totalPositionBet: 0, totalYesPositionBet: 0 };
+    current.totalPositionBet += Number.isFinite(bet.addTotalBet) ? bet.addTotalBet : 0;
+    current.totalYesPositionBet += Number.isFinite(bet.addYesBet) ? bet.addYesBet : 0;
+    byDate[bet.marketDate] = current;
+  }
+  return byDate;
 }
 
 function deriveDailyMarketsFromOnChainState(
@@ -1922,14 +1944,14 @@ async function main(): Promise<void> {
         const selectedMarket = findSelectedOnChainMarket(state, marketKey, marketDate);
         if (!selectedMarket) {
           throw new Error(
-            `market ${marketDate} is not active on-chain yet. Wait for market creation before placing a private bet.`
+            `market ${marketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
           );
         }
         const effectiveMarketKey = String(selectedMarket.marketKey);
         const existingMarket = state.markets[effectiveMarketKey];
         if (!existingMarket) {
           throw new Error(
-            `market ${marketDate} is not active on-chain yet. Wait for market creation before placing a private bet.`
+            `market ${marketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
           );
         }
         const existingLeaf = deserializeMarketLeaf(existingMarket);
@@ -2502,7 +2524,9 @@ async function main(): Promise<void> {
         const currentState = await loadOperatorState(defaultStatePath);
         const selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
         if (!selectedMarket) {
-          throw new Error(`market ${marketDate} is not active on-chain yet. Wait for market creation before placing a bet.`);
+          throw new Error(
+            `market ${marketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
+          );
         }
         const effectiveMarketKey = String(selectedMarket.marketKey);
         if (selectedThresholdF !== null && Number.isFinite(Number(selectedMarket.thresholdF))) {
@@ -3048,9 +3072,11 @@ async function main(): Promise<void> {
           snapshot || Object.keys(await loadDemoDailyMarkets()).length > 0
             ? await ensureDemoDailyMarketsFromSnapshot(snapshot)
             : deriveDailyMarketsFromOnChainState(state);
+        const pendingPrivateByDate = summarizePendingPrivateBetsByDate();
         const dailyMarkets = attachOnChainDailyMarketState(
           await withDailySettlementInfo(withCurrentForecast(baseDailyMarkets, snapshot)),
-          state
+          state,
+          pendingPrivateByDate
         );
         let contest = await loadContestState(selectedDate, 15, contestStateFileForDate(selectedDate));
         let autoSettledDates: string[] = [];
@@ -3091,9 +3117,11 @@ async function main(): Promise<void> {
           snapshot || Object.keys(await loadDemoDailyMarkets()).length > 0
             ? await ensureDemoDailyMarketsFromSnapshot(snapshot)
             : deriveDailyMarketsFromOnChainState(state);
+        const pendingPrivateByDate = summarizePendingPrivateBetsByDate();
         const dailyMarkets = attachOnChainDailyMarketState(
           await withDailySettlementInfo(withCurrentForecast(baseDailyMarkets, snapshot)),
-          state
+          state,
+          pendingPrivateByDate
         );
         writeJson(res, 200, {
           count: dailyMarkets.length,
