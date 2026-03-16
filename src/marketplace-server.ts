@@ -247,6 +247,7 @@ const privateBetQueue: PrivateQueuedBet[] = [];
 const privateBatchHistory: PrivateBatchHistoryEntry[] = [];
 let contractCompilePromise: Promise<unknown> | null = null;
 let privateBatchInFlight = false;
+let privateBatchLeaseStartedAtUnixMs: number | null = null;
 
 function getPrivacyMode(): PrivacyMode {
   const mode = (process.env.PRIVACY_MODE || 'zk_strong').trim().toLowerCase();
@@ -301,6 +302,12 @@ function getDemoBaseConfigHashField(): Field {
 
 function deriveDemoDateMarketKey(dateIso: string): string {
   return deriveDateKeyedMarketKey(getDemoBaseConfigHashField(), fieldFromIsoDate(dateIso)).toString();
+}
+
+function marketDateFromViewTitle(title: string | undefined): string | null {
+  if (!title) return null;
+  const match = /^Atherton, CA - (\d{4}-\d{2}-\d{2}) Over\/Under \d+F$/.exec(title);
+  return match ? match[1] : null;
 }
 
 function ownerCommitmentFromWalletPublicKey(walletPublicKey: string): Field {
@@ -931,6 +938,38 @@ async function recordPrivateBatchFailure(error: unknown, marketKey: string | nul
   });
 }
 
+function getPrivateBatchLeaseTimeoutMs(): number {
+  const parsed = Number.parseInt(process.env.PRIVATE_BATCH_LEASE_TIMEOUT_MS || '180000', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 180000;
+}
+
+function releaseExpiredPrivateBatchLease(nowUnixMs: number = Date.now()): boolean {
+  if (!privateBatchInFlight || privateBatchLeaseStartedAtUnixMs === null) return false;
+  if (nowUnixMs - privateBatchLeaseStartedAtUnixMs < getPrivateBatchLeaseTimeoutMs()) return false;
+  console.warn(
+    `[private-batch] releasing stale lease age_ms=${nowUnixMs - privateBatchLeaseStartedAtUnixMs} queueDepth=${privateBetQueue.length}`
+  );
+  privateBatchInFlight = false;
+  privateBatchLeaseStartedAtUnixMs = null;
+  return true;
+}
+
+function findSelectedOnChainMarket(
+  state: Awaited<ReturnType<typeof loadOperatorState>>,
+  marketKey: string,
+  marketDate: string | null
+) {
+  const views = toMarketViews(state, 0);
+  return (
+    views.find((m) => String(m.marketKey) === String(marketKey)) ||
+    (marketDate
+      ? views.find((m) => marketDateFromViewTitle(m.title) === marketDate && !m.resolved) ||
+        views.find((m) => marketDateFromViewTitle(m.title) === marketDate)
+      : null) ||
+    null
+  );
+}
+
 async function applySuccessfulPrivateBetBatch(params: {
   stateFile: string;
   queuedBet: PrivateQueuedBet;
@@ -1210,11 +1249,18 @@ function attachOnChainDailyMarketState(
   dailyMarkets: Array<DemoDailyMarket & { settlement?: DailySettlementInfo; currentForecastHighF?: number | null; pOverThreshold?: number; pAtOrBelowThreshold?: number; currentDayIndex?: number | null }>,
   state: Awaited<ReturnType<typeof loadOperatorState>>
 ) {
-  const views = new Map(toMarketViews(state, 0).map((m) => [String(m.marketKey), m]));
+  const viewList = toMarketViews(state, 0);
+  const viewsByKey = new Map(viewList.map((m) => [String(m.marketKey), m]));
+  const viewsByDate = new Map(
+    viewList
+      .map((m) => [marketDateFromViewTitle(m.title), m] as const)
+      .filter((entry): entry is [string, (typeof viewList)[number]] => Boolean(entry[0]))
+  );
   return dailyMarkets.map((market) => {
-    const onChain = views.get(String(market.marketKey)) || null;
+    const onChain = viewsByKey.get(String(market.marketKey)) || viewsByDate.get(market.marketDate) || null;
     return {
       ...market,
+      marketKey: onChain ? String(onChain.marketKey) : market.marketKey,
       thresholdF: onChain ? Number(onChain.thresholdF) : market.thresholdF,
       totalPositionBet: onChain ? Number(onChain.totalPositionBet) : market.totalPositionBet,
       totalYesPositionBet: onChain ? Number(onChain.totalYesPositionBet) : market.totalYesPositionBet,
@@ -1870,20 +1916,15 @@ async function main(): Promise<void> {
             throw new Error(`market date ${marketDate} is outside rolling window (${todayIso} to ${maxDate})`);
           }
         }
-        if (selectedThresholdF !== null) {
-          const dailyMarketMap = await loadDemoDailyMarkets();
-          const daily = dailyMarketMap[marketDate];
-          if (!daily) throw new Error(`locked daily market missing for ${marketDate}; refresh oracle first`);
-          if (Math.round(daily.thresholdF) !== selectedThresholdF) {
-            throw new Error(
-              `selected threshold ${selectedThresholdF}F does not match locked daily threshold ${Math.round(
-                daily.thresholdF
-              )}F for ${marketDate}`
-            );
-          }
-        }
         const state = await loadOperatorState(defaultStatePath);
-        const existingMarket = state.markets[marketKey];
+        const selectedMarket = findSelectedOnChainMarket(state, marketKey, marketDate);
+        if (!selectedMarket) {
+          throw new Error(
+            `market ${marketDate} is not active on-chain yet. Wait for market creation before placing a private bet.`
+          );
+        }
+        const effectiveMarketKey = String(selectedMarket.marketKey);
+        const existingMarket = state.markets[effectiveMarketKey];
         if (!existingMarket) {
           throw new Error(
             `market ${marketDate} is not active on-chain yet. Wait for market creation before placing a private bet.`
@@ -1904,15 +1945,15 @@ async function main(): Promise<void> {
         }
         const id = randomUUID();
         const positionKey = fieldFromHexDigest(
-          sha256Hex(`${walletPublicKey}:${marketKey}:${marketDate || ''}:${id}:${Date.now()}`)
+          sha256Hex(`${walletPublicKey}:${effectiveMarketKey}:${marketDate || ''}:${id}:${Date.now()}`)
         ).toString();
         const ownerCommitment = ownerCommitmentFromWalletPublicKey(walletPublicKey).toString();
         const walletCommitment = sha256Hex(
-          `${walletPublicKey}:${marketKey}:${marketDate || ''}:${Math.floor(addTotalBet)}:${Math.floor(addYesBet)}:${id}:${Date.now()}`
+          `${walletPublicKey}:${effectiveMarketKey}:${marketDate || ''}:${Math.floor(addTotalBet)}:${Math.floor(addYesBet)}:${id}:${Date.now()}`
         );
         privateBetQueue.push({
           id,
-          marketKey,
+          marketKey: effectiveMarketKey,
           marketDate,
           walletPublicKey,
           positionKey,
@@ -1931,7 +1972,7 @@ async function main(): Promise<void> {
           queueDepth: privateBetQueue.length,
           intent: {
             id,
-            marketKey,
+            marketKey: effectiveMarketKey,
             marketDate,
             positionKey,
             fundingTxHash,
@@ -1945,12 +1986,14 @@ async function main(): Promise<void> {
 
       if (req.method === 'GET' && url.pathname === '/api/private-bets/status') {
         const now = Date.now();
+        releaseExpiredPrivateBatchLease(now);
         const oldest = privateBetQueue[0];
         writeJson(res, 200, {
           ok: true,
           privacyMode: getPrivacyMode(),
           queueDepth: privateBetQueue.length,
           inFlight: privateBatchInFlight,
+          leaseAgeMs: privateBatchInFlight && privateBatchLeaseStartedAtUnixMs ? now - privateBatchLeaseStartedAtUnixMs : null,
           oldestAgeMs: oldest ? now - oldest.createdAtUnixMs : null,
           recentBatch: privateBatchHistory[0] || null
         });
@@ -2032,6 +2075,7 @@ async function main(): Promise<void> {
         }
         const body = await readJsonBody(req);
         requireOperatorAuthorization(req, body as Record<string, unknown>);
+        releaseExpiredPrivateBatchLease();
         const first = privateBetQueue[0] || null;
         if (!first) {
           writeJson(res, 200, {
@@ -2053,6 +2097,7 @@ async function main(): Promise<void> {
         }
         const state = await loadOperatorState(defaultStatePath);
         privateBatchInFlight = true;
+        privateBatchLeaseStartedAtUnixMs = Date.now();
         writeJson(res, 200, {
           ok: true,
           leased: true,
@@ -2087,6 +2132,7 @@ async function main(): Promise<void> {
           relayerReimbursedNanomina
         });
         privateBatchInFlight = false;
+        privateBatchLeaseStartedAtUnixMs = null;
         writeJson(res, 200, {
           ok: true,
           result,
@@ -2110,6 +2156,7 @@ async function main(): Promise<void> {
         privateBetQueue.shift();
         await savePrivateBetQueue(privateBetQueue);
         privateBatchInFlight = false;
+        privateBatchLeaseStartedAtUnixMs = null;
         writeJson(res, 200, {
           ok: true,
           queueDepth: privateBetQueue.length
@@ -2335,24 +2382,24 @@ async function main(): Promise<void> {
             throw new Error(`market date ${marketDate} is outside rolling window (${todayIso} to ${maxDate})`);
           }
         }
-        if (selectedThresholdF !== null) {
-          const dailyMarketMap = await loadDemoDailyMarkets();
-          const daily = dailyMarketMap[marketDate];
-          if (!daily) {
-            throw new Error(`locked daily market missing for ${marketDate}; refresh oracle first`);
-          }
-          if (Math.round(daily.thresholdF) !== selectedThresholdF) {
+        await refreshState(projectRoot);
+        const currentState = await loadOperatorState(defaultStatePath);
+        const selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
+        if (!selectedMarket) {
+          throw new Error(`market ${marketDate} is not active on-chain yet. Wait for market creation before placing a bet.`);
+        }
+        const effectiveMarketKey = String(selectedMarket.marketKey);
+        if (selectedThresholdF !== null && Number.isFinite(Number(selectedMarket.thresholdF))) {
+          const onChainThresholdF = Math.round(Number(selectedMarket.thresholdF));
+          if (onChainThresholdF !== selectedThresholdF) {
             throw new Error(
-              `selected threshold ${selectedThresholdF}F does not match locked daily threshold ${Math.round(
-                daily.thresholdF
-              )}F for ${marketDate}`
+              `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
             );
           }
         }
-        await refreshState(projectRoot);
         const built = await buildWalletFeePayerMarketBetTx({
           stateFile: defaultStatePath,
-          marketKey,
+          marketKey: effectiveMarketKey,
           addTotalBet: Math.floor(addTotalBet),
           addYesBet: Math.floor(addYesBet),
           marketDate,
