@@ -1,5 +1,5 @@
 import { Bool, Field, MerkleMap, UInt64 } from 'o1js';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { MarketLeaf, PositionLeaf } from './contract.js';
 
@@ -126,7 +126,9 @@ export async function loadOperatorState(statePath: string): Promise<OperatorStat
 
 export async function saveOperatorState(statePath: string, state: OperatorStateFile): Promise<void> {
   await mkdir(path.dirname(statePath), { recursive: true });
-  await writeFile(statePath, JSON.stringify(state, null, 2), 'utf8');
+  const tempPath = `${statePath}.tmp`;
+  await writeFile(tempPath, JSON.stringify(state, null, 2), 'utf8');
+  await rename(tempPath, statePath);
 }
 
 export function buildMarketsMerkleMap(state: OperatorStateFile): MerkleMap {
