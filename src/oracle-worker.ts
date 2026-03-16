@@ -1,13 +1,21 @@
 import './env.js';
-import { readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { runWeatherAttestation } from './weather-attest.js';
+import { DEFAULT_STATE_FILE, saveOperatorState, type OperatorStateFile, type StoredMarketMeta } from './state-store.js';
 import {
   NWS_94027_REQUEST_PATH,
   NWS_94027_SERVER_NAME,
   NWS_94027_STRICT_URL,
+  currentLocalDate,
+  nowLocalHour,
   snapshotFromTlsnAttestation
 } from './weather-service.js';
 import { verifyTlsnAttestationFile } from './tlsn-verifier.js';
+
+const execFileAsync = promisify(execFile);
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -24,6 +32,15 @@ function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`Missing env ${name}`);
   return value;
+}
+
+function envEnabled(name: string, fallback = true): boolean {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') return false;
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
+  return fallback;
 }
 
 async function readTlsnStatus(filePath: string): Promise<{ stage: string; ok: boolean; ts: string; message?: string } | null> {
@@ -69,6 +86,115 @@ async function req(baseUrl: string, operatorToken: string, endpoint: string, bod
   return data;
 }
 
+function marketDateFromTitle(title: string | undefined): string | null {
+  if (!title) return null;
+  const match = /^Atherton, CA - (\d{4}-\d{2}-\d{2}) Over\/Under \d+F$/.exec(title);
+  return match ? match[1] : null;
+}
+
+async function saveDailyMarketsFile(
+  filePath: string,
+  dailyMarkets: Record<string, unknown>
+): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, JSON.stringify(dailyMarkets, null, 2), 'utf8');
+}
+
+async function loadJsonFile<T>(filePath: string): Promise<T> {
+  const raw = await readFile(filePath, 'utf8');
+  return JSON.parse(raw) as T;
+}
+
+function changedKeys<T>(before: Record<string, T> | undefined, after: Record<string, T> | undefined): Record<string, T> {
+  const result: Record<string, T> = {};
+  for (const [key, value] of Object.entries(after || {})) {
+    if (JSON.stringify((before || {})[key]) !== JSON.stringify(value)) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+async function maybeRunChainActions(baseUrl: string, operatorToken: string): Promise<void> {
+  if (!envEnabled('ORACLE_WORKER_ENABLE_CHAIN_ACTIONS', true)) return;
+  const exportPayload = await req(baseUrl, operatorToken, '/api/operator/export-state', {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+  const state = exportPayload?.state as OperatorStateFile | null;
+  const dailyMarkets = (exportPayload?.dailyMarkets || {}) as Record<string, unknown>;
+  if (!state) return;
+
+  const stateFile = process.env.STATE_FILE || DEFAULT_STATE_FILE;
+  const dailyMarketsFile = process.env.DEMO_DAILY_MARKETS_FILE || './data/demo-daily-threshold-markets.json';
+  await saveOperatorState(stateFile, state);
+  await saveDailyMarketsFile(dailyMarketsFile, dailyMarkets);
+
+  const projectRoot = process.cwd();
+  const ensureArgs = [
+    'ensure-daily-markets:zeko',
+    '--',
+    '--state-file',
+    stateFile,
+    '--daily-markets-file',
+    dailyMarketsFile
+  ];
+  const ensured = await execFileAsync('pnpm', ensureArgs, { cwd: projectRoot, env: process.env });
+  if (ensured.stdout.trim()) console.log(ensured.stdout.trim());
+  if (ensured.stderr.trim()) console.error(ensured.stderr.trim());
+
+  const updatedStateAfterEnsure = await loadJsonFile<OperatorStateFile>(stateFile);
+  const todayIso = currentLocalDate();
+  const nowHour = nowLocalHour();
+  for (const [marketKey, meta] of Object.entries(updatedStateAfterEnsure.marketMeta || {})) {
+    const marketDate = marketDateFromTitle((meta as StoredMarketMeta | undefined)?.title);
+    const stored = updatedStateAfterEnsure.markets[marketKey];
+    if (!marketDate || !stored || stored.resolved === '1') continue;
+    const shouldResolve = marketDate < todayIso || (marketDate === todayIso && nowHour >= 19);
+    if (!shouldResolve) continue;
+    const resolveArgs = [
+      'resolve-daily-market:zeko',
+      '--',
+      '--market-date',
+      marketDate,
+      '--attestation',
+      process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json',
+      '--state-file',
+      stateFile
+    ];
+    const resolved = await execFileAsync('pnpm', resolveArgs, { cwd: projectRoot, env: process.env });
+    if (resolved.stdout.trim()) console.log(resolved.stdout.trim());
+    if (resolved.stderr.trim()) console.error(resolved.stderr.trim());
+  }
+
+  const finalState = await loadJsonFile<OperatorStateFile>(stateFile);
+  const finalDailyMarkets = await loadJsonFile<Record<string, unknown>>(dailyMarketsFile);
+  const markets = changedKeys(state.markets || {}, finalState.markets || {});
+  const marketMeta = changedKeys(state.marketMeta || {}, finalState.marketMeta || {});
+  const usedNonces = changedKeys(state.usedNonces || {}, finalState.usedNonces || {});
+  const changedDailyMarkets = changedKeys(dailyMarkets, finalDailyMarkets);
+  if (
+    Object.keys(markets).length === 0 &&
+    Object.keys(marketMeta).length === 0 &&
+    Object.keys(usedNonces).length === 0 &&
+    Object.keys(changedDailyMarkets).length === 0
+  ) {
+    return;
+  }
+  const imported = await req(baseUrl, operatorToken, '/api/operator/import-state', {
+    method: 'POST',
+    body: JSON.stringify({
+      markets,
+      marketMeta,
+      usedNonces,
+      dailyMarkets: changedDailyMarkets
+    })
+  });
+  console.log(
+    `[oracle-worker] imported chain actions markets=${imported.marketsImported} marketMeta=${imported.marketMetaImported} dailyMarkets=${imported.dailyMarketsImported} usedNonces=${imported.usedNoncesImported}`
+  );
+}
+
 async function runCycle(baseUrl: string, operatorToken: string): Promise<void> {
   await runWeatherAttestation();
   const attestationPath = process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json';
@@ -97,6 +223,7 @@ async function runCycle(baseUrl: string, operatorToken: string): Promise<void> {
   console.log(
     `[oracle-worker] synced snapshot verified=${result.snapshotVerified ? 'yes' : 'no'} mode=${result.verificationMode}`
   );
+  await maybeRunChainActions(baseUrl, operatorToken);
 }
 
 async function main(): Promise<void> {
@@ -111,6 +238,7 @@ async function main(): Promise<void> {
 
   console.log(`[oracle-worker] base_url=${baseUrl}`);
   console.log(`[oracle-worker] interval_ms=${intervalMs} retry_ms=${retryMs} start_delay_ms=${startDelayMs}`);
+  console.log(`[oracle-worker] chain_actions=${envEnabled('ORACLE_WORKER_ENABLE_CHAIN_ACTIONS', true) ? 'enabled' : 'disabled'}`);
   if (startDelayMs > 0) {
     console.log(`[oracle-worker] initial delay ${startDelayMs}ms`);
     await sleep(startDelayMs);

@@ -63,7 +63,9 @@ import {
   deserializePositionLeaf,
   saveOperatorState,
   serializeMarketLeaf,
-  serializePositionLeaf
+  serializePositionLeaf,
+  type StoredMarketLeaf,
+  type StoredMarketMeta
 } from './state-store.js';
 import { withTxRetry } from './tx-retry.js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
@@ -2024,6 +2026,66 @@ async function main(): Promise<void> {
         return;
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/wallet/activity') {
+        const walletPublicKey = requireString(url.searchParams.get('walletPublicKey'), 'walletPublicKey');
+        const state = await loadOperatorState(defaultStatePath);
+        const queued = privateBetQueue
+          .filter((entry) => entry.walletPublicKey === walletPublicKey)
+          .map((entry) => ({
+            type: 'queued-private-bet' as const,
+            id: entry.id,
+            marketKey: entry.marketKey,
+            marketDate: entry.marketDate,
+            side: entry.addYesBet === entry.addTotalBet ? 'over' : 'under',
+            stakeTmina: entry.addTotalBet,
+            createdAtUnixMs: entry.createdAtUnixMs,
+            fundingTxHash: entry.fundingTxHash,
+            status: entry.status
+          }));
+        const positions = Object.entries(state.positionMeta || {})
+          .filter(([, meta]) => meta?.walletPublicKey === walletPublicKey)
+          .map(([positionKey, meta]) => {
+            const storedPosition = state.positions[positionKey];
+            const storedMarket = state.markets[meta.marketKey];
+            const positionLeaf = storedPosition ? deserializePositionLeaf(storedPosition) : null;
+            const marketLeaf = storedMarket ? deserializeMarketLeaf(storedMarket) : null;
+            const side = positionLeaf?.sideOver.toBoolean() ? 'over' : 'under';
+            const resolved = marketLeaf?.resolved.toBoolean() || false;
+            const resolvedOutcome = resolved ? (marketLeaf?.outcome.toBoolean() ? 'over' : 'under') : null;
+            return {
+              type: 'position' as const,
+              positionKey,
+              marketKey: meta.marketKey,
+              marketDate: meta.marketDate,
+              side,
+              stakeTmina: positionLeaf ? Number(positionLeaf.stake.toString()) : null,
+              createdAtUnixMs: meta.createdAtUnixMs,
+              fundingTxHash: meta.fundingTxHash,
+              resolved,
+              resolvedOutcome,
+              won: resolved && resolvedOutcome !== null ? side === resolvedOutcome : null,
+              claimed: positionLeaf?.claimed.toBoolean() || false,
+              claimStatus: meta.claimStatus || null,
+              claimTxHash: meta.claimTxHash || null
+            };
+          })
+          .sort((a, b) => {
+            const ad = a.marketDate || '';
+            const bd = b.marketDate || '';
+            if (ad !== bd) return ad < bd ? 1 : -1;
+            return (b.createdAtUnixMs || 0) - (a.createdAtUnixMs || 0);
+          });
+        writeJson(res, 200, {
+          ok: true,
+          walletPublicKey,
+          queuedCount: queued.length,
+          positionCount: positions.length,
+          queued,
+          positions
+        });
+        return;
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/private-bets/process-batch') {
         if (getPrivacyMode() !== 'zk_strong') {
           throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
@@ -2104,6 +2166,60 @@ async function main(): Promise<void> {
           batch: first,
           queueDepth: privateBetQueue.length,
           state
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/operator/export-state') {
+        const body = await readJsonBody(req);
+        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        const state = await loadOperatorState(defaultStatePath);
+        const dailyMarkets = await loadDemoDailyMarkets();
+        writeJson(res, 200, {
+          ok: true,
+          state,
+          dailyMarkets
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/operator/import-state') {
+        const body = await readJsonBody(req);
+        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        const importedMarkets = ((body.markets as Record<string, StoredMarketLeaf>) || {});
+        const importedMarketMeta = ((body.marketMeta as Record<string, StoredMarketMeta>) || {});
+        const importedUsedNonces = ((body.usedNonces as Record<string, string>) || {});
+        const currentState = await loadOperatorState(defaultStatePath);
+        const nextState = {
+          ...currentState,
+          markets: {
+            ...currentState.markets,
+            ...importedMarkets
+          },
+          marketMeta: {
+            ...(currentState.marketMeta || {}),
+            ...importedMarketMeta
+          },
+          usedNonces: {
+            ...currentState.usedNonces,
+            ...importedUsedNonces
+          }
+        };
+        await saveOperatorState(defaultStatePath, nextState);
+        const dailyMarketsPatch = body.dailyMarkets;
+        if (dailyMarketsPatch && typeof dailyMarketsPatch === 'object') {
+          const currentDailyMarkets = await loadDemoDailyMarkets();
+          await saveDemoDailyMarkets({
+            ...currentDailyMarkets,
+            ...(dailyMarketsPatch as Record<string, DemoDailyMarket>)
+          });
+        }
+        writeJson(res, 200, {
+          ok: true,
+          marketsImported: Object.keys(importedMarkets).length,
+          marketMetaImported: Object.keys(importedMarketMeta).length,
+          dailyMarketsImported: Object.keys((body.dailyMarkets as Record<string, unknown>) || {}).length,
+          usedNoncesImported: Object.keys(importedUsedNonces).length
         });
         return;
       }

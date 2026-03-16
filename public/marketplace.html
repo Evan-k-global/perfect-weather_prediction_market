@@ -897,6 +897,16 @@
         });
       }
 
+      async function refreshWalletActivity() {
+        if (!out) return;
+        if (!walletPublicKey) {
+          out.textContent = toJson({ note: "Connect wallet to view queued and on-chain activity." });
+          return;
+        }
+        const activity = await req(`/api/wallet/activity?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
+        out.textContent = toJson(activity);
+      }
+
       async function refreshWeather() {
         let data;
         try {
@@ -1011,6 +1021,7 @@
             });
             await refreshMarket();
             await refreshWeather();
+            await refreshWalletActivity();
             try {
               const q = await req("/api/private-bets/status");
               setBatchPill(q);
@@ -1048,6 +1059,7 @@
           await new Promise((r) => setTimeout(r, 1000));
           await refreshMarket();
           await refreshWeather();
+          await refreshWalletActivity();
           setBetProgress("Bet placed successfully", false);
         } catch (e) {
           setBetProgress("Bet failed", false);
@@ -1104,7 +1116,8 @@
           refreshDailyMarkets,
           refreshMarket,
           refreshWeather,
-          refreshResolvedMarkets
+          refreshResolvedMarkets,
+          refreshWalletActivity
         ];
         for (const step of steps) {
           try {
