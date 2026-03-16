@@ -1859,6 +1859,26 @@ async function main(): Promise<void> {
             );
           }
         }
+        const state = await loadOperatorState(defaultStatePath);
+        const existingMarket = state.markets[marketKey];
+        if (!existingMarket) {
+          throw new Error(
+            `market ${marketDate} is not active on-chain yet. Wait for market creation before placing a private bet.`
+          );
+        }
+        const existingLeaf = deserializeMarketLeaf(existingMarket);
+        if (existingLeaf.resolved.toBoolean()) {
+          throw new Error(`market ${marketDate} is already resolved`);
+        }
+        if (selectedThresholdF !== null) {
+          const thresholdValueTenthC = Number(existingLeaf.thresholdValueTenthC.toString());
+          const onChainThresholdF = Math.round(((thresholdValueTenthC / 10) * 9) / 5 + 32);
+          if (onChainThresholdF !== selectedThresholdF) {
+            throw new Error(
+              `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
+            );
+          }
+        }
         const id = randomUUID();
         const positionKey = fieldFromHexDigest(
           sha256Hex(`${walletPublicKey}:${marketKey}:${marketDate || ''}:${id}:${Date.now()}`)

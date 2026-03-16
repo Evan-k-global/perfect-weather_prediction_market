@@ -273,6 +273,7 @@
               <button id="refreshWeatherTop" class="ghost">Sync Oracle</button>
             </div>
             <p class="tiny">Pool and market OVER/UNDER odds are on-chain aggregate values synced from the market state.</p>
+            <div class="tiny" id="marketAvailabilityNote"></div>
             <div class="tiny hidden" id="betProgress"></div>
           </section>
 
@@ -316,20 +317,6 @@
           </section>
 
           <section class="card">
-            <h3>Settlement Actions</h3>
-            <p class="hint">Public backstop for a closed unresolved market. Queue processing remains operator-only.</p>
-            <div class="field">
-              <label for="operatorToken">Operator Token</label>
-              <input id="operatorToken" type="password" placeholder="Enter operator token" />
-            </div>
-            <div class="row action-row" style="grid-template-columns:1fr;">
-              <button id="processPrivateQueueBtn" class="ghost">Process Private Queue</button>
-              <button id="resolveSelectedMarketBtn" class="ghost hidden">Resolve Selected Market</button>
-            </div>
-            <div class="tiny" id="operatorActionStatus">Selected market date will be used for manual resolution when eligible.</div>
-          </section>
-
-          <section class="card">
             <h3>Your Activity</h3>
             <pre id="out">{}</pre>
           </section>
@@ -355,12 +342,9 @@
       const weatherVizGraphEl = document.getElementById("weatherVizGraph");
       const weatherVizSvgEl = document.getElementById("weatherVizSvg");
       const resolvedMarketsPanelEl = document.getElementById("resolvedMarketsPanel");
-      const operatorTokenEl = document.getElementById("operatorToken");
-      const processPrivateQueueBtn = document.getElementById("processPrivateQueueBtn");
-      const resolveSelectedMarketBtn = document.getElementById("resolveSelectedMarketBtn");
-      const operatorActionStatusEl = document.getElementById("operatorActionStatus");
       const placeMarketBetBtn = document.getElementById("placeMarketBet");
       const betProgressEl = document.getElementById("betProgress");
+      const marketAvailabilityNoteEl = document.getElementById("marketAvailabilityNote");
       const betYesOptionEl = document.getElementById("betYesOption");
       const betNoOptionEl = document.getElementById("betNoOption");
       const marketOddsBarEl = document.getElementById("marketOddsBar");
@@ -381,11 +365,11 @@
       let currentMarketYesPct = 50.0;
       let currentMarketNoPct = 50.0;
       let currentMarketResolved = false;
+      let currentMarketOnChainCreated = false;
       let privacyMode = "zk_strong";
       let zkappFundingAddress = null;
       let zkappConfigError = null;
       let latestOracleRows = [];
-      let operatorToken = sessionStorage.getItem("operatorActionToken") || "";
 
       async function req(path, opts = {}) {
         const res = await fetch(base + path, { cache: "no-store", ...opts });
@@ -400,78 +384,9 @@
         return json;
       }
 
-      function operatorHeaders(extra = {}) {
-        return operatorToken ? { ...extra, "x-operator-token": operatorToken } : extra;
-      }
-
-      function currentMarketAwaitingResolution() {
-        if (!currentMarketDate || currentMarketResolved) return false;
-        const todayIso = currentPacificDateIso();
-        const nowParts = new Intl.DateTimeFormat("en-US", {
-          timeZone: "America/Los_Angeles",
-          hour: "2-digit",
-          hour12: false
-        }).formatToParts(new Date());
-        const hour = Number(nowParts.find((p) => p.type === "hour")?.value || "0");
-        return currentMarketDate < todayIso || (currentMarketDate === todayIso && hour >= 19);
-      }
-
-      function updateSettlementActionUi() {
-        if (!resolveSelectedMarketBtn || !operatorActionStatusEl) return;
-        const showResolve = currentMarketAwaitingResolution();
-        resolveSelectedMarketBtn.classList.toggle("hidden", !showResolve);
-        resolveSelectedMarketBtn.disabled = !showResolve;
-        if (showResolve) {
-          operatorActionStatusEl.textContent = `Market ${currentMarketDate} is closed and unresolved. Anyone can push settlement once.`;
-        } else {
-          operatorActionStatusEl.textContent = `Selected market date: ${currentMarketDate || "n/a"}`;
-        }
-      }
-
-      function syncOperatorToken() {
-        operatorToken = (operatorTokenEl?.value || "").trim();
-        if (operatorToken) {
-          sessionStorage.setItem("operatorActionToken", operatorToken);
-        } else {
-          sessionStorage.removeItem("operatorActionToken");
-        }
-      }
-
-      async function processPrivateQueueManually() {
-        try {
-          syncOperatorToken();
-          operatorActionStatusEl.textContent = "Processing queued private bets...";
-          const res = await req("/api/operator/process-private-batch", {
-            method: "POST",
-            headers: operatorHeaders({ "content-type": "application/json" }),
-            body: JSON.stringify({})
-          });
-          out.textContent = toJson(res);
-          operatorActionStatusEl.textContent = `Processed queue. Remaining depth: ${res.queueDepth}`;
-          await refreshPageState();
-        } catch (e) {
-          operatorActionStatusEl.textContent = "Queue processing failed";
-          out.textContent = toJson({ error: String(e) });
-        }
-      }
-
-      async function resolveSelectedMarketManually() {
-        try {
-          if (!currentMarketDate) throw new Error("no selected market date");
-          operatorActionStatusEl.textContent = `Resolving ${currentMarketDate}...`;
-          const res = await req("/api/public/resolve-daily-market", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ marketDate: currentMarketDate })
-          });
-          out.textContent = toJson(res);
-          operatorActionStatusEl.textContent = res.ignored
-            ? `${currentMarketDate}: ${res.reason}`
-            : `Resolved ${currentMarketDate}`;
-          await refreshPageState();
-        } catch (e) {
-          operatorActionStatusEl.textContent = "Manual resolution failed";
-          out.textContent = toJson({ error: String(e) });
+      function setMarketAvailabilityNote(text) {
+        if (marketAvailabilityNoteEl) {
+          marketAvailabilityNoteEl.textContent = text || "";
         }
       }
 
@@ -629,11 +544,17 @@
         if (!market) {
           placeMarketBetBtn.disabled = true;
           currentMarketResolved = false;
-          updateSettlementActionUi();
+          currentMarketOnChainCreated = false;
+          setMarketAvailabilityNote(
+            currentMarketDate
+              ? `Locked market ${currentMarketDate} is not active on-chain yet. Betting opens after operator market creation.`
+              : "Select a market date to see when betting is available."
+          );
           return;
         }
         currentMarketKey = String(market.marketKey);
         currentMarketResolved = Boolean(market.resolved);
+        currentMarketOnChainCreated = true;
         const yesPct = Math.round((Number(market.impliedProbability || 0) * 1000)) / 10;
         const noPct = Math.round((100 - yesPct) * 10) / 10;
         currentMarketYesPct = yesPct;
@@ -645,8 +566,10 @@
           out.textContent = toJson({
             error: "Active on-chain market is resolved. Create a new unresolved market, sync state, then place bet."
           });
+          setMarketAvailabilityNote(`Market ${currentMarketDate || currentMarketKey} has already resolved.`);
+        } else {
+          setMarketAvailabilityNote(`Active on-chain market for ${currentMarketDate || "selected date"} is ready for private betting.`);
         }
-        updateSettlementActionUi();
       }
 
       function applySelectedDailyMarket() {
@@ -655,6 +578,7 @@
         currentMarketDate = selected.marketDate;
         currentMarketKey = String(selected.marketKey || "");
         currentMarketResolved = Boolean(selected.onChainResolved);
+        currentMarketOnChainCreated = Boolean(selected.onChainCreated);
         currentThresholdF = Number.isFinite(Number(selected.thresholdF)) ? Number(selected.thresholdF) : 68;
         betYesOptionEl.textContent = `OVER (Over ${currentThresholdF}F)`;
         betNoOptionEl.textContent = `UNDER (${currentThresholdF}F or Lower)`;
@@ -673,8 +597,10 @@
         }
         if (!selected.onChainCreated) {
           placeMarketBetBtn.disabled = true;
+          setMarketAvailabilityNote(
+            `Locked threshold is ${currentThresholdF}F, but this market is not active on-chain yet. Wait for operator market creation.`
+          );
         }
-        updateSettlementActionUi();
       }
 
       async function refreshDailyMarkets() {
@@ -922,13 +848,13 @@
       async function refreshResolvedMarkets() {
         if (!resolvedMarketsPanelEl) return;
         if (!walletPublicKey) {
-          resolvedMarketsPanelEl.textContent = "Connect wallet to load resolved claimable positions.";
+          resolvedMarketsPanelEl.textContent = "Connect wallet to load resolved winning positions that are ready for public payout claim.";
           return;
         }
         const res = await req(`/api/payouts/resolved-markets?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
         const positions = Array.isArray(res.positions) ? res.positions : [];
         if (!positions.length) {
-          resolvedMarketsPanelEl.textContent = "No resolved winning positions available for claim.";
+          resolvedMarketsPanelEl.textContent = "No resolved winning positions are currently available for claim.";
           return;
         }
         resolvedMarketsPanelEl.innerHTML = positions.map((p, idx) => {
@@ -1039,6 +965,11 @@
           const side = String(document.getElementById("betSide").value || "over");
 
           if (privacyMode === "zk_strong") {
+            if (!currentMarketOnChainCreated) {
+              throw new Error(
+                `Locked market ${currentMarketDate} is not active on-chain yet. Wait for market creation before funding and queueing a private bet.`
+              );
+            }
             setBetProgress("Funding private pool...", true);
             const fundingTxHash = await sendWalletPayment(zkappFundingAddress, Math.floor(stake));
             setBetProgress("Creating private commitment...", true);
@@ -1123,7 +1054,6 @@
 
       marketDateSelectEl.onchange = async () => {
         applySelectedDailyMarket();
-        updateSettlementActionUi();
         await refreshWeather();
         await refreshMarket();
       };
@@ -1141,17 +1071,6 @@
       if (!window.mina) {
         setWalletStatus("Wallet not yet connected");
       }
-      if (operatorTokenEl) {
-        operatorTokenEl.value = operatorToken;
-        operatorTokenEl.onchange = syncOperatorToken;
-        operatorTokenEl.oninput = syncOperatorToken;
-      }
-      if (processPrivateQueueBtn) {
-        processPrivateQueueBtn.onclick = processPrivateQueueManually;
-      }
-      if (resolveSelectedMarketBtn) {
-        resolveSelectedMarketBtn.onclick = resolveSelectedMarketManually;
-      }
       setupLoopingVideo(bgVideoEl);
 
       async function refreshPageState() {
@@ -1166,7 +1085,7 @@
           try {
             await step();
           } catch (e) {
-            out.textContent = toJson({ error: String(e) });
+            console.warn("refreshPageState step failed", e);
           }
         }
         try {
@@ -1178,11 +1097,11 @@
       }
 
       refreshPageState().catch((e) => {
-        out.textContent = toJson({ error: String(e) });
+        console.warn("initial refresh failed", e);
       });
       setInterval(() => {
         refreshPageState().catch((e) => {
-          out.textContent = toJson({ error: String(e) });
+          console.warn("interval refresh failed", e);
         });
       }, 60000);
     </script>
