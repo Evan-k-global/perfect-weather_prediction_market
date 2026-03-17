@@ -196,42 +196,46 @@ async function maybeRunChainActions(baseUrl: string, operatorToken: string): Pro
 }
 
 async function runCycle(baseUrl: string, operatorToken: string): Promise<void> {
-  await runWeatherAttestation();
-  const attestationPath = process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json';
-  const statusPath = process.env.TLSN_STATUS_FILE || './data/tlsn-output/latest/status.json';
-  const maxAgeMs = Number.parseInt(process.env.WEATHER_TLSN_MAX_AGE_MS || '3600000', 10);
-  const strict = process.env.WEATHER_REQUIRE_TLSN === '1';
-  const { attestation, report } = await verifyTlsnAttestationFile(attestationPath, {
-    allowedServerName: NWS_94027_SERVER_NAME,
-    allowedRequestPath: NWS_94027_REQUEST_PATH,
-    maxAgeMs,
-    maxFutureSkewMs: 0,
-    strict,
-    nowMs: Date.now()
-  });
-  const snapshot = snapshotFromTlsnAttestation(attestation, report, NWS_94027_STRICT_URL);
-  const tlsnStatus = (await readTlsnStatus(statusPath)) || {
-    stage: 'done',
-    ok: true,
-    ts: new Date(snapshot.fetchedAtUnixMs).toISOString(),
-    message: 'oracle worker verified snapshot'
-  };
-  const result = await req(baseUrl, operatorToken, '/api/operator/weather-sync', {
-    snapshot,
-    tlsnStatus
-  });
-  console.log(
-    `[oracle-worker] synced snapshot verified=${result.snapshotVerified ? 'yes' : 'no'} mode=${result.verificationMode}`
-  );
+  try {
+    await runWeatherAttestation();
+    const attestationPath = process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json';
+    const statusPath = process.env.TLSN_STATUS_FILE || './data/tlsn-output/latest/status.json';
+    const maxAgeMs = Number.parseInt(process.env.WEATHER_TLSN_MAX_AGE_MS || '3600000', 10);
+    const strict = process.env.WEATHER_REQUIRE_TLSN === '1';
+    const { attestation, report } = await verifyTlsnAttestationFile(attestationPath, {
+      allowedServerName: NWS_94027_SERVER_NAME,
+      allowedRequestPath: NWS_94027_REQUEST_PATH,
+      maxAgeMs,
+      maxFutureSkewMs: 0,
+      strict,
+      nowMs: Date.now()
+    });
+    const snapshot = snapshotFromTlsnAttestation(attestation, report, NWS_94027_STRICT_URL);
+    const tlsnStatus = (await readTlsnStatus(statusPath)) || {
+      stage: 'done',
+      ok: true,
+      ts: new Date(snapshot.fetchedAtUnixMs).toISOString(),
+      message: 'oracle worker verified snapshot'
+    };
+    const result = await req(baseUrl, operatorToken, '/api/operator/weather-sync', {
+      snapshot,
+      tlsnStatus
+    });
+    console.log(
+      `[oracle-worker] synced snapshot verified=${result.snapshotVerified ? 'yes' : 'no'} mode=${result.verificationMode}`
+    );
+  } catch (error) {
+    console.error('[oracle-worker] weather sync failed, continuing with chain actions:', error);
+  }
   await maybeRunChainActions(baseUrl, operatorToken);
 }
 
 async function main(): Promise<void> {
   const baseUrl = requireEnv('OPERATOR_BASE_URL').replace(/\/+$/, '');
   const operatorToken = requireEnv('OPERATOR_ACTION_TOKEN');
-  const intervalMs = envInt('ORACLE_WORKER_INTERVAL_MS', 30 * 60 * 1000);
-  const retryMs = envInt('ORACLE_WORKER_RETRY_MS', 5 * 60 * 1000);
-  const startDelayMs = envInt('ORACLE_WORKER_START_DELAY_MS', 10000);
+  const intervalMs = envInt('ORACLE_WORKER_INTERVAL_MS', 5 * 60 * 1000);
+  const retryMs = envInt('ORACLE_WORKER_RETRY_MS', 60 * 1000);
+  const startDelayMs = envInt('ORACLE_WORKER_START_DELAY_MS', 5000);
   process.env.WEATHER_REQUIRE_TLSN = process.env.WEATHER_REQUIRE_TLSN || '1';
   process.env.WEATHER_TLSN_ATTESTATION_FILE =
     process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json';

@@ -208,9 +208,9 @@ async function runCycle(cycle: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const intervalMs = envInt('OPERATOR_WORKER_INTERVAL_MS', 30000);
-  const retryMs = envInt('OPERATOR_WORKER_RETRY_MS', 120000);
-  const startDelayMs = envInt('OPERATOR_WORKER_START_DELAY_MS', 20000);
+  const intervalMs = envInt('OPERATOR_WORKER_INTERVAL_MS', 5000);
+  const retryMs = envInt('OPERATOR_WORKER_RETRY_MS', 15000);
+  const startDelayMs = envInt('OPERATOR_WORKER_START_DELAY_MS', 5000);
   const resolveEnabled = envEnabled('OPERATOR_WORKER_ENABLE_RESOLVE', true);
   const ensureEnabled = envEnabled('OPERATOR_WORKER_ENABLE_ENSURE', true);
   const ensureEveryOverride = envOptionalInt('OPERATOR_WORKER_ENSURE_EVERY');

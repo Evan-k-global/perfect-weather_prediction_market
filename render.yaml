@@ -29,6 +29,16 @@ services:
         value: production
       - key: ZKVERIFY_POC_ROOT
         value: /opt/zk-verify-poc
+      - key: OPERATOR_WORKER_INTERVAL_MS
+        value: "5000"
+      - key: OPERATOR_WORKER_RETRY_MS
+        value: "15000"
+      - key: OPERATOR_WORKER_START_DELAY_MS
+        value: "5000"
+      - key: OPERATOR_WORKER_ENABLE_RESOLVE
+        value: "0"
+      - key: OPERATOR_WORKER_ENABLE_ENSURE
+        value: "0"
   - type: worker
     name: perfect-weather-oracle-worker
     env: docker
@@ -39,3 +49,11 @@ services:
         value: production
       - key: ZKVERIFY_POC_ROOT
         value: /opt/zk-verify-poc
+      - key: ORACLE_WORKER_INTERVAL_MS
+        value: "300000"
+      - key: ORACLE_WORKER_RETRY_MS
+        value: "60000"
+      - key: ORACLE_WORKER_START_DELAY_MS
+        value: "5000"
+      - key: ORACLE_WORKER_ENABLE_CHAIN_ACTIONS
+        value: "1"

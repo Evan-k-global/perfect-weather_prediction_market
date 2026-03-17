@@ -313,6 +313,12 @@
           <section class="card">
             <h3>Resolved Markets</h3>
             <p class="hint">Winning claims are public payout transactions. Use this panel after a market resolves at midnight UTC+8.</p>
+            <div class="row" style="grid-template-columns: repeat(4, minmax(0, 1fr)); gap:8px; margin-bottom:8px;" id="resolvedFilters">
+              <button class="ghost" data-resolved-filter="all">All</button>
+              <button class="ghost" data-resolved-filter="claimable">Claimable</button>
+              <button class="ghost" data-resolved-filter="won">Won</button>
+              <button class="ghost" data-resolved-filter="lost">Lost</button>
+            </div>
             <div id="resolvedMarketsPanel" class="small">Connect wallet to load resolved claimable positions.</div>
           </section>
 
@@ -342,6 +348,7 @@
       const weatherVizGraphEl = document.getElementById("weatherVizGraph");
       const weatherVizSvgEl = document.getElementById("weatherVizSvg");
       const resolvedMarketsPanelEl = document.getElementById("resolvedMarketsPanel");
+      const resolvedFiltersEl = document.getElementById("resolvedFilters");
       const placeMarketBetBtn = document.getElementById("placeMarketBet");
       const betProgressEl = document.getElementById("betProgress");
       const marketAvailabilityNoteEl = document.getElementById("marketAvailabilityNote");
@@ -358,6 +365,7 @@
       let latestWeather = null;
       let selectedWeatherDay = 0;
       let walletPublicKey = null;
+      let resolvedFilter = "all";
       let currentMarketKey = "1002";
       let currentThresholdF = 68;
       let currentMarketDate = "";
@@ -902,16 +910,25 @@
       async function refreshResolvedMarkets() {
         if (!resolvedMarketsPanelEl) return;
         if (!walletPublicKey) {
-          resolvedMarketsPanelEl.textContent = "Connect wallet to load resolved winning positions that are ready for public payout claim.";
+          resolvedMarketsPanelEl.textContent = "Connect wallet to load resolved positions.";
           return;
         }
         const res = await req(`/api/payouts/resolved-markets?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
         const positions = Array.isArray(res.positions) ? res.positions : [];
-        if (!positions.length) {
-          resolvedMarketsPanelEl.textContent = "No resolved positions found for this wallet yet.";
+        const filtered = positions.filter((p) => {
+          if (resolvedFilter === "claimable") return Boolean(p.won) && !Boolean(p.claimed) && p.claimStatus !== "submitted";
+          if (resolvedFilter === "won") return Boolean(p.won);
+          if (resolvedFilter === "lost") return !Boolean(p.won);
+          return true;
+        });
+        if (!filtered.length) {
+          resolvedMarketsPanelEl.textContent =
+            positions.length > 0
+              ? `No resolved positions match the ${resolvedFilter} filter yet.`
+              : "No resolved positions found for this wallet yet.";
           return;
         }
-        resolvedMarketsPanelEl.innerHTML = positions.map((p, idx) => {
+        resolvedMarketsPanelEl.innerHTML = filtered.map((p, idx) => {
           const claimed = Boolean(p.claimed);
           const won = Boolean(p.won);
           const canClaim = won && !claimed && p.claimStatus !== "submitted";
@@ -935,9 +952,9 @@
         resolvedMarketsPanelEl.querySelectorAll("[data-claim-idx]").forEach((el) => {
           el.onclick = () => {
             const idx = Number(el.getAttribute("data-claim-idx"));
-            if (!Number.isFinite(idx) || idx < 0 || idx >= positions.length) return;
-            if (!positions[idx].won) return;
-            claimResolvedPosition(positions[idx]);
+            if (!Number.isFinite(idx) || idx < 0 || idx >= filtered.length) return;
+            if (!filtered[idx].won) return;
+            claimResolvedPosition(filtered[idx]);
           };
         });
       }
@@ -1187,6 +1204,20 @@
 
       if (!window.mina) {
         setWalletStatus("Wallet not yet connected");
+      }
+      if (resolvedFiltersEl) {
+        resolvedFiltersEl.querySelectorAll("[data-resolved-filter]").forEach((btn) => {
+          btn.className = btn.getAttribute("data-resolved-filter") === resolvedFilter ? "buy" : "ghost";
+        });
+        resolvedFiltersEl.querySelectorAll("[data-resolved-filter]").forEach((el) => {
+          el.onclick = async () => {
+            resolvedFilter = el.getAttribute("data-resolved-filter") || "all";
+            resolvedFiltersEl.querySelectorAll("[data-resolved-filter]").forEach((btn) => {
+              btn.className = btn.getAttribute("data-resolved-filter") === resolvedFilter ? "buy" : "ghost";
+            });
+            await refreshResolvedMarkets();
+          };
+        });
       }
       setupLoopingVideo(bgVideoEl);
 
