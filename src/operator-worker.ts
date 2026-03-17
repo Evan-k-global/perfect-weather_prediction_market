@@ -197,19 +197,25 @@ async function maybeProcessPrivateQueue(): Promise<void> {
 
   const batch = lease.batch as PrivateQueuedBet;
   try {
+    console.log(
+      `[operator-worker] leased batch id=${batch.id} marketDate=${batch.marketDate || 'unknown'} marketKey=${batch.marketKey}`
+    );
     await saveOperatorState(localStatePath, lease.state);
     if (lease.dailyMarkets && typeof lease.dailyMarkets === 'object') {
       await saveDailyMarketsFile(localDailyMarketsPath, lease.dailyMarkets as Record<string, unknown>);
     }
+    console.log(`[operator-worker] checking market readiness for batch ${batch.id}`);
     await ensureQueuedMarketExists(
       batch,
       lease.state as OperatorStateFile,
       (lease.dailyMarkets || {}) as Record<string, unknown>
     );
+    console.log(`[operator-worker] proving queued batch ${batch.id}`);
     const result = await proveAndSendPrivateQueuedBet({
       queuedBet: batch,
       stateFile: localStatePath
     });
+    console.log(`[operator-worker] submitting completion for batch ${batch.id} tx=${result.txHash || 'pending'}`);
     const completed = await req('/api/operator/complete-private-batch', {
       method: 'POST',
       body: JSON.stringify({

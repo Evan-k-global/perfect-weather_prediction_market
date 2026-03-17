@@ -88,6 +88,8 @@
       .hint { font-size: 12px; margin: 0 0 8px; }
       .small { font-size: 12px; margin-top: 4px; }
       .tiny { font-size: 11px; margin-top: 4px; }
+      .mini-filter-row { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; gap: 6px !important; margin-bottom: 6px !important; }
+      .mini-filter-row button { padding: 6px 8px; font-size: 12px; line-height: 1.1; min-height: 32px; }
       .hidden { display: none; }
       .oracle-meta-line {
         display: flex;
@@ -313,7 +315,7 @@
           <section class="card">
             <h3>Resolved Markets</h3>
             <p class="hint">Winning claims are public payout transactions. Use this panel after a market resolves at midnight UTC+8.</p>
-            <div class="row" style="grid-template-columns: repeat(4, minmax(0, 1fr)); gap:8px; margin-bottom:8px;" id="resolvedFilters">
+            <div class="row mini-filter-row" id="resolvedFilters">
               <button class="ghost" data-resolved-filter="all">All</button>
               <button class="ghost" data-resolved-filter="claimable">Claimable</button>
               <button class="ghost" data-resolved-filter="won">Won</button>

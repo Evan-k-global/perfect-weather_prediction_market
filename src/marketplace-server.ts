@@ -193,6 +193,7 @@ type PrivateQueuedBet = {
   fundingTxHash: string | null;
   walletCommitment: string;
   createdAtUnixMs: number;
+  leaseExpiryCount?: number;
   status: 'QUEUED';
 };
 
@@ -770,7 +771,15 @@ async function loadPrivateBetQueue(filePath: string = PRIVATE_BET_QUEUE_FILE): P
     const raw = await readFile(filePath, 'utf8');
     const parsed = JSON.parse(raw) as PrivateQueuedBet[];
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((q) => q && typeof q.id === 'string' && q.status === 'QUEUED');
+    return parsed
+      .filter((q) => q && typeof q.id === 'string' && q.status === 'QUEUED')
+      .map((q) => ({
+        ...q,
+        leaseExpiryCount:
+          typeof q.leaseExpiryCount === 'number' && Number.isFinite(q.leaseExpiryCount) && q.leaseExpiryCount >= 0
+            ? Math.floor(q.leaseExpiryCount)
+            : 0
+      }));
   } catch {
     return [];
   }
@@ -945,12 +954,35 @@ function getPrivateBatchLeaseTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 180000;
 }
 
-function releaseExpiredPrivateBatchLease(nowUnixMs: number = Date.now()): boolean {
+function getPrivateBatchMaxLeaseExpiries(): number {
+  const parsed = Number.parseInt(process.env.PRIVATE_BATCH_MAX_LEASE_EXPIRIES || '3', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 3;
+}
+
+async function releaseExpiredPrivateBatchLease(nowUnixMs: number = Date.now()): Promise<boolean> {
   if (!privateBatchInFlight || privateBatchLeaseStartedAtUnixMs === null) return false;
   if (nowUnixMs - privateBatchLeaseStartedAtUnixMs < getPrivateBatchLeaseTimeoutMs()) return false;
+  const first = privateBetQueue[0] || null;
+  const nextLeaseExpiryCount = Math.max(0, Number(first?.leaseExpiryCount || 0)) + 1;
   console.warn(
-    `[private-batch] releasing stale lease age_ms=${nowUnixMs - privateBatchLeaseStartedAtUnixMs} queueDepth=${privateBetQueue.length}`
+    `[private-batch] releasing stale lease age_ms=${nowUnixMs - privateBatchLeaseStartedAtUnixMs} queueDepth=${privateBetQueue.length} lease_expiry_count=${nextLeaseExpiryCount}`
   );
+  if (first) {
+    first.leaseExpiryCount = nextLeaseExpiryCount;
+    if (nextLeaseExpiryCount >= getPrivateBatchMaxLeaseExpiries()) {
+      await recordPrivateBatchFailure(
+        `stale lease exceeded ${nextLeaseExpiryCount} expiries; quarantined after repeated worker restarts`,
+        first.marketKey
+      );
+      privateBetQueue.shift();
+      await savePrivateBetQueue(privateBetQueue);
+      console.error(
+        `[private-batch] dropped stuck queue head id=${first.id} marketDate=${first.marketDate || 'unknown'} after repeated stale leases`
+      );
+    } else {
+      await savePrivateBetQueue(privateBetQueue);
+    }
+  }
   privateBatchInFlight = false;
   privateBatchLeaseStartedAtUnixMs = null;
   return true;
@@ -2001,6 +2033,7 @@ async function main(): Promise<void> {
           fundingTxHash,
           walletCommitment,
           createdAtUnixMs: Date.now(),
+          leaseExpiryCount: 0,
           status: 'QUEUED'
         });
         await savePrivateBetQueue(privateBetQueue);
@@ -2024,7 +2057,7 @@ async function main(): Promise<void> {
 
       if (req.method === 'GET' && url.pathname === '/api/private-bets/status') {
         const now = Date.now();
-        releaseExpiredPrivateBatchLease(now);
+        await releaseExpiredPrivateBatchLease(now);
         const oldest = privateBetQueue[0];
         writeJson(res, 200, {
           ok: true,
@@ -2173,7 +2206,7 @@ async function main(): Promise<void> {
         }
         const body = await readJsonBody(req);
         requireOperatorAuthorization(req, body as Record<string, unknown>);
-        releaseExpiredPrivateBatchLease();
+        await releaseExpiredPrivateBatchLease();
         const first = privateBetQueue[0] || null;
         if (!first) {
           writeJson(res, 200, {
