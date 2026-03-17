@@ -1,7 +1,14 @@
 import './env.js';
 
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { DEFAULT_STATE_FILE, saveOperatorState } from './state-store.js';
-import { proveAndSendPrivateQueuedBet, type PrivateQueuedBet } from './private-batch-processor.js';
+import type { PrivateBatchProofResult, PrivateQueuedBet } from './private-batch-processor.js';
+
+const execFileAsync = promisify(execFile);
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -36,6 +43,39 @@ function requireEnv(name: string): string {
     throw new Error(`Missing env ${name}`);
   }
   return value;
+}
+
+async function runPrivateBatchChild(batch: PrivateQueuedBet): Promise<PrivateBatchProofResult> {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'private-batch-'));
+  const batchFile = path.join(tempDir, 'batch.json');
+  try {
+    await writeFile(batchFile, JSON.stringify(batch), 'utf8');
+    const maxOldSpaceMb = envInt('PRIVATE_BATCH_CHILD_MAX_OLD_SPACE_MB', 1024);
+    const nodeArgs = [
+      `--max-old-space-size=${maxOldSpaceMb}`,
+      '--enable-source-maps',
+      path.resolve(process.cwd(), 'dist/process-private-batch-cli.js'),
+      '--state-file',
+      localStatePath,
+      '--batch-file',
+      batchFile
+    ];
+    const { stdout, stderr } = await execFileAsync('node', nodeArgs, {
+      cwd: process.cwd(),
+      env: process.env,
+      maxBuffer: 1024 * 1024 * 8
+    });
+    if (stderr.trim()) {
+      console.error(stderr.trim());
+    }
+    const raw = stdout.trim();
+    if (!raw) {
+      throw new Error('private batch child returned empty stdout');
+    }
+    return JSON.parse(raw) as PrivateBatchProofResult;
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 const baseUrl = requireEnv('OPERATOR_BASE_URL').replace(/\/+$/, '');
@@ -114,10 +154,7 @@ async function maybeProcessPrivateQueue(): Promise<void> {
   const batch = lease.batch as PrivateQueuedBet;
   try {
     await saveOperatorState(localStatePath, lease.state);
-    const result = await proveAndSendPrivateQueuedBet({
-      queuedBet: batch,
-      stateFile: localStatePath
-    });
+    const result = await runPrivateBatchChild(batch);
     const completed = await req('/api/operator/complete-private-batch', {
       method: 'POST',
       body: JSON.stringify({
@@ -214,10 +251,12 @@ async function main(): Promise<void> {
   const resolveEnabled = envEnabled('OPERATOR_WORKER_ENABLE_RESOLVE', true);
   const ensureEnabled = envEnabled('OPERATOR_WORKER_ENABLE_ENSURE', true);
   const ensureEveryOverride = envOptionalInt('OPERATOR_WORKER_ENSURE_EVERY');
+  const childMaxOldSpaceMb = envInt('PRIVATE_BATCH_CHILD_MAX_OLD_SPACE_MB', 1024);
   console.log(`[operator-worker] base_url=${baseUrl}`);
   console.log(
     `[operator-worker] interval_ms=${intervalMs} retry_ms=${retryMs} start_delay_ms=${startDelayMs}`
   );
+  console.log(`[operator-worker] private_batch_child_max_old_space_mb=${childMaxOldSpaceMb}`);
   console.log(
     `[operator-worker] resolve_enabled=${resolveEnabled} ensure_enabled=${ensureEnabled} ensure_every=${
       ensureEveryOverride === null ? 'default(10)' : ensureEveryOverride
