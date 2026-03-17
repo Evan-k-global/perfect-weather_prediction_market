@@ -568,12 +568,16 @@
         const markets = Array.isArray(data.markets) ? data.markets : [];
         const market = markets.find((m) => String(m.marketKey) === String(currentMarketKey)) || null;
         if (!market) {
-          placeMarketBetBtn.disabled = true;
+          placeMarketBetBtn.disabled = privacyMode !== "zk_strong";
           currentMarketResolved = false;
           currentMarketOnChainCreated = false;
           setMarketAvailabilityNote(
             currentMarketDate
-              ? `Locked market ${currentMarketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
+              ? (
+                  privacyMode === "zk_strong"
+                    ? `Locked market ${currentMarketDate} is not active on-chain yet. In private mode, your queued bet will trigger automatic market creation before settlement.`
+                    : `Locked market ${currentMarketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
+                )
               : "Select a market date to see when betting is available."
           );
           return;
@@ -652,9 +656,11 @@
             (pendingTotal > 0 ? ` | includes ${pendingTotal} tMINA pending private queue` : "");
         }
         if (!selected.onChainCreated) {
-          placeMarketBetBtn.disabled = true;
+          placeMarketBetBtn.disabled = privacyMode !== "zk_strong";
           setMarketAvailabilityNote(
-            `Locked threshold is ${currentThresholdF}F, but this date is not active on-chain yet. It opens automatically once the daily market creation cycle reaches it.`
+            privacyMode === "zk_strong"
+              ? `Locked threshold is ${currentThresholdF}F. This date is not active on-chain yet, but private mode will queue your bet and create the market before settlement.`
+              : `Locked threshold is ${currentThresholdF}F, but this date is not active on-chain yet. It opens automatically once the daily market creation cycle reaches it.`
           );
         }
       }
@@ -1091,11 +1097,6 @@
           const side = String(document.getElementById("betSide").value || "over");
 
           if (privacyMode === "zk_strong") {
-            if (!currentMarketOnChainCreated) {
-              throw new Error(
-                `Locked market ${currentMarketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
-              );
-            }
             setBetProgress("Funding private pool...", true);
             const fundingTxHash = await sendWalletPayment(zkappFundingAddress, Math.floor(stake));
             setBetProgress("Creating private commitment...", true);

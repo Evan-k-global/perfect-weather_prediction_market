@@ -35,8 +35,8 @@ services:
         value: "15000"
       - key: OPERATOR_WORKER_START_DELAY_MS
         value: "5000"
-      - key: PRIVATE_BATCH_CHILD_MAX_OLD_SPACE_MB
-        value: "1024"
+      - key: OPERATOR_NODE_MAX_OLD_SPACE_MB
+        value: "1536"
       - key: OPERATOR_WORKER_ENABLE_RESOLVE
         value: "0"
       - key: OPERATOR_WORKER_ENABLE_ENSURE

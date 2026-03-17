@@ -1942,30 +1942,44 @@ async function main(): Promise<void> {
         }
         const state = await loadOperatorState(defaultStatePath);
         const selectedMarket = findSelectedOnChainMarket(state, marketKey, marketDate);
-        if (!selectedMarket) {
-          throw new Error(
-            `market ${marketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
-          );
-        }
-        const effectiveMarketKey = String(selectedMarket.marketKey);
-        const existingMarket = state.markets[effectiveMarketKey];
-        if (!existingMarket) {
-          throw new Error(
-            `market ${marketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
-          );
-        }
-        const existingLeaf = deserializeMarketLeaf(existingMarket);
-        if (existingLeaf.resolved.toBoolean()) {
-          throw new Error(`market ${marketDate} is already resolved`);
-        }
-        if (selectedThresholdF !== null) {
-          const thresholdValueTenthC = Number(existingLeaf.thresholdValueTenthC.toString());
-          const onChainThresholdF = Math.round(((thresholdValueTenthC / 10) * 9) / 5 + 32);
-          if (onChainThresholdF !== selectedThresholdF) {
+        const dailyMarkets = marketDate ? await loadDemoDailyMarkets() : {};
+        const selectedDailyMarket = marketDate ? dailyMarkets[marketDate] || null : null;
+        let effectiveMarketKey: string;
+        if (selectedMarket) {
+          effectiveMarketKey = String(selectedMarket.marketKey);
+          const existingMarket = state.markets[effectiveMarketKey];
+          if (!existingMarket) {
+            throw new Error(`market ${marketDate} is temporarily unavailable on-chain`);
+          }
+          const existingLeaf = deserializeMarketLeaf(existingMarket);
+          if (existingLeaf.resolved.toBoolean()) {
+            throw new Error(`market ${marketDate} is already resolved`);
+          }
+          if (selectedThresholdF !== null) {
+            const thresholdValueTenthC = Number(existingLeaf.thresholdValueTenthC.toString());
+            const onChainThresholdF = Math.round(((thresholdValueTenthC / 10) * 9) / 5 + 32);
+            if (onChainThresholdF !== selectedThresholdF) {
+              throw new Error(
+                `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
+              );
+            }
+          }
+        } else {
+          if (!marketDate || !selectedDailyMarket) {
             throw new Error(
-              `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
+              `locked market ${marketDate} is unavailable. Wait for the next oracle upkeep cycle or refresh forecast state.`
             );
           }
+          const dailyThresholdF = Math.round(Number(selectedDailyMarket.thresholdF));
+          if (selectedThresholdF !== null && dailyThresholdF !== selectedThresholdF) {
+            throw new Error(
+              `selected threshold ${selectedThresholdF}F does not match locked threshold ${dailyThresholdF}F for ${marketDate}`
+            );
+          }
+          effectiveMarketKey =
+            typeof selectedDailyMarket.marketKey === 'string' && selectedDailyMarket.marketKey.length > 0
+              ? selectedDailyMarket.marketKey
+              : deriveDemoDateMarketKey(marketDate);
         }
         const id = randomUUID();
         const positionKey = fieldFromHexDigest(
@@ -2180,6 +2194,7 @@ async function main(): Promise<void> {
           return;
         }
         const state = await loadOperatorState(defaultStatePath);
+        const dailyMarkets = await loadDemoDailyMarkets();
         privateBatchInFlight = true;
         privateBatchLeaseStartedAtUnixMs = Date.now();
         writeJson(res, 200, {
@@ -2187,7 +2202,8 @@ async function main(): Promise<void> {
           leased: true,
           batch: first,
           queueDepth: privateBetQueue.length,
-          state
+          state,
+          dailyMarkets
         });
         return;
       }

@@ -1,12 +1,11 @@
 import './env.js';
 
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { DEFAULT_STATE_FILE, saveOperatorState } from './state-store.js';
-import type { PrivateBatchProofResult, PrivateQueuedBet } from './private-batch-processor.js';
+import { DEFAULT_STATE_FILE, loadOperatorState, saveOperatorState, type OperatorStateFile } from './state-store.js';
+import { proveAndSendPrivateQueuedBet, type PrivateQueuedBet } from './private-batch-processor.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -45,42 +44,87 @@ function requireEnv(name: string): string {
   return value;
 }
 
-async function runPrivateBatchChild(batch: PrivateQueuedBet): Promise<PrivateBatchProofResult> {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'private-batch-'));
-  const batchFile = path.join(tempDir, 'batch.json');
-  try {
-    await writeFile(batchFile, JSON.stringify(batch), 'utf8');
-    const maxOldSpaceMb = envInt('PRIVATE_BATCH_CHILD_MAX_OLD_SPACE_MB', 1024);
-    const nodeArgs = [
-      `--max-old-space-size=${maxOldSpaceMb}`,
-      '--enable-source-maps',
-      path.resolve(process.cwd(), 'dist/process-private-batch-cli.js'),
-      '--state-file',
-      localStatePath,
-      '--batch-file',
-      batchFile
-    ];
-    const { stdout, stderr } = await execFileAsync('node', nodeArgs, {
-      cwd: process.cwd(),
-      env: process.env,
-      maxBuffer: 1024 * 1024 * 8
-    });
-    if (stderr.trim()) {
-      console.error(stderr.trim());
-    }
-    const raw = stdout.trim();
-    if (!raw) {
-      throw new Error('private batch child returned empty stdout');
-    }
-    return JSON.parse(raw) as PrivateBatchProofResult;
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
-}
-
 const baseUrl = requireEnv('OPERATOR_BASE_URL').replace(/\/+$/, '');
 const operatorToken = requireEnv('OPERATOR_ACTION_TOKEN');
 const localStatePath = process.env.STATE_FILE || DEFAULT_STATE_FILE;
+const localDailyMarketsPath = process.env.DEMO_DAILY_MARKETS_FILE || './data/demo-daily-threshold-markets.json';
+
+async function saveDailyMarketsFile(filePath: string, dailyMarkets: Record<string, unknown>): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, JSON.stringify(dailyMarkets, null, 2), 'utf8');
+}
+
+async function loadJsonFile<T>(filePath: string): Promise<T> {
+  const raw = await readFile(filePath, 'utf8');
+  return JSON.parse(raw) as T;
+}
+
+function changedKeys<T>(before: Record<string, T> | undefined, after: Record<string, T> | undefined): Record<string, T> {
+  const result: Record<string, T> = {};
+  for (const [key, value] of Object.entries(after || {})) {
+    if (JSON.stringify((before || {})[key]) !== JSON.stringify(value)) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+async function ensureQueuedMarketExists(
+  batch: PrivateQueuedBet,
+  state: OperatorStateFile,
+  dailyMarkets: Record<string, unknown>
+): Promise<void> {
+  if (!batch.marketDate || state.markets?.[batch.marketKey]) return;
+  await saveOperatorState(localStatePath, state);
+  await saveDailyMarketsFile(localDailyMarketsPath, dailyMarkets);
+  const { stdout, stderr } = await execFileAsync(
+    'pnpm',
+    [
+      'ensure-daily-markets:zeko',
+      '--',
+      '--state-file',
+      localStatePath,
+      '--daily-markets-file',
+      localDailyMarketsPath
+    ],
+    {
+      cwd: process.cwd(),
+      env: process.env,
+      maxBuffer: 1024 * 1024 * 8
+    }
+  );
+  if (stdout.trim()) console.log(stdout.trim());
+  if (stderr.trim()) console.error(stderr.trim());
+  const finalState = await loadOperatorState(localStatePath);
+  const finalDailyMarkets = await loadJsonFile<Record<string, unknown>>(localDailyMarketsPath);
+  if (!finalState.markets?.[batch.marketKey]) {
+    throw new Error(`automatic market creation did not create ${batch.marketDate} (${batch.marketKey})`);
+  }
+  const markets = changedKeys(state.markets || {}, finalState.markets || {});
+  const marketMeta = changedKeys(state.marketMeta || {}, finalState.marketMeta || {});
+  const usedNonces = changedKeys(state.usedNonces || {}, finalState.usedNonces || {});
+  const changedDailyMarkets = changedKeys(dailyMarkets, finalDailyMarkets);
+  if (
+    Object.keys(markets).length === 0 &&
+    Object.keys(marketMeta).length === 0 &&
+    Object.keys(usedNonces).length === 0 &&
+    Object.keys(changedDailyMarkets).length === 0
+  ) {
+    return;
+  }
+  const imported = await req('/api/operator/import-state', {
+    method: 'POST',
+    body: JSON.stringify({
+      markets,
+      marketMeta,
+      usedNonces,
+      dailyMarkets: changedDailyMarkets
+    })
+  });
+  console.log(
+    `[operator-worker] created missing market ${batch.marketDate} imported markets=${imported.marketsImported} marketMeta=${imported.marketMetaImported} dailyMarkets=${imported.dailyMarketsImported} usedNonces=${imported.usedNoncesImported}`
+  );
+}
 
 async function req(path: string, init: RequestInit = {}): Promise<any> {
   const headers = new Headers(init.headers || {});
@@ -154,7 +198,18 @@ async function maybeProcessPrivateQueue(): Promise<void> {
   const batch = lease.batch as PrivateQueuedBet;
   try {
     await saveOperatorState(localStatePath, lease.state);
-    const result = await runPrivateBatchChild(batch);
+    if (lease.dailyMarkets && typeof lease.dailyMarkets === 'object') {
+      await saveDailyMarketsFile(localDailyMarketsPath, lease.dailyMarkets as Record<string, unknown>);
+    }
+    await ensureQueuedMarketExists(
+      batch,
+      lease.state as OperatorStateFile,
+      (lease.dailyMarkets || {}) as Record<string, unknown>
+    );
+    const result = await proveAndSendPrivateQueuedBet({
+      queuedBet: batch,
+      stateFile: localStatePath
+    });
     const completed = await req('/api/operator/complete-private-batch', {
       method: 'POST',
       body: JSON.stringify({
@@ -251,12 +306,10 @@ async function main(): Promise<void> {
   const resolveEnabled = envEnabled('OPERATOR_WORKER_ENABLE_RESOLVE', true);
   const ensureEnabled = envEnabled('OPERATOR_WORKER_ENABLE_ENSURE', true);
   const ensureEveryOverride = envOptionalInt('OPERATOR_WORKER_ENSURE_EVERY');
-  const childMaxOldSpaceMb = envInt('PRIVATE_BATCH_CHILD_MAX_OLD_SPACE_MB', 1024);
   console.log(`[operator-worker] base_url=${baseUrl}`);
   console.log(
     `[operator-worker] interval_ms=${intervalMs} retry_ms=${retryMs} start_delay_ms=${startDelayMs}`
   );
-  console.log(`[operator-worker] private_batch_child_max_old_space_mb=${childMaxOldSpaceMb}`);
   console.log(
     `[operator-worker] resolve_enabled=${resolveEnabled} ensure_enabled=${ensureEnabled} ensure_every=${
       ensureEveryOverride === null ? 'default(10)' : ensureEveryOverride
