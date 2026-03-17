@@ -2351,6 +2351,43 @@ async function main(): Promise<void> {
         return;
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/operator/clear-private-queue') {
+        if (getPrivacyMode() !== 'zk_strong') {
+          throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
+        }
+        const body = await readJsonBody(req);
+        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        const reason =
+          typeof body.reason === 'string' && body.reason.trim().length > 0
+            ? body.reason.trim()
+            : 'manual queue reset';
+        const cleared = [...privateBetQueue];
+        for (const queuedBet of cleared) {
+          await appendPrivateBatchHistory({
+            id: randomUUID(),
+            atUnixMs: Date.now(),
+            marketKey: queuedBet.marketKey,
+            processed: 0,
+            totalPositionBetAdded: queuedBet.addTotalBet,
+            totalYesBetAdded: queuedBet.addYesBet,
+            txHash: null,
+            relayerReimbursedNanomina: '0',
+            status: 'failed',
+            error: `${reason} (cleared queued bet ${queuedBet.id})`
+          });
+        }
+        privateBetQueue.splice(0, privateBetQueue.length);
+        await savePrivateBetQueue(privateBetQueue);
+        privateBatchInFlight = false;
+        privateBatchLeaseStartedAtUnixMs = null;
+        writeJson(res, 200, {
+          ok: true,
+          cleared: cleared.length,
+          reason
+        });
+        return;
+      }
+
       // Hidden baseline: committee-based oracle consensus path (disabled by default).
       if (req.method === 'POST' && url.pathname === '/api/internal/oracle-committee/commit') {
         if (!committeeEnabled) throw new Error('oracle committee path disabled');
