@@ -2581,6 +2581,11 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-bet') {
+        if (getPrivacyMode() !== 'compat') {
+          throw new Error(
+            'PRIVACY_MODE=zk_strong blocks direct per-user market tx path. Use /api/private-bets/submit and batch settlement.'
+          );
+        }
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const addTotalBet = requireNumber(body.addTotalBet, 'addTotalBet');
@@ -2639,6 +2644,11 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-close') {
+        if (getPrivacyMode() !== 'compat') {
+          throw new Error(
+            'PRIVACY_MODE=zk_strong blocks direct per-user close tx path. Use private batch settlement path.'
+          );
+        }
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
