@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --enable-source-maps dist/demo-local.js",
     "deploy:zeko": "node --enable-source-maps dist/deploy.js",
+    "emergency-reset-positions:zeko": "node --enable-source-maps dist/emergency-reset-positions-zeko.js",
     "sync-state:zeko": "node --enable-source-maps dist/sync-state-zeko.js",
     "create-market:zeko": "node --enable-source-maps dist/create-market-zeko.js",
     "ensure-daily-markets:zeko": "node --enable-source-maps dist/ensure-daily-markets-zeko.js",

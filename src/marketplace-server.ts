@@ -2402,6 +2402,50 @@ async function main(): Promise<void> {
         return;
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/operator/emergency-reset-positions-state') {
+        const body = await readJsonBody(req);
+        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        const state = await loadOperatorState(defaultStatePath);
+        const clearedPositions = Object.keys(state.positions || {}).length;
+        const clearedPositionMeta = Object.keys(state.positionMeta || {}).length;
+        const clearedQueuedBets = privateBetQueue.length;
+        const reason = 'emergency positions reset';
+        if (clearedQueuedBets > 0) {
+          const cleared = [...privateBetQueue];
+          for (const queuedBet of cleared) {
+            await appendPrivateBatchHistory({
+              id: randomUUID(),
+              atUnixMs: Date.now(),
+              marketKey: queuedBet.marketKey,
+              processed: 0,
+              totalPositionBetAdded: queuedBet.addTotalBet,
+              totalYesBetAdded: queuedBet.addYesBet,
+              txHash: null,
+              relayerReimbursedNanomina: '0',
+              status: 'failed',
+              error: `${reason} (cleared queued bet ${queuedBet.id})`
+            });
+          }
+        }
+        privateBetQueue.splice(0, privateBetQueue.length);
+        await savePrivateBetQueue(privateBetQueue);
+        privateBatchInFlight = false;
+        privateBatchLeaseStartedAtUnixMs = null;
+        await saveOperatorState(defaultStatePath, {
+          ...state,
+          positions: {},
+          positionMeta: {}
+        });
+        await saveUserPositions(USER_POSITIONS_FILE, {});
+        writeJson(res, 200, {
+          ok: true,
+          clearedPositions,
+          clearedPositionMeta,
+          clearedQueuedBets
+        });
+        return;
+      }
+
       // Hidden baseline: committee-based oracle consensus path (disabled by default).
       if (req.method === 'POST' && url.pathname === '/api/internal/oracle-committee/commit') {
         if (!committeeEnabled) throw new Error('oracle committee path disabled');

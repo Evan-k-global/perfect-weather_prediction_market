@@ -113,6 +113,11 @@ export class PayoutClaimedEvent extends Struct({
   amount: UInt64
 }) {}
 
+export class PositionsResetEvent extends Struct({
+  previousPositionsRoot: Field,
+  nextPositionsRoot: Field
+}) {}
+
 export class PredictionMarketPlatform extends SmartContract {
   @state(Field) marketsRoot = State<Field>();
   @state(Field) positionsRoot = State<Field>();
@@ -126,7 +131,8 @@ export class PredictionMarketPlatform extends SmartContract {
     marketUpdated: MarketSnapshotEvent,
     marketResolved: MarketResolvedEvent,
     tradeSettled: TradeSettlementEvent,
-    payoutClaimed: PayoutClaimedEvent
+    payoutClaimed: PayoutClaimedEvent,
+    positionsReset: PositionsResetEvent
   };
 
   init() {
@@ -453,6 +459,19 @@ export class PredictionMarketPlatform extends SmartContract {
         positionKey,
         ownerCommitment: positionLeaf.ownerCommitment,
         amount: payout
+      })
+    );
+  }
+
+  @method async emergencyResetPositions() {
+    this.requireSignature();
+    const previousPositionsRoot = this.positionsRoot.getAndRequireEquals();
+    this.positionsRoot.set(EMPTY_MAP_ROOT);
+    this.emitEvent(
+      'positionsReset',
+      new PositionsResetEvent({
+        previousPositionsRoot,
+        nextPositionsRoot: EMPTY_MAP_ROOT
       })
     );
   }
