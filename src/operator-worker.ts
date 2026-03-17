@@ -126,6 +126,43 @@ async function ensureQueuedMarketExists(
   );
 }
 
+async function syncAuthoritativeStateFromChain(state: OperatorStateFile): Promise<OperatorStateFile> {
+  const { stdout, stderr } = await execFileAsync(
+    'pnpm',
+    ['sync-state:zeko', '--', '--state-file', localStatePath],
+    {
+      cwd: process.cwd(),
+      env: process.env,
+      maxBuffer: 1024 * 1024 * 8
+    }
+  );
+  if (stdout.trim()) console.log(stdout.trim());
+  if (stderr.trim()) console.error(stderr.trim());
+  const syncedState = await loadOperatorState(localStatePath);
+  const markets = changedKeys(state.markets || {}, syncedState.markets || {});
+  const marketMeta = changedKeys(state.marketMeta || {}, syncedState.marketMeta || {});
+  const usedNonces = changedKeys(state.usedNonces || {}, syncedState.usedNonces || {});
+  if (
+    Object.keys(markets).length === 0 &&
+    Object.keys(marketMeta).length === 0 &&
+    Object.keys(usedNonces).length === 0
+  ) {
+    return syncedState;
+  }
+  const imported = await req('/api/operator/import-state', {
+    method: 'POST',
+    body: JSON.stringify({
+      markets,
+      marketMeta,
+      usedNonces
+    })
+  });
+  console.log(
+    `[operator-worker] imported synced state markets=${imported.marketsImported} marketMeta=${imported.marketMetaImported} usedNonces=${imported.usedNoncesImported}`
+  );
+  return syncedState;
+}
+
 async function req(path: string, init: RequestInit = {}): Promise<any> {
   const headers = new Headers(init.headers || {});
   headers.set('x-operator-token', operatorToken);
@@ -196,25 +233,38 @@ async function maybeProcessPrivateQueue(): Promise<void> {
   if (!lease?.leased || !lease?.batch || !lease?.state) return;
 
   const batch = lease.batch as PrivateQueuedBet;
+  let workingState = lease.state as OperatorStateFile;
+  const dailyMarkets = (lease.dailyMarkets || {}) as Record<string, unknown>;
   try {
     console.log(
       `[operator-worker] leased batch id=${batch.id} marketDate=${batch.marketDate || 'unknown'} marketKey=${batch.marketKey}`
     );
-    await saveOperatorState(localStatePath, lease.state);
-    if (lease.dailyMarkets && typeof lease.dailyMarkets === 'object') {
-      await saveDailyMarketsFile(localDailyMarketsPath, lease.dailyMarkets as Record<string, unknown>);
-    }
+    await saveOperatorState(localStatePath, workingState);
+    await saveDailyMarketsFile(localDailyMarketsPath, dailyMarkets);
     console.log(`[operator-worker] checking market readiness for batch ${batch.id}`);
-    await ensureQueuedMarketExists(
-      batch,
-      lease.state as OperatorStateFile,
-      (lease.dailyMarkets || {}) as Record<string, unknown>
-    );
+    await ensureQueuedMarketExists(batch, workingState, dailyMarkets);
     console.log(`[operator-worker] proving queued batch ${batch.id}`);
-    const result = await proveAndSendPrivateQueuedBet({
-      queuedBet: batch,
-      stateFile: localStatePath
-    });
+    let result;
+    try {
+      result = await proveAndSendPrivateQueuedBet({
+        queuedBet: batch,
+        stateFile: localStatePath
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/positionsRoot mismatch|marketsRoot mismatch/i.test(message)) {
+        console.warn(`[operator-worker] stale state detected for batch ${batch.id}; syncing authoritative state and retrying once`);
+        workingState = await syncAuthoritativeStateFromChain(workingState);
+        await ensureQueuedMarketExists(batch, workingState, dailyMarkets);
+        console.log(`[operator-worker] retrying queued batch ${batch.id} after state sync`);
+        result = await proveAndSendPrivateQueuedBet({
+          queuedBet: batch,
+          stateFile: localStatePath
+        });
+      } else {
+        throw error;
+      }
+    }
     console.log(`[operator-worker] submitting completion for batch ${batch.id} tx=${result.txHash || 'pending'}`);
     const completed = await req('/api/operator/complete-private-batch', {
       method: 'POST',
