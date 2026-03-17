@@ -36,7 +36,7 @@ services:
       - key: OPERATOR_WORKER_START_DELAY_MS
         value: "5000"
       - key: OPERATOR_NODE_MAX_OLD_SPACE_MB
-        value: "1536"
+        value: "12288"
       - key: OPERATOR_WORKER_ENABLE_RESOLVE
         value: "0"
       - key: OPERATOR_WORKER_ENABLE_ENSURE
