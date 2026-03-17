@@ -140,11 +140,15 @@ async function syncAuthoritativeStateFromChain(state: OperatorStateFile): Promis
   if (stderr.trim()) console.error(stderr.trim());
   const syncedState = await loadOperatorState(localStatePath);
   const markets = changedKeys(state.markets || {}, syncedState.markets || {});
+  const positions = changedKeys(state.positions || {}, syncedState.positions || {});
   const marketMeta = changedKeys(state.marketMeta || {}, syncedState.marketMeta || {});
+  const positionMeta = changedKeys(state.positionMeta || {}, syncedState.positionMeta || {});
   const usedNonces = changedKeys(state.usedNonces || {}, syncedState.usedNonces || {});
   if (
     Object.keys(markets).length === 0 &&
+    Object.keys(positions).length === 0 &&
     Object.keys(marketMeta).length === 0 &&
+    Object.keys(positionMeta).length === 0 &&
     Object.keys(usedNonces).length === 0
   ) {
     return syncedState;
@@ -153,12 +157,14 @@ async function syncAuthoritativeStateFromChain(state: OperatorStateFile): Promis
     method: 'POST',
     body: JSON.stringify({
       markets,
+      positions,
       marketMeta,
+      positionMeta,
       usedNonces
     })
   });
   console.log(
-    `[operator-worker] imported synced state markets=${imported.marketsImported} marketMeta=${imported.marketMetaImported} usedNonces=${imported.usedNoncesImported}`
+    `[operator-worker] imported synced state markets=${imported.marketsImported} positions=${imported.positionsImported} marketMeta=${imported.marketMetaImported} positionMeta=${imported.positionMetaImported} usedNonces=${imported.usedNoncesImported}`
   );
   return syncedState;
 }

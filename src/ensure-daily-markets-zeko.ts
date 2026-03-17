@@ -75,6 +75,12 @@ async function saveDemoDailyMarkets(filePath: string, data: DemoDailyMarketFile)
   await writeFile(filePath, JSON.stringify(data, null, 2), 'utf8');
 }
 
+function readSenderPrivateKey(): PrivateKey {
+  const raw = process.env.DEPLOYER_PRIVATE_KEY || process.env.RELAYER_PRIVATE_KEY;
+  if (!raw) throw new Error('Missing env DEPLOYER_PRIVATE_KEY (or RELAYER_PRIVATE_KEY fallback)');
+  return PrivateKey.fromBase58(raw);
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const stateFile = parseOptionalArgValue(args, 'state-file') || DEFAULT_STATE_FILE;
@@ -82,7 +88,7 @@ async function main(): Promise<void> {
   const graphql = process.env.ZEKO_GRAPHQL || 'https://testnet.zeko.io';
   const networkId = process.env.ZEKO_NETWORK_ID || 'testnet';
   const txFee = process.env.TX_FEE || '200000000';
-  const sender = PrivateKey.fromBase58(readEnv('DEPLOYER_PRIVATE_KEY'));
+  const sender = readSenderPrivateKey();
   const zkappAddress = PrivateKey.fromBase58(readEnv('ZKAPP_PRIVATE_KEY')).toPublicKey();
 
   const network = Mina.Network({

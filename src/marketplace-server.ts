@@ -65,7 +65,9 @@ import {
   serializeMarketLeaf,
   serializePositionLeaf,
   type StoredMarketLeaf,
-  type StoredMarketMeta
+  type StoredMarketMeta,
+  type StoredPositionLeaf,
+  type StoredPositionMeta
 } from './state-store.js';
 import { withTxRetry } from './tx-retry.js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
@@ -2258,7 +2260,9 @@ async function main(): Promise<void> {
         const body = await readJsonBody(req);
         requireOperatorAuthorization(req, body as Record<string, unknown>);
         const importedMarkets = ((body.markets as Record<string, StoredMarketLeaf>) || {});
+        const importedPositions = ((body.positions as Record<string, StoredPositionLeaf>) || {});
         const importedMarketMeta = ((body.marketMeta as Record<string, StoredMarketMeta>) || {});
+        const importedPositionMeta = ((body.positionMeta as Record<string, StoredPositionMeta>) || {});
         const importedUsedNonces = ((body.usedNonces as Record<string, string>) || {});
         const currentState = await loadOperatorState(defaultStatePath);
         const nextState = {
@@ -2267,9 +2271,17 @@ async function main(): Promise<void> {
             ...currentState.markets,
             ...importedMarkets
           },
+          positions: {
+            ...(currentState.positions || {}),
+            ...importedPositions
+          },
           marketMeta: {
             ...(currentState.marketMeta || {}),
             ...importedMarketMeta
+          },
+          positionMeta: {
+            ...(currentState.positionMeta || {}),
+            ...importedPositionMeta
           },
           usedNonces: {
             ...currentState.usedNonces,
@@ -2288,7 +2300,9 @@ async function main(): Promise<void> {
         writeJson(res, 200, {
           ok: true,
           marketsImported: Object.keys(importedMarkets).length,
+          positionsImported: Object.keys(importedPositions).length,
           marketMetaImported: Object.keys(importedMarketMeta).length,
+          positionMetaImported: Object.keys(importedPositionMeta).length,
           dailyMarketsImported: Object.keys((body.dailyMarkets as Record<string, unknown>) || {}).length,
           usedNoncesImported: Object.keys(importedUsedNonces).length
         });

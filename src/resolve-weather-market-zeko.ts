@@ -44,6 +44,12 @@ function parseOptionalArgValue(args: string[], name: string): string | undefined
   return undefined;
 }
 
+function readSenderPrivateKey(): PrivateKey {
+  const raw = process.env.DEPLOYER_PRIVATE_KEY || process.env.RELAYER_PRIVATE_KEY;
+  if (!raw) throw new Error('Missing env DEPLOYER_PRIVATE_KEY (or RELAYER_PRIVATE_KEY fallback)');
+  return PrivateKey.fromBase58(raw);
+}
+
 async function readAttestation(pathname: string): Promise<TlsnWeatherAttestation> {
   const raw = await readFile(pathname, 'utf8');
   const candidate = JSON.parse(raw) as Record<string, unknown>;
@@ -89,7 +95,7 @@ async function main(): Promise<void> {
   const graphql = process.env.ZEKO_GRAPHQL || 'https://testnet.zeko.io';
   const networkId = process.env.ZEKO_NETWORK_ID || 'testnet';
   const txFee = process.env.TX_FEE || '200000000';
-  const resolver = PrivateKey.fromBase58(readEnv('DEPLOYER_PRIVATE_KEY'));
+  const resolver = readSenderPrivateKey();
   const zkappAddress = PrivateKey.fromBase58(readEnv('ZKAPP_PRIVATE_KEY')).toPublicKey();
 
   const tlsnStrict = process.env.TLSN_STRICT !== '0';
