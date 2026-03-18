@@ -12,7 +12,6 @@ description: Use when deploying, syncing, repairing, or operating the Zeko testn
 - `src/create-market-zeko.ts`
 - `src/ensure-daily-markets-zeko.ts`
 - `src/resolve-daily-market-zeko.ts`
-- `src/trade-update-zeko.ts`
 - operator runbook and `.env.local` issues
 
 ## Workflow
@@ -36,6 +35,7 @@ description: Use when deploying, syncing, repairing, or operating the Zeko testn
 - Fresh payout-enabled deployments need a new `ZKAPP_PRIVATE_KEY`; do not reuse a legacy address if old state/history is unwanted.
 - `sync-state:zeko` is the standard recovery command after uncertain tx status.
 - If local and on-chain `marketsRoot` differ, stop and sync before sending more market txs.
+- Older ad hoc trade/claim scripts were retired and archived locally during the fast-contract cleanup; prefer the live market/oracle flows in `src/marketplace-server.ts` and browser proving instead.
 
 ## Common Failure Causes
 
