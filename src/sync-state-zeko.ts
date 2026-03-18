@@ -13,7 +13,8 @@ import {
   getLocalMarketsRoot,
   getLocalReceiptsRoot,
   getOnChainMarketsRoot,
-  getOnChainReceiptsRoot
+  getOnChainReceiptsRoot,
+  isMissingZkappAccountError
 } from './fast-chain-state.js';
 import { MarketLeaf } from './market-types.js';
 
@@ -154,9 +155,45 @@ async function main(): Promise<void> {
 
   await saveOperatorState(stateFile, nextState);
   const localRoot = getLocalMarketsRoot(nextState);
-  const chainRoot = await getOnChainMarketsRoot(zkappAddress);
   const localReceiptsRoot = getLocalReceiptsRoot(nextState);
-  const chainReceiptsRoot = await getOnChainReceiptsRoot(zkappAddress);
+
+  let chainRoot: string;
+  let chainReceiptsRoot: string;
+  try {
+    chainRoot = await getOnChainMarketsRoot(zkappAddress);
+    chainReceiptsRoot = await getOnChainReceiptsRoot(zkappAddress);
+  } catch (error) {
+    if (!isMissingZkappAccountError(error)) {
+      throw error;
+    }
+
+    const emptyState: OperatorStateFile = {
+      markets: {},
+      positions: {},
+      receipts: {},
+      usedNonces: {},
+      marketMeta: {},
+      positionMeta: {},
+      receiptMeta: {}
+    };
+    await saveOperatorState(stateFile, emptyState);
+    const emptyMarketsRoot = getLocalMarketsRoot(emptyState);
+    const emptyReceiptsRoot = getLocalReceiptsRoot(emptyState);
+    console.warn(
+      '[sync-state-zeko] zkApp account does not exist on-chain yet; bootstrapping empty fresh-contract state'
+    );
+    console.log('State sync bootstrapped.');
+    console.log('Markets synced:', 0);
+    console.log('Receipts synced:', 0);
+    console.log('Used nonces synced:', 0);
+    console.log('Local marketsRoot:', emptyMarketsRoot);
+    console.log('Local receiptsRoot:', emptyReceiptsRoot);
+    console.log('Chain marketsRoot:', 'missing');
+    console.log('Chain receiptsRoot:', 'missing');
+    console.log('Markets root match:', 'pending deploy');
+    console.log('Receipts root match:', 'pending deploy');
+    return;
+  }
 
   console.log('State sync complete.');
   console.log('Markets synced:', Object.keys(nextState.markets).length);

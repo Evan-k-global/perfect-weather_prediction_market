@@ -29,6 +29,14 @@ async function getOnChainAppState(zkappAddress: PublicKey): Promise<unknown[]> {
   return appState;
 }
 
+export function isMissingZkappAccountError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.message.includes('zkApp account fetch failed') &&
+    error.message.includes('does not exist')
+  );
+}
+
 export async function getOnChainMarketsRoot(zkappAddress: PublicKey): Promise<string> {
   const appState = await getOnChainAppState(zkappAddress);
   return getAppStateField(appState, 0, 'marketsRoot');
