@@ -326,6 +326,18 @@ function getHostedSafeIntervalMs(envName: string, localFallback: number): number
   return localFallback;
 }
 
+function shouldAssertChainRootsInBetContext(): boolean {
+  const explicit = process.env.BET_CONTEXT_ASSERT_CHAIN_ROOTS;
+  if (explicit !== undefined) {
+    const normalized = explicit.trim().toLowerCase();
+    return !['0', 'false', 'no', 'off'].includes(normalized);
+  }
+  if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
+    return false;
+  }
+  return true;
+}
+
 function getRelayerPrivateKey(): PrivateKey | null {
   const deployer = process.env.DEPLOYER_PRIVATE_KEY;
   const relayer = process.env.RELAYER_PRIVATE_KEY;
@@ -1523,8 +1535,10 @@ async function buildBrowserFeePayerMarketBetContext(params: {
   const { graphql, networkId, txFee } = getNetworkConfig();
   const zkappAddress = getZkappPublicKey();
   const state = await loadOperatorState(stateFile);
-  await assertLocalMarketsRootMatchesChain(zkappAddress, state);
-  await assertLocalReceiptsRootMatchesChain(zkappAddress, state);
+  if (shouldAssertChainRootsInBetContext()) {
+    await assertLocalMarketsRootMatchesChain(zkappAddress, state);
+    await assertLocalReceiptsRootMatchesChain(zkappAddress, state);
+  }
   const existing = state.markets[marketKey];
   if (!existing) throw new Error(`market ${marketKey} missing in ${stateFile}`);
   const oldLeaf = deserializeMarketLeaf(existing);

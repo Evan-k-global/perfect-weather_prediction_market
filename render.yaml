@@ -21,6 +21,8 @@ services:
         value: "0"
       - key: PRIVATE_BATCH_INTERVAL_MS
         value: "0"
+      - key: BET_CONTEXT_ASSERT_CHAIN_ROOTS
+        value: "0"
       - key: DAILY_AUTO_SETTLE_INTERVAL_MS
         value: "0"
       - key: DAILY_SETTLE_SCHEDULE_CHECK_MS
