@@ -105,6 +105,27 @@ async function ensureFastContractCompiled(): Promise<void> {
   await compilePromise;
 }
 
+function getNetworkConfig() {
+  const graphql = process.env.ZEKO_GRAPHQL || 'https://testnet.zeko.io';
+  const requestedNetworkId = process.env.ZEKO_NETWORK_ID || 'testnet';
+  const isZekoTestnet = /testnet\.zeko\.io/i.test(graphql);
+  const networkId = isZekoTestnet && requestedNetworkId === 'zeko' ? 'testnet' : requestedNetworkId;
+  return { graphql, networkId };
+}
+
+function warmProver(): void {
+  const network = getNetworkConfig();
+  setActiveNetwork(network);
+  void ensureFastContractCompiled()
+    .then(() => {
+      console.log('[tx-prover] compile warmup finished');
+    })
+    .catch((error) => {
+      console.error('[tx-prover] compile warmup failed:', error);
+      compilePromise = null;
+    });
+}
+
 function deserializeMarketLeaf(stored: StoredMarketLeaf): MarketLeaf {
   return new MarketLeaf({
     configHash: Field(stored.configHash),
@@ -197,12 +218,13 @@ async function buildClaimPayoutTx(context: ClaimPayoutContext): Promise<unknown>
 }
 
 async function main(): Promise<void> {
+  warmProver();
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
       if (req.method === 'GET' && url.pathname === '/health') {
-        writeJson(res, 200, { ok: true, service: 'tx-prover' });
+        writeJson(res, 200, { ok: true, service: 'tx-prover', warmed: compilePromise !== null });
         return;
       }
 

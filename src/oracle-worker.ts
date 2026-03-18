@@ -115,8 +115,30 @@ function changedKeys<T>(before: Record<string, T> | undefined, after: Record<str
   return result;
 }
 
+let lastEnsureDate: string | null = null;
+let lastResolveWindowKey: string | null = null;
+
+function shouldRunEnsurePass(todayIso: string): boolean {
+  return lastEnsureDate !== todayIso;
+}
+
+function shouldRunResolvePass(todayIso: string, nowHour: number): boolean {
+  if (nowHour < 19) return false;
+  const windowKey = `${todayIso}-after-19`;
+  return lastResolveWindowKey !== windowKey;
+}
+
 async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promise<void> {
   if (!envEnabled('ORACLE_WORKER_ENABLE_CHAIN_ACTIONS', true)) return;
+  const todayIso = currentLocalDate();
+  const nowHour = nowLocalHour();
+  const runEnsurePass = shouldRunEnsurePass(todayIso);
+  const runResolvePass = shouldRunResolvePass(todayIso, nowHour);
+  if (!runEnsurePass && !runResolvePass) {
+    console.log('[oracle-worker] skipping chain actions; no daily lifecycle work due');
+    return;
+  }
+
   const exportPayload = await req(baseUrl, oracleToken, '/api/oracle/export-state', {
     method: 'POST',
     body: JSON.stringify({})
@@ -131,40 +153,44 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
   await saveDailyMarketsFile(dailyMarketsFile, dailyMarkets);
 
   const projectRoot = process.cwd();
-  const ensureArgs = [
-    'ensure-daily-markets:zeko',
-    '--',
-    '--state-file',
-    stateFile,
-    '--daily-markets-file',
-    dailyMarketsFile
-  ];
-  const ensured = await execFileAsync('pnpm', ensureArgs, { cwd: projectRoot, env: process.env });
-  if (ensured.stdout.trim()) console.log(ensured.stdout.trim());
-  if (ensured.stderr.trim()) console.error(ensured.stderr.trim());
+  if (runEnsurePass) {
+    const ensureArgs = [
+      'ensure-daily-markets:zeko',
+      '--',
+      '--state-file',
+      stateFile,
+      '--daily-markets-file',
+      dailyMarketsFile
+    ];
+    const ensured = await execFileAsync('pnpm', ensureArgs, { cwd: projectRoot, env: process.env });
+    if (ensured.stdout.trim()) console.log(ensured.stdout.trim());
+    if (ensured.stderr.trim()) console.error(ensured.stderr.trim());
+    lastEnsureDate = todayIso;
+  }
 
   const updatedStateAfterEnsure = await loadJsonFile<OperatorStateFile>(stateFile);
-  const todayIso = currentLocalDate();
-  const nowHour = nowLocalHour();
-  for (const [marketKey, meta] of Object.entries(updatedStateAfterEnsure.marketMeta || {})) {
-    const marketDate = marketDateFromTitle((meta as StoredMarketMeta | undefined)?.title);
-    const stored = updatedStateAfterEnsure.markets[marketKey];
-    if (!marketDate || !stored || stored.resolved === '1') continue;
-    const shouldResolve = marketDate < todayIso || (marketDate === todayIso && nowHour >= 19);
-    if (!shouldResolve) continue;
-    const resolveArgs = [
-      'resolve-daily-market:zeko',
-      '--',
-      '--market-date',
-      marketDate,
-      '--attestation',
-      process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json',
-      '--state-file',
-      stateFile
-    ];
-    const resolved = await execFileAsync('pnpm', resolveArgs, { cwd: projectRoot, env: process.env });
-    if (resolved.stdout.trim()) console.log(resolved.stdout.trim());
-    if (resolved.stderr.trim()) console.error(resolved.stderr.trim());
+  if (runResolvePass) {
+    for (const [marketKey, meta] of Object.entries(updatedStateAfterEnsure.marketMeta || {})) {
+      const marketDate = marketDateFromTitle((meta as StoredMarketMeta | undefined)?.title);
+      const stored = updatedStateAfterEnsure.markets[marketKey];
+      if (!marketDate || !stored || stored.resolved === '1') continue;
+      const shouldResolve = marketDate < todayIso || marketDate === todayIso;
+      if (!shouldResolve) continue;
+      const resolveArgs = [
+        'resolve-daily-market:zeko',
+        '--',
+        '--market-date',
+        marketDate,
+        '--attestation',
+        process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json',
+        '--state-file',
+        stateFile
+      ];
+      const resolved = await execFileAsync('pnpm', resolveArgs, { cwd: projectRoot, env: process.env });
+      if (resolved.stdout.trim()) console.log(resolved.stdout.trim());
+      if (resolved.stderr.trim()) console.error(resolved.stderr.trim());
+    }
+    lastResolveWindowKey = `${todayIso}-after-19`;
   }
 
   const finalState = await loadJsonFile<OperatorStateFile>(stateFile);
