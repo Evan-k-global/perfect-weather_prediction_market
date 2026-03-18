@@ -11,6 +11,7 @@
     "test": "node --enable-source-maps dist/demo-local.js",
     "deploy:zeko": "node --enable-source-maps dist/deploy.js",
     "emergency-reset-positions:zeko": "node --enable-source-maps dist/emergency-reset-positions-zeko.js",
+    "fresh-zkapp:reset-hosted-state": "node --enable-source-maps dist/reset-fresh-zkapp-state.js",
     "sync-state:zeko": "node --enable-source-maps dist/sync-state-zeko.js",
     "create-market:zeko": "node --enable-source-maps dist/create-market-zeko.js",
     "ensure-daily-markets:zeko": "node --enable-source-maps dist/ensure-daily-markets-zeko.js",

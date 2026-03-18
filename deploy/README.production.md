@@ -47,3 +47,32 @@ curl -s http://127.0.0.1:8790/api/health
 - Docker healthcheck validates heartbeat freshness via `pnpm weather:daemon:health`.
 - Keep `WEATHER_TLSN_MAX_AGE_MS` tight for production (for example 15m or 60m).
 - Render should use a persistent disk mounted at `/app/data`.
+
+## Fresh zkApp Rollout
+
+Use this only when you intentionally cut over to a brand-new zkApp address and want to leave the broken local state behind.
+
+1. Deploy the new zkApp and capture the new `ZKAPP_PUBLIC_KEY`.
+2. Update Render env on all services with the new zkApp key material.
+3. Redeploy `perfect-weather-prediction-market`.
+4. Run the one-shot hosted reset from a Render shell on any service that has `OPERATOR_BASE_URL` and `OPERATOR_ACTION_TOKEN`:
+
+```bash
+pnpm run fresh-zkapp:reset-hosted-state -- --reason "fresh zkApp rollout"
+```
+
+What that reset does:
+
+- archives the old persisted files under `/app/data/fresh-zkapp-archives/<timestamp>/`
+- clears `operator-state.json`
+- clears `private-bet-queue.json`
+- clears `private-batch-history.json`
+- clears `user-positions.json`
+- resets `daily-settle-state.json`
+- preserves the daily threshold rows but zeroes out their pot totals
+
+5. Redeploy `perfect-weather-operator-worker`.
+6. Redeploy `perfect-weather-oracle-worker`.
+7. Let oracle upkeep create the new forward markets, then test one fresh bet.
+
+This is the intended emergency path for a clean-slate contract migration without reusing poisoned local state.

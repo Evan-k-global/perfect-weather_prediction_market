@@ -83,6 +83,7 @@ const PRIVATE_BATCH_HISTORY_FILE = './data/private-batch-history.json';
 const DAILY_SETTLE_STATE_FILE = './data/daily-settle-state.json';
 const TLSN_STATUS_FILE = './data/tlsn-output/latest/status.json';
 const STARTUP_READY_FILE = './data/startup-ready.json';
+const FRESH_ZKAPP_ARCHIVE_DIR = './data/fresh-zkapp-archives';
 
 type AgentModel = {
   id: string;
@@ -182,6 +183,17 @@ type DailySettleState = {
     settledDates: string[];
   }>;
 };
+
+function emptyDailySettleState(): DailySettleState {
+  return {
+    lastNightlyRunDate: null,
+    lastNightlyRunAtUnixMs: null,
+    lastNightlySettledDates: [],
+    lastAutoRunAtUnixMs: null,
+    lastAutoRunSource: null,
+    recentRuns: []
+  };
+}
 
 type PrivateQueuedBet = {
   id: string;
@@ -1402,6 +1414,43 @@ async function saveUserPositions(filePath: string, positions: UserPositions): Pr
   await writeFile(filePath, JSON.stringify(positions, null, 2), 'utf8');
 }
 
+async function archiveJsonFileForFreshZkappReset(
+  filePath: string,
+  archiveDir: string
+): Promise<{ file: string; archived: boolean }> {
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    await mkdir(archiveDir, { recursive: true });
+    const archivePath = path.join(archiveDir, path.basename(filePath));
+    await writeFile(archivePath, raw, 'utf8');
+    return { file: filePath, archived: true };
+  } catch {
+    return { file: filePath, archived: false };
+  }
+}
+
+function sanitizeDailyMarketsForFreshZkappReset(
+  markets: Record<string, DemoDailyMarket>
+): Record<string, DemoDailyMarket> {
+  const sanitized: Record<string, DemoDailyMarket> = {};
+  for (const [marketDate, market] of Object.entries(markets || {})) {
+    if (!market || typeof market !== 'object') continue;
+    sanitized[marketDate] = {
+      marketDate,
+      marketKey: typeof market.marketKey === 'string' ? market.marketKey : deriveDemoDateMarketKey(marketDate),
+      thresholdF: Number.isFinite(market.thresholdF) ? market.thresholdF : 0,
+      lockedAtUnixMs: Number.isFinite(market.lockedAtUnixMs) ? market.lockedAtUnixMs : Date.now(),
+      sourceDayIndexWhenLocked:
+        Number.isFinite(market.sourceDayIndexWhenLocked) ? market.sourceDayIndexWhenLocked : 0,
+      sourceForecastHighFWhenLocked:
+        Number.isFinite(market.sourceForecastHighFWhenLocked) ? market.sourceForecastHighFWhenLocked : 0,
+      totalPositionBet: 0,
+      totalYesPositionBet: 0
+    };
+  }
+  return sanitized;
+}
+
 function positionDelta(addTotalBet: number, addYesBet: number): number {
   const noBet = addTotalBet - addYesBet;
   return addYesBet - noBet;
@@ -2446,6 +2495,99 @@ async function main(): Promise<void> {
           clearedPositions,
           clearedPositionMeta,
           clearedQueuedBets
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/operator/reset-fresh-zkapp-state') {
+        const body = await readJsonBody(req);
+        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        const reason =
+          typeof body.reason === 'string' && body.reason.trim().length > 0
+            ? body.reason.trim()
+            : 'fresh zkApp rollout reset';
+        const resetAt = new Date().toISOString();
+        const archiveDir = path.join(
+          FRESH_ZKAPP_ARCHIVE_DIR,
+          resetAt.replace(/[:.]/g, '-')
+        );
+        await mkdir(archiveDir, { recursive: true });
+        const currentState = await loadOperatorState(defaultStatePath);
+        const currentDailyMarkets = await loadDemoDailyMarkets();
+        const currentUserPositions = await loadUserPositions(USER_POSITIONS_FILE);
+        const queuedBefore = privateBetQueue.length;
+        const historyBefore = privateBatchHistory.length;
+        const positionsBefore = Object.keys(currentState.positions || {}).length;
+        const marketsBefore = Object.keys(currentState.markets || {}).length;
+        const userPositionsBefore = Object.keys(currentUserPositions || {}).length;
+        const dailyMarketsBefore = Object.keys(currentDailyMarkets || {}).length;
+
+        const archived = await Promise.all([
+          archiveJsonFileForFreshZkappReset(defaultStatePath, archiveDir),
+          archiveJsonFileForFreshZkappReset(PRIVATE_BET_QUEUE_FILE, archiveDir),
+          archiveJsonFileForFreshZkappReset(PRIVATE_BATCH_HISTORY_FILE, archiveDir),
+          archiveJsonFileForFreshZkappReset(USER_POSITIONS_FILE, archiveDir),
+          archiveJsonFileForFreshZkappReset(DEMO_DAILY_MARKETS_FILE, archiveDir),
+          archiveJsonFileForFreshZkappReset(DAILY_SETTLE_STATE_FILE, archiveDir)
+        ]);
+
+        privateBetQueue.splice(0, privateBetQueue.length);
+        privateBatchHistory.splice(0, privateBatchHistory.length);
+        privateBatchInFlight = false;
+        privateBatchLeaseStartedAtUnixMs = null;
+        for (const key of Object.keys(pendingTxIntents)) {
+          delete pendingTxIntents[key];
+        }
+
+        await saveOperatorState(defaultStatePath, {
+          markets: {},
+          positions: {},
+          usedNonces: {},
+          marketMeta: {},
+          positionMeta: {}
+        });
+        await savePrivateBetQueue(privateBetQueue);
+        await writeFile(PRIVATE_BATCH_HISTORY_FILE, JSON.stringify([], null, 2), 'utf8');
+        await saveUserPositions(USER_POSITIONS_FILE, {});
+        await saveDemoDailyMarkets(sanitizeDailyMarketsForFreshZkappReset(currentDailyMarkets));
+        await writeFile(DAILY_SETTLE_STATE_FILE, JSON.stringify(emptyDailySettleState(), null, 2), 'utf8');
+        await writeFile(
+          path.join(archiveDir, 'manifest.json'),
+          JSON.stringify(
+            {
+              ok: true,
+              reason,
+              resetAt,
+              archived,
+              summary: {
+                marketsBefore,
+                positionsBefore,
+                queuedBefore,
+                historyBefore,
+                userPositionsBefore,
+                dailyMarketsBefore
+              }
+            },
+            null,
+            2
+          ),
+          'utf8'
+        );
+
+        writeJson(res, 200, {
+          ok: true,
+          reason,
+          resetAt,
+          archiveDir,
+          archived,
+          summary: {
+            marketsBefore,
+            positionsBefore,
+            queuedBefore,
+            historyBefore,
+            userPositionsBefore,
+            dailyMarketsBefore
+          }
         });
         return;
       }

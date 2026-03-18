@@ -128,6 +128,7 @@ Why split:
 - developer setup and implementation details: `docs/developer-setup.md`
 - operator runbook: `docs/operator-runbook.md`
 - zkTLS hardening notes: `docs/zktls-hardening-notes.md`
+- production deploy and fresh-zkApp rollout: `deploy/README.production.md`
 - blog post / overview: `docs/blog-zeko-private-market.md`
 - docs index: `docs/index.md`
 
