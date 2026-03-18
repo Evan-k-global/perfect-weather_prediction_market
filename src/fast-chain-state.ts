@@ -37,6 +37,11 @@ export function isMissingZkappAccountError(error: unknown): boolean {
   );
 }
 
+export function isUninitializedFastZkappError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return isMissingZkappAccountError(error) || error.message.includes('zkApp appState missing');
+}
+
 export async function getOnChainMarketsRoot(zkappAddress: PublicKey): Promise<string> {
   const appState = await getOnChainAppState(zkappAddress);
   return getAppStateField(appState, 0, 'marketsRoot');

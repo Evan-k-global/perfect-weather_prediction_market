@@ -240,7 +240,6 @@
         <button id="connectWallet" class="ghost">Connect Wallet</button>
         <div class="status-row">
           <div id="oraclePill" class="pill"><span class="dot"></span><span>Oracle status loading...</span></div>
-          <div id="batchPill" class="pill batch"><span class="dot"></span><span>Last batch: loading...</span></div>
         </div>
       </section>
 
@@ -351,7 +350,6 @@
       const weatherTableEl = document.getElementById("weatherTable");
       const marketDateSelectEl = document.getElementById("marketDateSelect");
       const oraclePill = document.getElementById("oraclePill");
-      const batchPill = document.getElementById("batchPill");
       const weatherVizIconEl = document.getElementById("weatherVizIcon");
       const weatherVizTitleEl = document.getElementById("weatherVizTitle");
       const weatherVizDetailEl = document.getElementById("weatherVizDetail");
@@ -385,7 +383,6 @@
       let currentMarketResolved = false;
       let currentMarketOnChainCreated = false;
       let privacyMode = "zk_strong";
-      let zkappFundingAddress = null;
       let zkappConfigError = null;
       let manualWeatherRefreshEnabled = true;
       let latestOracleRows = [];
@@ -451,14 +448,10 @@
       async function refreshPrivacyMode() {
         const health = await req("/api/health");
         privacyMode = String(health.privacyMode || "zk_strong");
-        zkappFundingAddress = typeof health.zkappPublicKey === "string" ? health.zkappPublicKey : null;
         zkappConfigError = typeof health.zkappConfigError === "string" ? health.zkappConfigError : null;
         manualWeatherRefreshEnabled = health?.features?.manualWeatherRefreshEnabled !== false;
         if (privacyStatusEl) {
-          privacyStatusEl.textContent =
-            privacyMode === "zk_strong"
-              ? "Private betting queue, batched settlement"
-              : "Privacy mode: direct per-user tx path";
+          privacyStatusEl.textContent = "Client-side proving for active on-chain markets";
         }
         if (refreshWeatherTopBtn) {
           refreshWeatherTopBtn.disabled = !manualWeatherRefreshEnabled;
@@ -467,32 +460,14 @@
             ? "Refresh oracle data now"
             : "Manual refresh is disabled on the hosted market service because the oracle worker syncs weather in the background.";
         }
-        if (privacyMode === "zk_strong" && !zkappFundingAddress) {
+        if (!health.zkappPublicKey) {
           placeMarketBetBtn.disabled = true;
           out.textContent = toJson({
             error:
-              "Missing zkApp funding address. Set ZKAPP_PUBLIC_KEY (preferred) or ZKAPP_PRIVATE_KEY in .env.local, then restart marketplace server.",
+              "Missing zkApp public key. Set ZKAPP_PUBLIC_KEY (preferred) or ZKAPP_PRIVATE_KEY in .env.local, then restart marketplace server.",
             details: zkappConfigError || null
           });
         }
-      }
-
-      async function sendWalletPayment(to, amountMina) {
-        if (!window.mina) throw new Error("Auro/Pallad wallet not detected");
-        if (!to) {
-          throw new Error(
-            "zkApp funding address not available. Configure ZKAPP_PUBLIC_KEY or ZKAPP_PRIVATE_KEY in .env.local and restart server."
-          );
-        }
-        const amount = Number(amountMina);
-        if (!Number.isFinite(amount) || amount <= 0) throw new Error("invalid payment amount");
-        const sent = await window.mina.sendPayment({
-          to,
-          amount: amount.toString()
-        });
-        const hash = sent?.hash || null;
-        if (!hash) throw new Error("wallet did not return payment hash");
-        return hash;
       }
 
       function setBetProgress(text, busy = false) {
@@ -583,12 +558,6 @@
         oraclePill.innerHTML = `<span class="${dotClass}"></span><span>Oracle ${oracle.state}${age} - ${oracle.reason || ""} (${settlementNote})</span>`;
       }
 
-      function shortHash(value) {
-        if (!value || typeof value !== "string") return "n/a";
-        if (value.length < 14) return value;
-        return `${value.slice(0, 8)}...${value.slice(-6)}`;
-      }
-
       function escapeHtml(value) {
         return String(value ?? "")
           .replaceAll("&", "&amp;")
@@ -596,21 +565,6 @@
           .replaceAll(">", "&gt;")
           .replaceAll('"', "&quot;")
           .replaceAll("'", "&#39;");
-      }
-
-      function setBatchPill(status) {
-        if (!batchPill) return;
-        const recent = status?.recentBatch || null;
-        if (!recent) {
-          batchPill.innerHTML = `<span class="dot warn"></span><span>Last batch: none yet</span>`;
-          return;
-        }
-        const when = recent.atUnixMs ? new Date(recent.atUnixMs).toLocaleTimeString() : "n/a";
-        if (recent.status === "success") {
-          batchPill.innerHTML = `<span class="dot"></span><span>Last batch: success | +${recent.totalPositionBetAdded} tMINA | tx ${shortHash(recent.txHash)} | ${when}</span>`;
-          return;
-        }
-        batchPill.innerHTML = `<span class="dot bad"></span><span>Last batch: failed | ${recent.error || "unknown error"} | ${when}</span>`;
       }
 
       async function refreshMarket() {
@@ -624,9 +578,7 @@
           setMarketAvailabilityNote(
             currentMarketDate
               ? (
-                  privacyMode === "zk_strong"
-                    ? `Locked market ${currentMarketDate} is not active on-chain yet. In private mode, your queued bet will trigger automatic market creation before settlement.`
-                    : `Locked market ${currentMarketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
+                  `Locked market ${currentMarketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
                 )
               : "Select a market date to see when betting is available."
           );
@@ -647,15 +599,12 @@
             : Number(market.totalYesPositionBet || 0)
         );
         const implied = Number.isFinite(displayedTotal) && displayedTotal > 0 ? displayedOver / displayedTotal : Number(market.impliedProbability || 0);
-        const pendingTotal = Number(selectedDaily?.pendingPrivatePoolTmina || 0);
         const yesPct = Math.round((implied * 1000)) / 10;
         const noPct = Math.round((100 - yesPct) * 10) / 10;
         currentMarketYesPct = yesPct;
         currentMarketNoPct = noPct;
         marketOddsBarEl.style.setProperty("--yesw", `${Math.max(0, Math.min(100, yesPct))}%`);
-        marketOddsLabelEl.textContent =
-          `OVER ${yesPct.toFixed(1)}% / UNDER ${noPct.toFixed(1)}%` +
-          (pendingTotal > 0 ? ` | incl. ${pendingTotal} tMINA pending` : "");
+        marketOddsLabelEl.textContent = `OVER ${yesPct.toFixed(1)}% / UNDER ${noPct.toFixed(1)}%`;
         placeMarketBetBtn.disabled = Boolean(market.resolved);
         if (market.resolved) {
           out.textContent = toJson({
@@ -691,7 +640,6 @@
               ? selected.onChainOverTmina
               : selected.totalYesPositionBet
         );
-        const pendingTotal = Number(selected.pendingPrivatePoolTmina || 0);
         const underStake = Number.isFinite(total) && Number.isFinite(overStake) ? total - overStake : NaN;
         const overPayout = Number.isFinite(total) && total > 0 && Number.isFinite(overStake) && overStake > 0
           ? `${(total / overStake).toFixed(2)}`
@@ -701,16 +649,12 @@
           : "n/a";
         if (selectedPayoutLabelEl) {
           const potLabel = Number.isFinite(total) ? `${total} tMINA` : "n/a";
-          selectedPayoutLabelEl.textContent =
-            `Winning odds: OVER ${overPayout} | UNDER ${underPayout} | Pot ${potLabel}` +
-            (pendingTotal > 0 ? ` | includes ${pendingTotal} tMINA pending private queue` : "");
+          selectedPayoutLabelEl.textContent = `Winning odds: OVER ${overPayout} | UNDER ${underPayout} | Pot ${potLabel}`;
         }
         if (!selected.onChainCreated) {
-          placeMarketBetBtn.disabled = privacyMode !== "zk_strong";
+          placeMarketBetBtn.disabled = true;
           setMarketAvailabilityNote(
-            privacyMode === "zk_strong"
-              ? `Locked threshold is ${currentThresholdF}F. This date is not active on-chain yet, but private mode will queue your bet and create the market before settlement.`
-              : `Locked threshold is ${currentThresholdF}F, but this date is not active on-chain yet. It opens automatically once the daily market creation cycle reaches it.`
+            `Locked threshold is ${currentThresholdF}F, but this date is not active on-chain yet. It opens automatically once the daily market creation cycle reaches it.`
           );
         }
       }
@@ -888,7 +832,7 @@
                   <div class="odds-yes"></div>
                   <div class="odds-no"></div>
                 </div>
-                <div class="tiny">OVER ${row.yesPct.toFixed(1)}% / UNDER ${row.noPct.toFixed(1)}% | Pot ${row.potLabel}${row.pendingLabel ? ` | ${row.pendingLabel}` : ""}</div>
+                <div class="tiny">OVER ${row.yesPct.toFixed(1)}% / UNDER ${row.noPct.toFixed(1)}% | Pot ${row.potLabel}</div>
               </td>
             </tr>`
           ))
@@ -909,7 +853,6 @@
           const over = Number(
             Number.isFinite(Number(m.projectedOverTmina)) ? m.projectedOverTmina : m.onChainOverTmina
           );
-          const pending = Number(m.pendingPrivatePoolTmina || 0);
           const marketProb = Number.isFinite(total) && total > 0 ? over / total : 0.5;
           const yesPct = Math.round((marketProb * 1000)) / 10;
           const noPct = Math.round(((1 - marketProb) * 1000)) / 10;
@@ -923,7 +866,6 @@
             noPct,
             yesWidth: Math.max(0, Math.min(100, yesPct)),
             potLabel: Number.isFinite(total) ? `${total} tMINA` : "0 tMINA",
-            pendingLabel: pending > 0 ? `${pending} tMINA pending` : "",
             settled: Boolean(m.settlement?.settled),
             settlementLabel: m.settlement?.settled
               ? `settled${Number.isFinite(Number(m.settlement?.observedHighF)) ? ` @ ${m.settlement.observedHighF}F` : ""}`
@@ -997,24 +939,24 @@
       async function refreshWalletActivity() {
         if (!out) return;
         if (!walletPublicKey) {
-          out.textContent = toJson({ note: "Connect wallet to view queued and on-chain activity." });
+          out.textContent = toJson({ note: "Connect wallet to view wallet activity." });
           return;
         }
         const activity = await req(`/api/wallet/activity?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
         const queued = Array.isArray(activity.queued) ? activity.queued : [];
         const positions = Array.isArray(activity.positions) ? activity.positions : [];
         if (!queued.length && !positions.length) {
-          out.textContent = "No queued or on-chain activity for this wallet yet.";
+          out.textContent = "No wallet activity for this wallet yet.";
           return;
         }
         const sections = [];
         if (queued.length) {
           sections.push(`
-            <div class="small" style="margin-bottom:8px;"><b>Queued Private Bets</b></div>
+            <div class="small" style="margin-bottom:8px;"><b>Deferred Bets</b></div>
             ${queued.map((item) => `
               <div class="market" style="margin-bottom:8px;">
                 <div class="small"><b>${escapeHtml(item.marketDate || "Queued market")}</b> | ${escapeHtml(String(item.side || "").toUpperCase())} | ${escapeHtml(String(item.stakeTmina))} tMINA</div>
-                <div class="tiny">Status ${escapeHtml(item.status || "QUEUED")} | Funding tx ${escapeHtml(item.fundingTxHash || "pending")}</div>
+                <div class="tiny">Status ${escapeHtml(item.status || "QUEUED")} | Waiting for automatic market creation</div>
               </div>
             `).join("")}
           `);
@@ -1087,7 +1029,6 @@
           const displayedOver = Number(
             Number.isFinite(Number(r.projectedOverTmina)) ? r.projectedOverTmina : r.onChainOverTmina
           );
-          const pending = Number(r.pendingPrivatePoolTmina || 0);
           const marketProb = Number.isFinite(displayedTotal) && displayedTotal > 0 ? displayedOver / displayedTotal : 0.5;
           const yesPct = Math.round((marketProb * 1000)) / 10;
           const noPct = Math.round(((1 - marketProb) * 1000)) / 10;
@@ -1105,7 +1046,6 @@
             noPct,
             yesWidth: Math.max(0, Math.min(100, yesPct)),
             potLabel: Number.isFinite(total) ? `${total} tMINA` : "n/a",
-            pendingLabel: pending > 0 ? `${pending} tMINA pending` : "",
             settled: Boolean(settlement?.settled),
             settlementLabel: settlement?.settled
               ? `settled${Number.isFinite(Number(settlement.observedHighF)) ? ` @ ${settlement.observedHighF}F` : ""}`
@@ -1125,38 +1065,8 @@
           if (!Number.isFinite(stake) || stake <= 0) throw new Error("stake must be > 0");
           const side = String(document.getElementById("betSide").value || "over");
 
-          if (privacyMode === "zk_strong" && !currentMarketOnChainCreated) {
-            setBetProgress("Funding private pool...", true);
-            const fundingTxHash = await sendWalletPayment(zkappFundingAddress, Math.floor(stake));
-            setBetProgress("Creating private commitment...", true);
-            const queued = await req("/api/private-bets/submit", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                marketKey: currentMarketKey,
-                addTotalBet: Math.floor(stake),
-                addYesBet: side === "over" ? Math.floor(stake) : 0,
-                walletPublicKey: walletKey,
-                fundingTxHash,
-                marketDate: currentMarketDate,
-                thresholdF: currentThresholdF
-              })
-            });
-            out.textContent = toJson({
-              queued,
-              note: "Private bet queued. Background batch processor will settle it shortly."
-            });
-            await refreshMarket();
-            await refreshWeather();
-            await refreshWalletActivity();
-            try {
-              const q = await req("/api/private-bets/status");
-              setBatchPill(q);
-            } catch {
-              setBatchPill(null);
-            }
-            setBetProgress("Bet queued privately", false);
-            return;
+          if (!currentMarketOnChainCreated) {
+            throw new Error("Selected market is not active on-chain yet. Wait for the automatic daily market creation cycle, then try again.");
           }
 
           setBetProgress("Preparing client-side proof", true);
@@ -1269,12 +1179,6 @@
           } catch (e) {
             console.warn("refreshPageState step failed", e);
           }
-        }
-        try {
-          const q = await req("/api/private-bets/status");
-          setBatchPill(q);
-        } catch {
-          setBatchPill(null);
         }
       }
 

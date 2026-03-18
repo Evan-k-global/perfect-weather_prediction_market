@@ -8,7 +8,7 @@ import { Bool, Field, Mina, Poseidon, PrivateKey, UInt64, fetchAccount } from 'o
 import { FastPredictionMarketPlatform } from './fast-contract.js';
 import { MarketLeaf } from './market-types.js';
 import { DEFAULT_STATE_FILE, buildMarketsMerkleMap, loadOperatorState, saveOperatorState, serializeMarketLeaf, StoredMarketMeta } from './state-store.js';
-import { assertLocalMarketsRootMatchesChain } from './fast-chain-state.js';
+import { assertLocalMarketsRootMatchesChain, isUninitializedFastZkappError } from './fast-chain-state.js';
 import { withTxRetry } from './tx-retry.js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
 
@@ -105,7 +105,20 @@ async function main(): Promise<void> {
   if (zkappAccount.error) throw new Error('zkApp account not found. Deploy first.');
 
   const state = await loadOperatorState(stateFile);
-  await assertLocalMarketsRootMatchesChain(zkappAddress, state);
+  try {
+    await assertLocalMarketsRootMatchesChain(zkappAddress, state);
+  } catch (error) {
+    if (!isUninitializedFastZkappError(error)) {
+      throw error;
+    }
+    console.warn('[ensure-daily-markets:zeko] fast zkApp is not initialized on-chain yet; skipping market creation');
+    console.log('Daily market ensure skipped.');
+    console.log('Created:', 0);
+    console.log('Reason:', 'zkapp not initialized');
+    console.log('State file:', stateFile);
+    console.log('Daily markets file:', dailyMarketsFile);
+    return;
+  }
   const daily = await loadDemoDailyMarkets(dailyMarketsFile);
   await FastPredictionMarketPlatform.compile();
   const zkapp = new FastPredictionMarketPlatform(zkappAddress);

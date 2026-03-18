@@ -14,7 +14,7 @@ import {
   getLocalReceiptsRoot,
   getOnChainMarketsRoot,
   getOnChainReceiptsRoot,
-  isMissingZkappAccountError
+  isUninitializedFastZkappError
 } from './fast-chain-state.js';
 import { MarketLeaf } from './market-types.js';
 
@@ -163,7 +163,7 @@ async function main(): Promise<void> {
     chainRoot = await getOnChainMarketsRoot(zkappAddress);
     chainReceiptsRoot = await getOnChainReceiptsRoot(zkappAddress);
   } catch (error) {
-    if (!isMissingZkappAccountError(error)) {
+    if (!isUninitializedFastZkappError(error)) {
       throw error;
     }
 
