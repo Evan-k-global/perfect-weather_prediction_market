@@ -141,6 +141,15 @@ type BrowserMarketBetContext = {
   receiptWitness: SerializedMerkleWitness;
 };
 
+type ClaimPayoutContext = {
+  walletPublicKey: string;
+  fee: string;
+  payoutNanomina: string;
+  payoutTmina: string;
+  marketKey: string;
+  positionKey: string;
+};
+
 type DemoDailyMarket = {
   marketDate: string;
   marketKey: string;
@@ -333,6 +342,22 @@ function useLocalServerBetProving(): boolean {
     return !['0', 'false', 'no', 'off'].includes(normalized);
   }
   return !(process.env.RENDER === 'true' || process.env.IS_RENDER === 'true');
+}
+
+function getRemoteTxProverBaseUrl(): string | null {
+  const raw = (process.env.TX_PROVER_BASE_URL || '').trim();
+  if (!raw) return null;
+  return (/^https?:\/\//i.test(raw) ? raw : `http://${raw}`).replace(/\/+$/, '');
+}
+
+function useRemoteTxProver(): boolean {
+  if (useLocalServerBetProving()) return false;
+  return Boolean(getRemoteTxProverBaseUrl());
+}
+
+function getRemoteTxProverToken(): string | null {
+  const raw = (process.env.TX_PROVER_ACTION_TOKEN || '').trim();
+  return raw.length > 0 ? raw : null;
 }
 
 function getRelayerPrivateKey(): PrivateKey | null {
@@ -2125,6 +2150,92 @@ async function buildWalletFeePayerClaimPayoutTx(params: {
   };
 }
 
+async function buildClaimPayoutContext(params: {
+  stateFile: string;
+  marketKey: string;
+  positionKey: string;
+  feePayerPublicKey: string;
+}): Promise<{
+  fee: string;
+  payoutSummary: { payoutTmina: string; marketKey: string; positionKey: string };
+  buildContext: ClaimPayoutContext;
+}> {
+  const { stateFile, marketKey, positionKey, feePayerPublicKey } = params;
+  setActiveZekoNetwork();
+  const { txFee } = getNetworkConfig();
+
+  const state = await reconcileSubmittedPayoutClaims(stateFile);
+  const meta = state.receiptMeta?.[positionKey];
+  if (!meta) throw new Error('receipt metadata missing for payout claim');
+  if (meta.walletPublicKey !== feePayerPublicKey) {
+    throw new Error('wallet does not own this receipt position');
+  }
+  if (meta.marketKey !== marketKey) {
+    throw new Error('receipt metadata market mismatch');
+  }
+  const storedMarket = state.markets[marketKey];
+  if (!storedMarket) throw new Error('market missing for payout claim');
+  const marketLeaf = deserializeMarketLeaf(storedMarket);
+  if (!marketLeaf.resolved.toBoolean()) throw new Error('market is not resolved yet');
+  const won = meta.side === (marketLeaf.outcome.toBoolean() ? 'over' : 'under');
+  if (!won) throw new Error('receipt is not on the winning side');
+  if (meta.claimStatus === 'submitted') throw new Error('claim already submitted');
+  if (meta.claimStatus === 'confirmed') throw new Error('claim already confirmed');
+  const payoutNanomina = payoutNanominaForStake(
+    BigInt(marketLeaf.totalPositionBet.toString()),
+    BigInt(marketLeaf.totalYesPositionBet.toString()),
+    marketLeaf.outcome.toBoolean(),
+    BigInt(meta.stakeTmina)
+  );
+  if (payoutNanomina <= 0n) throw new Error('no payout available for this receipt');
+
+  return {
+    fee: txFee,
+    payoutSummary: {
+      payoutTmina: (payoutNanomina / 1_000_000_000n).toString(),
+      marketKey,
+      positionKey
+    },
+    buildContext: {
+      walletPublicKey: feePayerPublicKey,
+      fee: txFee,
+      payoutNanomina: payoutNanomina.toString(),
+      payoutTmina: (payoutNanomina / 1_000_000_000n).toString(),
+      marketKey,
+      positionKey
+    }
+  };
+}
+
+async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, unknown>): Promise<T> {
+  const baseUrl = getRemoteTxProverBaseUrl();
+  const token = getRemoteTxProverToken();
+  if (!baseUrl) throw new Error('remote tx prover not configured: set TX_PROVER_BASE_URL');
+  if (!token) throw new Error('remote tx prover not configured: set TX_PROVER_ACTION_TOKEN');
+  const res = await fetch(`${baseUrl}${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-prover-token': token
+    },
+    body: JSON.stringify(body)
+  });
+  const text = await res.text();
+  let data: any = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      const snippet = text.slice(0, 160).replace(/\s+/g, ' ').trim();
+      throw new Error(`remote tx prover returned non-JSON response (${res.status}): ${snippet}`);
+    }
+  }
+  if (!res.ok) {
+    throw new Error((data && data.error) || `remote tx prover request ${endpoint} failed with status ${res.status}`);
+  }
+  return data as T;
+}
+
 async function processPrivateBetBatch(params: {
   stateFile: string;
   maxItems: number;
@@ -2274,7 +2385,8 @@ async function main(): Promise<void> {
           dailySettle: dailySettleState,
           features: {
             manualWeatherRefreshEnabled: !(process.env.RENDER === 'true' || process.env.IS_RENDER === 'true'),
-            localServerBetProvingEnabled: useLocalServerBetProving()
+            localServerBetProvingEnabled: useLocalServerBetProving(),
+            remoteTxProverEnabled: useRemoteTxProver()
           },
           ts: new Date().toISOString()
         });
@@ -2365,9 +2477,6 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-bet') {
-        if (!useLocalServerBetProving()) {
-          throw new Error('server-side /api/tx/market-bet is disabled on hosted mode; use /api/tx/market-bet-context with client-side proving');
-        }
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const addTotalBet = requireNumber(body.addTotalBet, 'addTotalBet');
@@ -2416,10 +2525,18 @@ async function main(): Promise<void> {
             userId
           })
         );
-        const tx = await buildLocalServerReceiptBetTx(built.buildContext);
+        const tx = useRemoteTxProver()
+          ? (await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/market-bet', {
+              context: built.buildContext
+            })).tx
+          : useLocalServerBetProving()
+            ? await buildLocalServerReceiptBetTx(built.buildContext)
+            : (() => {
+                throw new Error('no transaction proving path configured');
+              })();
         writeJson(res, 200, {
           ok: true,
-          mode: 'wallet-fee-payer-local',
+          mode: useRemoteTxProver() ? 'wallet-fee-payer-remote-prover' : 'wallet-fee-payer-local',
           intentId: built.intent.id,
           fee: built.fee,
           tx,
@@ -2438,23 +2555,68 @@ async function main(): Promise<void> {
         const marketKey = requireString(body.marketKey, 'marketKey');
         const positionKey = requireString(body.positionKey, 'positionKey');
         const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
-        const built = await withFreshMarketStateRetry(projectRoot, async () =>
-          buildWalletFeePayerClaimPayoutTx({
-            stateFile: defaultStatePath,
+        let fee: string;
+        let payoutSummary: { payoutTmina: string; marketKey: string; positionKey: string };
+        let tx: unknown;
+        let intentId: string;
+        let mode: string;
+
+        if (useRemoteTxProver()) {
+          const built = await withFreshMarketStateRetry(projectRoot, async () =>
+            buildClaimPayoutContext({
+              stateFile: defaultStatePath,
+              marketKey,
+              positionKey,
+              feePayerPublicKey: walletPublicKey
+            })
+          );
+          tx = (await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/claim-payout', {
+            context: built.buildContext
+          })).tx;
+          fee = built.fee;
+          payoutSummary = built.payoutSummary;
+          const intent: PendingTxIntent = {
+            id: randomUUID(),
+            type: 'payout-claim',
             marketKey,
+            marketDate: null,
+            walletPublicKey,
             positionKey,
-            feePayerPublicKey: walletPublicKey,
-            userId: walletPublicKey
-          })
-        );
+            addTotalBet: 0,
+            addYesBet: 0,
+            userId: walletPublicKey,
+            newLeaf: null,
+            userNetPositionAfter: 0,
+            createdAtUnixMs: Date.now()
+          };
+          pendingTxIntents[intent.id] = intent;
+          intentId = intent.id;
+          mode = 'wallet-fee-payer-remote-prover';
+        } else {
+          const built = await withFreshMarketStateRetry(projectRoot, async () =>
+            buildWalletFeePayerClaimPayoutTx({
+              stateFile: defaultStatePath,
+              marketKey,
+              positionKey,
+              feePayerPublicKey: walletPublicKey,
+              userId: walletPublicKey
+            })
+          );
+          tx = built.tx;
+          fee = built.fee;
+          payoutSummary = built.payoutSummary;
+          intentId = built.intent.id;
+          mode = 'wallet-fee-payer';
+        }
+
         writeJson(res, 200, {
           ok: true,
-          mode: 'wallet-fee-payer',
+          mode,
           action: 'claim-payout',
-          intentId: built.intent.id,
-          fee: built.fee,
-          tx: built.tx,
-          payoutSummary: built.payoutSummary
+          intentId,
+          fee,
+          tx,
+          payoutSummary
         });
         return;
       }

@@ -13,6 +13,11 @@ services:
         value: production
       - key: ZKVERIFY_POC_ROOT
         value: /opt/zk-verify-poc
+      - key: TX_PROVER_BASE_URL
+        fromService:
+          type: web
+          name: perfect-weather-tx-prover
+          property: hostport
       - key: BOOTSTRAP_FAST_ZKAPP_ON_START
         value: "1"
       - key: BOOTSTRAP_DAILY_MARKETS_ON_START
@@ -54,3 +59,15 @@ services:
         value: "5000"
       - key: ORACLE_WORKER_ENABLE_CHAIN_ACTIONS
         value: "1"
+  - type: web
+    name: perfect-weather-tx-prover
+    env: docker
+    dockerfilePath: ./deploy/Dockerfile
+    dockerCommand: /app/deploy/start-tx-prover.sh
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ZKVERIFY_POC_ROOT
+        value: /opt/zk-verify-poc
+      - key: TX_PROVER_NODE_MAX_OLD_SPACE_MB
+        value: "4096"

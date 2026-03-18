@@ -439,9 +439,7 @@
       let zkappConfigError = null;
       let manualWeatherRefreshEnabled = true;
       let localServerBetProvingEnabled = true;
-      let clientBetModulePromise = null;
-      let clientBetWarmupPromise = null;
-      let clientBetNetwork = null;
+      let remoteTxProverEnabled = false;
       let latestOracleRows = [];
 
       function syncSelectedWeatherDayToCurrentMarketDate() {
@@ -477,36 +475,19 @@
         }
       }
 
-      async function ensureClientBetModule() {
-        if (!clientBetModulePromise) {
-          clientBetModulePromise = import("/public/browser/client-bet-entry.js");
-        }
-        return await clientBetModulePromise;
-      }
-
-      function warmupClientBetModule() {
-        if (localServerBetProvingEnabled || !clientBetNetwork) return;
-        if (!clientBetWarmupPromise) {
-          clientBetWarmupPromise = ensureClientBetModule()
-            .then((mod) => mod.warmupReceiptBetClient(clientBetNetwork))
-            .catch((error) => {
-              clientBetWarmupPromise = null;
-              console.warn("client bet warmup failed", error);
-            });
-        }
-      }
-
       async function refreshPrivacyMode() {
         const health = await req("/api/health");
         privacyMode = String(health.privacyMode || "zk_strong");
         zkappConfigError = typeof health.zkappConfigError === "string" ? health.zkappConfigError : null;
         manualWeatherRefreshEnabled = health?.features?.manualWeatherRefreshEnabled !== false;
         localServerBetProvingEnabled = health?.features?.localServerBetProvingEnabled !== false;
-        clientBetNetwork = health?.network || null;
+        remoteTxProverEnabled = health?.features?.remoteTxProverEnabled === true;
         if (privacyStatusEl) {
           privacyStatusEl.textContent = localServerBetProvingEnabled
             ? "Local server proving on this machine for active on-chain markets"
-            : "This site generates zk proofs on your device for active on-chain markets";
+            : remoteTxProverEnabled
+              ? "Dedicated proving service builds zk transactions while your wallet signs locally"
+              : "This site generates zk proofs on your device for active on-chain markets";
         }
         if (refreshWeatherTopBtn) {
           refreshWeatherTopBtn.disabled = !manualWeatherRefreshEnabled;
@@ -523,7 +504,6 @@
             details: zkappConfigError || null
           });
         }
-        warmupClientBetModule();
       }
 
       function setBetProgress(text, busy = false) {
@@ -1155,29 +1135,14 @@
             marketDate: currentMarketDate,
             thresholdF: currentThresholdF
           };
-          let txPayload;
-          let txFee;
-          let intentId;
-          if (localServerBetProvingEnabled) {
-            const built = await req("/api/tx/market-bet", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify(requestBody)
-            });
-            txPayload = built.tx;
-            txFee = built.fee;
-            intentId = built.intentId;
-          } else {
-            const built = await req("/api/tx/market-bet-context", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify(requestBody)
-            });
-            const clientBet = await ensureClientBetModule();
-            txPayload = await clientBet.buildReceiptBetTx(built.buildContext);
-            txFee = built.fee;
-            intentId = built.intentId;
-          }
+          const built = await req("/api/tx/market-bet", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(requestBody)
+          });
+          const txPayload = built.tx;
+          const txFee = built.fee;
+          const intentId = built.intentId;
           setBetProgress("Waiting for wallet signature...", true);
           const txHash = await sendOnchainTx(txPayload, txFee);
           setBetProgress("Finalizing market state...", true);

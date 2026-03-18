@@ -18,6 +18,7 @@
     "resolve-weather:zeko": "node --enable-source-maps dist/resolve-weather-market-zeko.js",
     "resolve-daily-market:zeko": "node --enable-source-maps dist/resolve-daily-market-zeko.js",
     "marketplace:serve": "node --enable-source-maps dist/marketplace-server.js",
+    "tx-prover:serve": "node --enable-source-maps dist/tx-prover-server.js",
     "oracle:worker": "node --enable-source-maps dist/oracle-worker.js",
     "weather:attest": "node --enable-source-maps dist/weather-attest.js",
     "weather:tls:check": "node --enable-source-maps dist/weather-tls-check.js",
