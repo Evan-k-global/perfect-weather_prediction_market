@@ -1065,11 +1065,12 @@
           if (!Number.isFinite(stake) || stake <= 0) throw new Error("stake must be > 0");
           const side = String(document.getElementById("betSide").value || "over");
 
-          if (!currentMarketOnChainCreated) {
-            throw new Error("Selected market is not active on-chain yet. Wait for the automatic daily market creation cycle, then try again.");
-          }
-
-          setBetProgress("Preparing client-side proof", true);
+          setBetProgress(
+            currentMarketOnChainCreated
+              ? "Preparing client-side proof"
+              : "Ensuring market is active on-chain...",
+            true
+          );
           const txContext = await req("/api/tx/market-bet-context", {
             method: "POST",
             headers: { "content-type": "application/json" },
