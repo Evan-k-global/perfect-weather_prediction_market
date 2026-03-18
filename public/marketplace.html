@@ -1091,9 +1091,7 @@
           out.textContent = toJson({ txHash, marketDate: currentMarketDate, thresholdF: currentThresholdF, finalized });
           setBetProgress("Refreshing odds...", true);
           await refreshMarket();
-          await new Promise((r) => setTimeout(r, 1000));
-          await refreshMarket();
-          await refreshWeather();
+          await refreshDailyMarkets();
           await refreshWalletActivity();
           setBetProgress("Bet placed successfully", false);
         } catch (e) {

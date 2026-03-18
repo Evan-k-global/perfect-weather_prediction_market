@@ -19,6 +19,12 @@ services:
         value: "1"
       - key: SYNC_STATE_BLOCKING
         value: "0"
+      - key: PRIVATE_BATCH_INTERVAL_MS
+        value: "0"
+      - key: DAILY_AUTO_SETTLE_INTERVAL_MS
+        value: "0"
+      - key: DAILY_SETTLE_SCHEDULE_CHECK_MS
+        value: "0"
   - type: worker
     name: perfect-weather-operator-worker
     env: docker

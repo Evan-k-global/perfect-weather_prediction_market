@@ -314,6 +314,18 @@ function getPrivateBatchIntervalMs(): number {
   return 30000;
 }
 
+function getHostedSafeIntervalMs(envName: string, localFallback: number): number {
+  const explicit = process.env[envName];
+  if (explicit !== undefined) {
+    const parsed = Number.parseInt(explicit, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
+    return 0;
+  }
+  return localFallback;
+}
+
 function getRelayerPrivateKey(): PrivateKey | null {
   const deployer = process.env.DEPLOYER_PRIVATE_KEY;
   const relayer = process.env.RELAYER_PRIVATE_KEY;
@@ -3618,7 +3630,7 @@ async function main(): Promise<void> {
       }
     }
 
-    const autoSettleIntervalMs = Number.parseInt(process.env.DAILY_AUTO_SETTLE_INTERVAL_MS || '60000', 10);
+    const autoSettleIntervalMs = getHostedSafeIntervalMs('DAILY_AUTO_SETTLE_INTERVAL_MS', 60000);
     if (autoSettleIntervalMs > 0) {
       console.log(`[daily-settle] enabled interval checker every ${autoSettleIntervalMs}ms`);
       setInterval(async () => {
@@ -3637,7 +3649,7 @@ async function main(): Promise<void> {
       console.log('[daily-settle] interval disabled (DAILY_AUTO_SETTLE_INTERVAL_MS <= 0)');
     }
 
-    const nightlySettleIntervalMs = Number.parseInt(process.env.DAILY_SETTLE_SCHEDULE_CHECK_MS || '60000', 10);
+    const nightlySettleIntervalMs = getHostedSafeIntervalMs('DAILY_SETTLE_SCHEDULE_CHECK_MS', 60000);
     if (nightlySettleIntervalMs > 0) {
       console.log('[daily-settle] scheduled nightly settle check enabled for 23:55 America/Los_Angeles');
       console.log(
