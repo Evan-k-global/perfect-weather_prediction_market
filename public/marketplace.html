@@ -385,6 +385,7 @@
       let privacyMode = "zk_strong";
       let zkappConfigError = null;
       let manualWeatherRefreshEnabled = true;
+      let localServerBetProvingEnabled = false;
       let latestOracleRows = [];
       let clientBettingModulePromise = null;
 
@@ -450,8 +451,11 @@
         privacyMode = String(health.privacyMode || "zk_strong");
         zkappConfigError = typeof health.zkappConfigError === "string" ? health.zkappConfigError : null;
         manualWeatherRefreshEnabled = health?.features?.manualWeatherRefreshEnabled !== false;
+        localServerBetProvingEnabled = health?.features?.localServerBetProvingEnabled === true;
         if (privacyStatusEl) {
-          privacyStatusEl.textContent = "Client-side proving for active on-chain markets";
+          privacyStatusEl.textContent = localServerBetProvingEnabled
+            ? "Local server proving on this machine for active on-chain markets"
+            : "Client-side proving for active on-chain markets";
         }
         if (refreshWeatherTopBtn) {
           refreshWeatherTopBtn.disabled = !manualWeatherRefreshEnabled;
@@ -1063,30 +1067,53 @@
               : "Creating market...",
             true
           );
-          const txContext = await req("/api/tx/market-bet-context", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              marketKey: currentMarketKey,
-              addTotalBet: Math.floor(stake),
-              addYesBet: side === "over" ? Math.floor(stake) : 0,
-              walletPublicKey: walletKey,
-              marketDate: currentMarketDate,
-              thresholdF: currentThresholdF
-            })
-          });
-          const clientBetting = await getClientBettingModule();
-          if (!currentMarketOnChainCreated) {
-            setBetProgress("Generating zkProof", true);
+          let txPayload;
+          let txFee;
+          let intentId;
+          if (localServerBetProvingEnabled) {
+            const built = await req("/api/tx/market-bet", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                marketKey: currentMarketKey,
+                addTotalBet: Math.floor(stake),
+                addYesBet: side === "over" ? Math.floor(stake) : 0,
+                walletPublicKey: walletKey,
+                marketDate: currentMarketDate,
+                thresholdF: currentThresholdF
+              })
+            });
+            txPayload = built.tx;
+            txFee = built.fee;
+            intentId = built.intentId;
+          } else {
+            const txContext = await req("/api/tx/market-bet-context", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                marketKey: currentMarketKey,
+                addTotalBet: Math.floor(stake),
+                addYesBet: side === "over" ? Math.floor(stake) : 0,
+                walletPublicKey: walletKey,
+                marketDate: currentMarketDate,
+                thresholdF: currentThresholdF
+              })
+            });
+            const clientBetting = await getClientBettingModule();
+            if (!currentMarketOnChainCreated) {
+              setBetProgress("Generating zkProof", true);
+            }
+            txPayload = await clientBetting.buildReceiptBetTx(txContext.buildContext);
+            txFee = txContext.fee;
+            intentId = txContext.intentId;
           }
-          const txPayload = await clientBetting.buildReceiptBetTx(txContext.buildContext);
           setBetProgress("Waiting for wallet signature...", true);
-          const txHash = await sendOnchainTx(txPayload, txContext.fee);
+          const txHash = await sendOnchainTx(txPayload, txFee);
           setBetProgress("Finalizing market state...", true);
           const finalized = await req("/api/tx/finalize", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ intentId: txContext.intentId, txHash })
+            body: JSON.stringify({ intentId, txHash })
           });
           out.textContent = toJson({ txHash, marketDate: currentMarketDate, thresholdF: currentThresholdF, finalized });
           setBetProgress("Refreshing odds...", true);

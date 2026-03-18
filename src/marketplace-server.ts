@@ -7,7 +7,7 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Bool, Field, Mina, Poseidon, PrivateKey, PublicKey, UInt64, fetchTransactionStatus } from 'o1js';
+import { AccountUpdate, Bool, Field, MerkleMapWitness, Mina, Poseidon, PrivateKey, PublicKey, UInt32, UInt64, fetchAccount, fetchTransactionStatus } from 'o1js';
 import { DEFAULT_STATE_FILE, loadOperatorState } from './state-store.js';
 import {
   NWS_94027_DIGITAL_URL,
@@ -55,6 +55,7 @@ import {
   saveAcpCreditEscrowState
 } from './acp-credit-escrow.js';
 import { PositionLeaf } from './contract.js';
+import { FastPredictionMarketPlatform } from './fast-contract.js';
 import { MarketLeaf } from './market-types.js';
 import { assertLocalMarketsRootMatchesChain, assertLocalReceiptsRootMatchesChain } from './fast-chain-state.js';
 import {
@@ -294,6 +295,7 @@ const privateBetQueue: PrivateQueuedBet[] = [];
 const privateBatchHistory: PrivateBatchHistoryEntry[] = [];
 let privateBatchInFlight = false;
 let privateBatchLeaseStartedAtUnixMs: number | null = null;
+let fastContractCompilePromise: Promise<void> | null = null;
 
 function getPrivacyMode(): PrivacyMode {
   const mode = (process.env.PRIVACY_MODE || 'zk_strong').trim().toLowerCase();
@@ -346,6 +348,15 @@ function useLeanHostedBetContext(): boolean {
   if (explicit === undefined) return false;
   const normalized = explicit.trim().toLowerCase();
   return !['0', 'false', 'no', 'off'].includes(normalized);
+}
+
+function useLocalServerBetProving(): boolean {
+  const explicit = process.env.LOCAL_SERVER_BET_PROVING;
+  if (explicit !== undefined) {
+    const normalized = explicit.trim().toLowerCase();
+    return !['0', 'false', 'no', 'off'].includes(normalized);
+  }
+  return !(process.env.RENDER === 'true' || process.env.IS_RENDER === 'true');
 }
 
 function getRelayerPrivateKey(): PrivateKey | null {
@@ -1524,6 +1535,20 @@ function serializeMerkleWitness(witness: { isLefts: Bool[]; siblings: Field[] })
   };
 }
 
+function deserializeMerkleWitness(serialized: SerializedMerkleWitness): MerkleMapWitness {
+  return new MerkleMapWitness(
+    serialized.isLefts.map((value) => Bool(Boolean(value))),
+    serialized.siblings.map((value) => Field(value))
+  );
+}
+
+async function ensureFastContractCompiled(): Promise<void> {
+  if (!fastContractCompilePromise) {
+    fastContractCompilePromise = FastPredictionMarketPlatform.compile().then(() => undefined);
+  }
+  await fastContractCompilePromise;
+}
+
 async function buildBrowserFeePayerMarketBetContext(params: {
   stateFile: string;
   marketKey: string;
@@ -1646,6 +1671,58 @@ async function buildBrowserFeePayerMarketBetContext(params: {
       receiptWitness: serializeMerkleWitness(receiptsMap.getWitness(positionKey))
     }
   };
+}
+
+async function buildLocalServerReceiptBetTx(context: BrowserMarketBetContext): Promise<unknown> {
+  setActiveZekoNetwork();
+  await ensureFastContractCompiled();
+
+  const feePayer = PublicKey.fromBase58(context.walletPublicKey);
+  const account = await fetchAccount({ publicKey: feePayer });
+  if (account.error) {
+    throw new Error(`fee payer account not found: ${account.error.statusText || 'unknown'}`);
+  }
+
+  const zkappAddress = PublicKey.fromBase58(context.zkappPublicKey);
+  const marketKey = Field(context.marketKey);
+  const receiptKey = Field(context.receiptKey);
+  const receiptCommitment = Field(context.receiptCommitment);
+  const ownerCommitment = Field(context.ownerCommitment);
+  const oldLeaf = deserializeMarketLeaf(context.oldLeaf);
+  const newLeaf = deserializeMarketLeaf(context.newLeaf);
+  const marketWitness = deserializeMerkleWitness(context.marketWitness);
+  const receiptWitness = deserializeMerkleWitness(context.receiptWitness);
+  const betAmountNanomina = BigInt(context.addTotalBet) * 1_000_000_000n;
+  const zkapp = new FastPredictionMarketPlatform(zkappAddress);
+
+  const tx = await Mina.transaction({ sender: feePayer, fee: context.fee }, async () => {
+    const bettorPayment = AccountUpdate.createSigned(feePayer);
+    bettorPayment.send({
+      to: zkappAddress,
+      amount: UInt64.from(betAmountNanomina)
+    });
+    zkapp.placeReceiptBet(
+      marketKey,
+      oldLeaf,
+      newLeaf,
+      marketWitness,
+      receiptKey,
+      receiptCommitment,
+      receiptWitness,
+      ownerCommitment
+    );
+  });
+
+  const feePayerUpdate = (tx as unknown as { feePayer?: { body?: { preconditions?: { account?: { nonce?: unknown } }; useFullCommitment?: Bool } } }).feePayer;
+  if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
+    feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
+  }
+  if (feePayerUpdate?.body) {
+    feePayerUpdate.body.useFullCommitment = Bool(true);
+  }
+
+  await tx.prove();
+  return tx.toJSON();
 }
 
 function getOperatorActionToken(): string | null {
@@ -2054,7 +2131,8 @@ async function main(): Promise<void> {
             oracleCommitteePathEnabled: committeeEnabled,
             governancePathEnabled: governanceEnabled,
             acpCreditEscrowPathEnabled: acpCreditEscrowEnabled,
-            manualWeatherRefreshEnabled: !(process.env.RENDER === 'true' || process.env.IS_RENDER === 'true')
+            manualWeatherRefreshEnabled: !(process.env.RENDER === 'true' || process.env.IS_RENDER === 'true'),
+            localServerBetProvingEnabled: useLocalServerBetProving()
           },
           ts: new Date().toISOString()
         });
@@ -2971,7 +3049,52 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-bet') {
-        throw new Error('server-side /api/tx/market-bet is disabled; use /api/tx/market-bet-context with client-side proving');
+        if (!useLocalServerBetProving()) {
+          throw new Error('server-side /api/tx/market-bet is disabled on hosted mode; use /api/tx/market-bet-context with client-side proving');
+        }
+        const body = await readJsonBody(req);
+        const marketKey = requireString(body.marketKey, 'marketKey');
+        const addTotalBet = requireNumber(body.addTotalBet, 'addTotalBet');
+        const addYesBet = requireNonNegativeNumber(body.addYesBet, 'addYesBet');
+        const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
+        const marketDate = requireString(body.marketDate, 'marketDate');
+        const selectedThresholdF =
+          typeof body.thresholdF === 'number' && Number.isFinite(body.thresholdF) ? Math.round(body.thresholdF) : null;
+        const userId = walletPublicKey;
+        if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
+
+        const currentState = await loadOperatorState(defaultStatePath);
+        const selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
+        if (!selectedMarket) {
+          throw new Error(`market ${marketDate} is not active on-chain yet. Wait for oracle sync, then try again.`);
+        }
+        if (selectedThresholdF !== null && Number.isFinite(Number(selectedMarket.thresholdF))) {
+          const onChainThresholdF = Math.round(Number(selectedMarket.thresholdF));
+          if (onChainThresholdF !== selectedThresholdF) {
+            throw new Error(
+              `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
+            );
+          }
+        }
+
+        const built = await buildBrowserFeePayerMarketBetContext({
+          stateFile: defaultStatePath,
+          marketKey: String(selectedMarket.marketKey),
+          addTotalBet: Math.floor(addTotalBet),
+          addYesBet: Math.floor(addYesBet),
+          marketDate,
+          feePayerPublicKey: walletPublicKey,
+          userId
+        });
+        const tx = await buildLocalServerReceiptBetTx(built.buildContext);
+        writeJson(res, 200, {
+          ok: true,
+          mode: 'wallet-fee-payer-local',
+          intentId: built.intent.id,
+          fee: built.fee,
+          tx,
+          marketSummary: built.marketSummary
+        });
         return;
       }
 
