@@ -231,7 +231,11 @@ async function runCycle(baseUrl: string, oracleToken: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const baseUrl = (process.env.MARKET_BASE_URL || process.env.OPERATOR_BASE_URL || '').replace(/\/+$/, '');
+  const rawBaseUrl = (process.env.MARKET_BASE_URL || process.env.OPERATOR_BASE_URL || '').trim();
+  const baseUrl = (/^https?:\/\//i.test(rawBaseUrl) ? rawBaseUrl : rawBaseUrl ? `http://${rawBaseUrl}` : '').replace(
+    /\/+$/,
+    ''
+  );
   if (!baseUrl) throw new Error('Missing env MARKET_BASE_URL');
   const oracleToken = process.env.ORACLE_ACTION_TOKEN || process.env.OPERATOR_ACTION_TOKEN;
   if (!oracleToken) throw new Error('Missing env ORACLE_ACTION_TOKEN');

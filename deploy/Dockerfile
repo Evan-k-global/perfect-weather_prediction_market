@@ -34,6 +34,7 @@ COPY deploy/demo-daily-threshold-markets.seed.json /app/deploy/demo-daily-thresh
 
 RUN pnpm install --frozen-lockfile
 RUN pnpm build
+RUN pnpm fast-cache:build
 RUN cargo build --manifest-path /opt/zk-verify-poc/tlsnotary/Cargo.toml
 RUN chmod +x /app/deploy/start-render.sh /app/deploy/start-operator-worker.sh /app/deploy/start-oracle-worker.sh
 
