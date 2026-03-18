@@ -2150,8 +2150,9 @@ async function main(): Promise<void> {
   const distRoot = path.resolve(projectRoot, 'dist');
   const o1jsWebRoot = path.resolve(projectRoot, 'node_modules', 'o1js', 'dist', 'web');
   const reflectRoot = path.resolve(projectRoot, 'node_modules', 'reflect-metadata');
-  const port = Number.parseInt(process.env.MARKETPLACE_PORT || '8790', 10);
-  const host = process.env.MARKETPLACE_HOST || '127.0.0.1';
+  const isHosted = process.env.RENDER === 'true' || process.env.IS_RENDER === 'true';
+  const port = Number.parseInt(process.env.MARKETPLACE_PORT || process.env.PORT || '8790', 10);
+  const host = process.env.MARKETPLACE_HOST || (isHosted ? '0.0.0.0' : '127.0.0.1');
   const defaultStatePath = process.env.STATE_FILE || DEFAULT_STATE_FILE;
   // Durable startup state for private batching.
   const restoredQueue = await loadPrivateBetQueue();
