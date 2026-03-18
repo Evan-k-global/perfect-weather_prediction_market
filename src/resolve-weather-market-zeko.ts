@@ -2,7 +2,8 @@ import 'reflect-metadata';
 import './env.js';
 import { Bool, Field, Mina, Poseidon, PrivateKey, fetchAccount } from 'o1js';
 import { readFile } from 'node:fs/promises';
-import { MarketLeaf, PredictionMarketPlatform } from './contract.js';
+import { FastPredictionMarketPlatform } from './fast-contract.js';
+import { MarketLeaf } from './market-types.js';
 import {
   TlsnWeatherAttestation,
   buildWeatherOracleStatementFromAttestation
@@ -17,7 +18,7 @@ import {
   saveOperatorState,
   serializeMarketLeaf
 } from './state-store.js';
-import { assertLocalMarketsRootMatchesChain } from './chain-state.js';
+import { assertLocalMarketsRootMatchesChain } from './fast-chain-state.js';
 import { withTxRetry } from './tx-retry.js';
 
 function readEnv(name: string): string {
@@ -189,8 +190,8 @@ async function main(): Promise<void> {
     oracleStatementHash: statement.statementDigest
   });
 
-  await PredictionMarketPlatform.compile();
-  const zkapp = new PredictionMarketPlatform(zkappAddress);
+  await FastPredictionMarketPlatform.compile();
+  const zkapp = new FastPredictionMarketPlatform(zkappAddress);
 
   await withTxRetry(
     async () => {

@@ -2,8 +2,9 @@ import 'reflect-metadata';
 import './env.js';
 import { Field, Mina, PrivateKey, UInt64, fetchAccount } from 'o1js';
 import { Bool } from 'o1js';
-import { MarketLeaf, PredictionMarketPlatform } from './contract.js';
-import { assertLocalMarketsRootMatchesChain } from './chain-state.js';
+import { FastPredictionMarketPlatform } from './fast-contract.js';
+import { MarketLeaf } from './market-types.js';
+import { assertLocalMarketsRootMatchesChain } from './fast-chain-state.js';
 import {
   DEFAULT_STATE_FILE,
   buildMarketsMerkleMap,
@@ -102,8 +103,8 @@ async function main(): Promise<void> {
     oracleStatementHash: Field(0)
   });
 
-  await PredictionMarketPlatform.compile();
-  const zkapp = new PredictionMarketPlatform(zkappAddress);
+  await FastPredictionMarketPlatform.compile();
+  const zkapp = new FastPredictionMarketPlatform(zkappAddress);
 
   await withTxRetry(
     async () => {

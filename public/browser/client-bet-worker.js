@@ -9,7 +9,8 @@ import {
   UInt64,
   fetchAccount
 } from '/vendor/o1js/index.js';
-import { MarketLeaf, PredictionMarketPlatform } from '/dist/contract.js';
+import { FastPredictionMarketPlatform } from '/dist/fast-contract.js';
+import { MarketLeaf } from '/dist/market-types.js';
 
 let compilePromise = null;
 let activeNetworkKey = '';
@@ -50,7 +51,7 @@ function deserializeMerkleWitness(serialized) {
 async function warmup(network) {
   setActiveNetwork(network);
   if (!compilePromise) {
-    compilePromise = PredictionMarketPlatform.compile();
+    compilePromise = FastPredictionMarketPlatform.compile();
   }
   return await compilePromise;
 }
@@ -75,7 +76,7 @@ async function buildReceiptBetTx(context) {
   const marketWitness = deserializeMerkleWitness(context.marketWitness);
   const receiptWitness = deserializeMerkleWitness(context.receiptWitness);
   const betAmountNanomina = BigInt(context.addTotalBet) * 1_000_000_000n;
-  const zkapp = new PredictionMarketPlatform(zkappAddress);
+  const zkapp = new FastPredictionMarketPlatform(zkappAddress);
 
   const tx = await Mina.transaction({ sender: feePayer, fee: context.fee }, async () => {
     const bettorPayment = AccountUpdate.createSigned(feePayer);

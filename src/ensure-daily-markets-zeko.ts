@@ -5,9 +5,10 @@ import { mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { Bool, Field, Mina, Poseidon, PrivateKey, UInt64, fetchAccount } from 'o1js';
-import { MarketLeaf, PredictionMarketPlatform } from './contract.js';
+import { FastPredictionMarketPlatform } from './fast-contract.js';
+import { MarketLeaf } from './market-types.js';
 import { DEFAULT_STATE_FILE, buildMarketsMerkleMap, loadOperatorState, saveOperatorState, serializeMarketLeaf, StoredMarketMeta } from './state-store.js';
-import { assertLocalMarketsRootMatchesChain } from './chain-state.js';
+import { assertLocalMarketsRootMatchesChain } from './fast-chain-state.js';
 import { withTxRetry } from './tx-retry.js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
 
@@ -106,8 +107,8 @@ async function main(): Promise<void> {
   const state = await loadOperatorState(stateFile);
   await assertLocalMarketsRootMatchesChain(zkappAddress, state);
   const daily = await loadDemoDailyMarkets(dailyMarketsFile);
-  await PredictionMarketPlatform.compile();
-  const zkapp = new PredictionMarketPlatform(zkappAddress);
+  await FastPredictionMarketPlatform.compile();
+  const zkapp = new FastPredictionMarketPlatform(zkappAddress);
 
   let created = 0;
   for (const [marketDate, item] of Object.entries(daily).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {

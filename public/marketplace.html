@@ -322,7 +322,7 @@
 
           <section class="card">
             <h3>Resolved Markets</h3>
-            <p class="hint">Winning claims are public payout transactions. Use this panel after a market resolves at midnight UTC+8.</p>
+            <p class="hint">Fast mode keeps betting and resolution live. Receipt-root payout claims are being finalized separately, so resolved history may appear before claim actions do.</p>
             <div class="row mini-filter-row" id="resolvedFilters">
               <button class="ghost" data-resolved-filter="all">All</button>
               <button class="ghost" data-resolved-filter="claimable">Claimable</button>
@@ -934,33 +934,12 @@
       }
 
       async function claimResolvedPosition(position) {
-        try {
-          const walletKey = await ensureWalletConnected();
-          setBetProgress("Generating claim proof", true);
-          const txBuild = await req("/api/tx/claim-payout", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              marketKey: position.marketKey,
-              positionKey: position.positionKey,
-              walletPublicKey: walletKey
-            })
-          });
-          setBetProgress("Waiting for wallet signature...", true);
-          const txHash = await sendOnchainTx(txBuild.tx, txBuild.fee);
-          setBetProgress("Finalizing payout state...", true);
-          const finalized = await req("/api/tx/finalize", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ intentId: txBuild.intentId, txHash })
-          });
-          out.textContent = toJson({ txHash, claim: position, finalized });
-          await refreshResolvedMarkets();
-          setBetProgress("Payout claimed", false);
-        } catch (e) {
-          setBetProgress("Claim failed", false);
-          out.textContent = toJson({ error: String(e) });
-        }
+        out.textContent = toJson({
+          note: "Receipt-root payout claims are not live yet on the fast bet zkApp.",
+          marketDate: position.marketDate || null,
+          marketKey: position.marketKey,
+          positionKey: position.positionKey
+        });
       }
 
       async function refreshResolvedMarkets() {
@@ -981,7 +960,7 @@
           resolvedMarketsPanelEl.textContent =
             positions.length > 0
               ? `No resolved positions match the ${resolvedFilter} filter yet.`
-              : "No resolved positions found for this wallet yet.";
+              : "No resolved positions found for this wallet yet. Fast mode claims are still being finalized.";
           return;
         }
         resolvedMarketsPanelEl.innerHTML = filtered.map((p, idx) => {

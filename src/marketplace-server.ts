@@ -54,11 +54,12 @@ import {
   loadAcpCreditEscrowState,
   saveAcpCreditEscrowState
 } from './acp-credit-escrow.js';
-import { MarketLeaf, PositionLeaf, PredictionMarketPlatform } from './contract.js';
-import { assertLocalMarketsRootMatchesChain, assertLocalReceiptsRootMatchesChain } from './chain-state.js';
+import { PositionLeaf } from './contract.js';
+import { FastPredictionMarketPlatform } from './fast-contract.js';
+import { MarketLeaf } from './market-types.js';
+import { assertLocalMarketsRootMatchesChain, assertLocalReceiptsRootMatchesChain } from './fast-chain-state.js';
 import {
   buildMarketsMerkleMap,
-  buildPositionsMerkleMap,
   buildReceiptsMerkleMap,
   deserializeMarketLeaf,
   deserializePositionLeaf,
@@ -292,7 +293,7 @@ const balances: Record<string, UserBalance> = {};
 const pendingTxIntents: Record<string, PendingTxIntent> = {};
 const privateBetQueue: PrivateQueuedBet[] = [];
 const privateBatchHistory: PrivateBatchHistoryEntry[] = [];
-let contractCompilePromise: Promise<unknown> | null = null;
+let fastContractCompilePromise: Promise<unknown> | null = null;
 let privateBatchInFlight = false;
 let privateBatchLeaseStartedAtUnixMs: number | null = null;
 
@@ -519,11 +520,11 @@ function getNetworkConfig() {
   return { graphql, networkId, txFee };
 }
 
-async function ensureContractCompiled(): Promise<void> {
-  if (!contractCompilePromise) {
-    contractCompilePromise = PredictionMarketPlatform.compile();
+async function ensureFastContractCompiled(): Promise<void> {
+  if (!fastContractCompilePromise) {
+    fastContractCompilePromise = FastPredictionMarketPlatform.compile();
   }
-  await contractCompilePromise;
+  await fastContractCompilePromise;
 }
 
 function setActiveZekoNetwork() {
@@ -1811,7 +1812,7 @@ async function buildWalletFeePayerMarketBetTx(params: {
   if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
 
   setActiveZekoNetwork();
-  await ensureContractCompiled();
+  await ensureFastContractCompiled();
   const feePayer = PublicKey.fromBase58(feePayerPublicKey);
   const { txFee } = getNetworkConfig();
   const zkappAddress = getZkappPublicKey();
@@ -1869,7 +1870,7 @@ async function buildWalletFeePayerMarketBetTx(params: {
     claimed: Bool(false)
   });
 
-  const zkapp = new PredictionMarketPlatform(zkappAddress);
+  const zkapp = new FastPredictionMarketPlatform(zkappAddress);
   const betAmountNanomina = BigInt(addTotalBet) * 1_000_000_000n;
   const tx = await Mina.transaction({ sender: feePayer, fee: txFee }, async () => {
     // Escrow bet principal on-chain: transfer user bet amount into the zkApp account.
@@ -1945,97 +1946,8 @@ async function buildWalletFeePayerClaimPayoutTx(params: {
   intent: PendingTxIntent;
   payoutSummary: { payoutTmina: string; marketKey: string; positionKey: string };
 }> {
-  const { stateFile, marketKey, positionKey, feePayerPublicKey, userId } = params;
-  setActiveZekoNetwork();
-  await ensureContractCompiled();
-  const feePayer = PublicKey.fromBase58(feePayerPublicKey);
-  const { txFee } = getNetworkConfig();
-  const zkappAddress = getZkappPublicKey();
-  const account = await fetchAccount({ publicKey: feePayer });
-  if (account.error) throw new Error(`fee payer account not found: ${account.error.statusText || 'unknown'}`);
-
-  const state = await loadOperatorState(stateFile);
-  await assertLocalMarketsRootMatchesChain(zkappAddress, state);
-  const existingMarket = state.markets[marketKey];
-  if (!existingMarket) throw new Error(`market ${marketKey} missing in ${stateFile}`);
-  const resolvedLeaf = deserializeMarketLeaf(existingMarket);
-  if (!resolvedLeaf.resolved.toBoolean()) throw new Error('market not resolved');
-  const existingPosition = state.positions[positionKey];
-  if (!existingPosition) throw new Error(`position ${positionKey} missing in ${stateFile}`);
-  const positionLeaf = deserializePositionLeaf(existingPosition);
-  if (positionLeaf.claimed.toBoolean()) throw new Error('position already claimed');
-  positionLeaf.marketKey.assertEquals(Field(marketKey));
-  const ownerCommitment = ownerCommitmentFromWalletPublicKey(feePayerPublicKey);
-  positionLeaf.ownerCommitment.assertEquals(ownerCommitment);
-  const resolvedOutcomeOver = resolvedLeaf.outcome.toBoolean();
-  if (positionLeaf.sideOver.toBoolean() !== resolvedOutcomeOver) {
-    throw new Error('position is not on the winning side');
-  }
-
-  const marketFieldKey = Field(marketKey);
-  const positionFieldKey = Field(positionKey);
-  const marketsMap = buildMarketsMerkleMap(state);
-  const positionsMap = buildPositionsMerkleMap(state);
-  const zkapp = new PredictionMarketPlatform(zkappAddress);
-  const tx = await Mina.transaction({ sender: feePayer, fee: txFee }, async () => {
-    zkapp.claimPayout(
-      marketFieldKey,
-      resolvedLeaf,
-      marketsMap.getWitness(marketFieldKey),
-      positionFieldKey,
-      positionLeaf,
-      positionsMap.getWitness(positionFieldKey),
-      feePayer
-    );
-  });
-  const feePayerUpdate = (tx as unknown as { feePayer?: { body?: { preconditions?: { account?: { nonce?: unknown } }; useFullCommitment?: unknown } } }).feePayer;
-  if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
-    feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
-  }
-  if (feePayerUpdate?.body) {
-    feePayerUpdate.body.useFullCommitment = Bool(true);
-  }
-  await tx.prove();
-
-  const totalPot = BigInt(resolvedLeaf.totalPositionBet.toString());
-  const totalYes = BigInt(resolvedLeaf.totalYesPositionBet.toString());
-  const stake = BigInt(positionLeaf.stake.toString());
-  const payout = payoutNanominaForStake(totalPot, totalYes, resolvedOutcomeOver, stake);
-  const claimedLeaf = new PositionLeaf({
-    marketKey: positionLeaf.marketKey,
-    sideOver: positionLeaf.sideOver,
-    stake: positionLeaf.stake,
-    ownerCommitment: positionLeaf.ownerCommitment,
-    claimed: Bool(true)
-  });
-
-  const intent: PendingTxIntent = {
-    id: randomUUID(),
-    type: 'payout-claim',
-    marketKey,
-    marketDate: state.positionMeta?.[positionKey]?.marketDate || null,
-    walletPublicKey: feePayerPublicKey,
-    positionKey,
-    addTotalBet: 0,
-    addYesBet: 0,
-    userId,
-    newLeaf: null,
-    newPositionLeaf: serializePositionLeaf(claimedLeaf),
-    userNetPositionAfter: 0,
-    createdAtUnixMs: Date.now()
-  };
-  pendingTxIntents[intent.id] = intent;
-
-  return {
-    tx: tx.toJSON(),
-    fee: txFee,
-    intent,
-    payoutSummary: {
-      payoutTmina: payout.toString(),
-      marketKey,
-      positionKey
-    }
-  };
+  void params;
+  throw new Error('public payout claims are temporarily disabled on the fast bet zkApp while receipt-root claim finalization is being built');
 }
 
 async function processPrivateBetBatch(params: {

@@ -1,23 +1,21 @@
 import 'reflect-metadata';
 import './env.js';
 import { Bool, Field, Mina, PrivateKey, UInt64 } from 'o1js';
-import { MarketLeaf, PositionLeaf, PredictionMarketPlatform } from './contract.js';
+import { FastPredictionMarketPlatform } from './fast-contract.js';
 import {
   DEFAULT_STATE_FILE,
   OperatorStateFile,
   loadOperatorState,
   saveOperatorState,
-  serializeMarketLeaf,
-  serializePositionLeaf
+  serializeMarketLeaf
 } from './state-store.js';
 import {
   getLocalMarketsRoot,
-  getLocalPositionsRoot,
   getLocalReceiptsRoot,
   getOnChainMarketsRoot,
-  getOnChainPositionsRoot,
   getOnChainReceiptsRoot
-} from './chain-state.js';
+} from './fast-chain-state.js';
+import { MarketLeaf } from './market-types.js';
 
 type ParsedEvent = {
   type: string;
@@ -106,18 +104,6 @@ function leafFromEventData(data: Record<string, unknown>): { marketKey: string; 
   return { marketKey, leaf, oracleNonce };
 }
 
-function positionLeafFromEventData(data: Record<string, unknown>): { positionKey: string; leaf: PositionLeaf } {
-  const positionKey = asField(data.positionKey, 'positionKey').toString();
-  const leaf = new PositionLeaf({
-    marketKey: asField(data.marketKey, 'marketKey'),
-    sideOver: asBool(data.sideOver, 'sideOver'),
-    stake: asUInt64(data.stake, 'stake'),
-    ownerCommitment: asField(data.ownerCommitment, 'ownerCommitment'),
-    claimed: asBool(data.claimed, 'claimed')
-  });
-  return { positionKey, leaf };
-}
-
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const stateFile = parseOptionalArgValue(args, 'state-file') || DEFAULT_STATE_FILE;
@@ -132,7 +118,7 @@ async function main(): Promise<void> {
   });
   Mina.setActiveInstance(network);
 
-  const zkapp = new PredictionMarketPlatform(zkappAddress);
+  const zkapp = new FastPredictionMarketPlatform(zkappAddress);
   const existingState = await loadOperatorState(stateFile);
 
   const rawEvents = await zkapp.fetchEvents();
@@ -155,9 +141,6 @@ async function main(): Promise<void> {
         if (oracleNonce) {
           nextState.usedNonces[oracleNonce] = '1';
         }
-      } else if (evt.type === 'positionChanged') {
-        const { positionKey, leaf } = positionLeafFromEventData(evt.data);
-        nextState.positions[positionKey] = serializePositionLeaf(leaf);
       } else if (evt.type === 'receiptCommitted') {
         const receiptKey = asField(evt.data.receiptKey, 'receiptKey').toString();
         const receiptCommitment = asField(evt.data.receiptCommitment, 'receiptCommitment').toString();
@@ -172,24 +155,18 @@ async function main(): Promise<void> {
   await saveOperatorState(stateFile, nextState);
   const localRoot = getLocalMarketsRoot(nextState);
   const chainRoot = await getOnChainMarketsRoot(zkappAddress);
-  const localPositionsRoot = getLocalPositionsRoot(nextState);
-  const chainPositionsRoot = await getOnChainPositionsRoot(zkappAddress);
   const localReceiptsRoot = getLocalReceiptsRoot(nextState);
   const chainReceiptsRoot = await getOnChainReceiptsRoot(zkappAddress);
 
   console.log('State sync complete.');
   console.log('Markets synced:', Object.keys(nextState.markets).length);
-  console.log('Positions synced:', Object.keys(nextState.positions).length);
   console.log('Receipts synced:', Object.keys(nextState.receipts || {}).length);
   console.log('Used nonces synced:', Object.keys(nextState.usedNonces).length);
   console.log('Local marketsRoot:', localRoot);
   console.log('Chain marketsRoot:', chainRoot);
-  console.log('Local positionsRoot:', localPositionsRoot);
-  console.log('Chain positionsRoot:', chainPositionsRoot);
   console.log('Local receiptsRoot:', localReceiptsRoot);
   console.log('Chain receiptsRoot:', chainReceiptsRoot);
   console.log('Markets root match:', localRoot === chainRoot ? 'yes' : 'no');
-  console.log('Positions root match:', localPositionsRoot === chainPositionsRoot ? 'yes' : 'no');
   console.log('Receipts root match:', localReceiptsRoot === chainReceiptsRoot ? 'yes' : 'no');
 }
 

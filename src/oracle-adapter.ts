@@ -1,5 +1,5 @@
 import { Field, Poseidon, UInt64 } from 'o1js';
-import { WeatherOracleStatement } from './contract.js';
+import { WeatherOracleStatement } from './market-types.js';
 
 export interface TlsnWeatherAttestation {
   server_name: string;

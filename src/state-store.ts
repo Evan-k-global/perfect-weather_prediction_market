@@ -1,7 +1,8 @@
 import { Bool, Field, MerkleMap, UInt64 } from 'o1js';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { MarketLeaf, PositionLeaf } from './contract.js';
+import { PositionLeaf } from './contract.js';
+import { MarketLeaf } from './market-types.js';
 
 export type StoredMarketLeaf = {
   configHash: string;
