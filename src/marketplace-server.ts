@@ -7,7 +7,7 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AccountUpdate, Bool, Field, Mina, Poseidon, PrivateKey, PublicKey, UInt32, UInt64, fetchAccount, fetchTransactionStatus } from 'o1js';
+import { Bool, Field, Mina, Poseidon, PrivateKey, PublicKey, UInt64, fetchTransactionStatus } from 'o1js';
 import { DEFAULT_STATE_FILE, loadOperatorState } from './state-store.js';
 import {
   NWS_94027_DIGITAL_URL,
@@ -55,7 +55,6 @@ import {
   saveAcpCreditEscrowState
 } from './acp-credit-escrow.js';
 import { PositionLeaf } from './contract.js';
-import { FastPredictionMarketPlatform } from './fast-contract.js';
 import { MarketLeaf } from './market-types.js';
 import { assertLocalMarketsRootMatchesChain, assertLocalReceiptsRootMatchesChain } from './fast-chain-state.js';
 import {
@@ -293,7 +292,6 @@ const balances: Record<string, UserBalance> = {};
 const pendingTxIntents: Record<string, PendingTxIntent> = {};
 const privateBetQueue: PrivateQueuedBet[] = [];
 const privateBatchHistory: PrivateBatchHistoryEntry[] = [];
-let fastContractCompilePromise: Promise<unknown> | null = null;
 let privateBatchInFlight = false;
 let privateBatchLeaseStartedAtUnixMs: number | null = null;
 
@@ -518,13 +516,6 @@ function getNetworkConfig() {
   const networkId = isZekoTestnet && requestedNetworkId === 'zeko' ? 'testnet' : requestedNetworkId;
   const txFee = process.env.TX_FEE || '1200000000';
   return { graphql, networkId, txFee };
-}
-
-async function ensureFastContractCompiled(): Promise<void> {
-  if (!fastContractCompilePromise) {
-    fastContractCompilePromise = FastPredictionMarketPlatform.compile();
-  }
-  await fastContractCompilePromise;
 }
 
 function setActiveZekoNetwork() {
@@ -1411,6 +1402,17 @@ async function refreshState(projectRoot: string): Promise<void> {
   await runProjectCommand(projectRoot, ['sync-state:zeko', '--', '--state-file', './data/operator-state.json']);
 }
 
+async function ensureDailyMarkets(projectRoot: string): Promise<void> {
+  await runProjectCommand(projectRoot, [
+    'ensure-daily-markets:zeko',
+    '--',
+    '--state-file',
+    './data/operator-state.json',
+    '--daily-markets-file',
+    './data/demo-daily-threshold-markets.json'
+  ]);
+}
+
 function isFreshStateMismatchError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes('marketsRoot mismatch') || message.includes('receiptsRoot mismatch');
@@ -1553,37 +1555,6 @@ async function buildBrowserFeePayerMarketBetContext(params: {
       receiptWitness: serializeMerkleWitness(receiptsMap.getWitness(positionKey))
     }
   };
-}
-
-async function forwardToTxProver(pathname: string, body: Record<string, unknown>): Promise<any> {
-  const baseUrl = (process.env.TX_PROVER_BASE_URL || '').trim().replace(/\/+$/, '');
-  if (!baseUrl) return null;
-  const token = (process.env.TX_PROVER_ACTION_TOKEN || process.env.OPERATOR_ACTION_TOKEN || '').trim();
-  if (!token) {
-    throw new Error('TX_PROVER_BASE_URL is set but TX_PROVER_ACTION_TOKEN is missing');
-  }
-  const res = await fetch(`${baseUrl}${pathname}`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-prover-token': token
-    },
-    body: JSON.stringify(body)
-  });
-  const text = await res.text();
-  let data: any = null;
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch {
-      const snippet = text.slice(0, 160).replace(/\s+/g, ' ').trim();
-      throw new Error(`tx prover returned non-JSON response (status ${res.status}): ${snippet}`);
-    }
-  }
-  if (!res.ok) {
-    throw new Error((data && data.error) || `tx prover request failed with status ${res.status}`);
-  }
-  return data;
 }
 
 function getOperatorActionToken(): string | null {
@@ -1776,146 +1747,6 @@ async function reconcileSubmittedPayoutClaims(stateFile: string) {
     await saveOperatorState(stateFile, state);
   }
   return state;
-}
-
-async function buildWalletFeePayerMarketBetTx(params: {
-  stateFile: string;
-  marketKey: string;
-  addTotalBet: number;
-  addYesBet: number;
-  marketDate: string | null;
-  feePayerPublicKey: string;
-  userId: string;
-}): Promise<{
-  tx: unknown;
-  fee: string;
-  intent: PendingTxIntent;
-  marketSummary: { totalPositionBet: string; totalYesPositionBet: string };
-}> {
-  const { stateFile, marketKey, addTotalBet, addYesBet, marketDate, feePayerPublicKey, userId } = params;
-  if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
-
-  setActiveZekoNetwork();
-  await ensureFastContractCompiled();
-  const feePayer = PublicKey.fromBase58(feePayerPublicKey);
-  const { txFee } = getNetworkConfig();
-  const zkappAddress = getZkappPublicKey();
-  const account = await fetchAccount({ publicKey: feePayer });
-  if (account.error) throw new Error(`fee payer account not found: ${account.error.statusText || 'unknown'}`);
-
-  const state = await loadOperatorState(stateFile);
-  await assertLocalMarketsRootMatchesChain(zkappAddress, state);
-  await assertLocalReceiptsRootMatchesChain(zkappAddress, state);
-  const existing = state.markets[marketKey];
-  if (!existing) throw new Error(`market ${marketKey} missing in ${stateFile}`);
-  const oldLeaf = deserializeMarketLeaf(existing);
-  if (oldLeaf.resolved.toBoolean()) throw new Error('cannot trade a resolved market');
-  if (!(addYesBet === 0 || addYesBet === addTotalBet)) {
-    throw new Error('binary over/under stake requires addYesBet to be 0 or equal addTotalBet');
-  }
-
-  const newLeaf = new MarketLeaf({
-    configHash: oldLeaf.configHash,
-    closeSlot: oldLeaf.closeSlot,
-    expirySlot: oldLeaf.expirySlot,
-    thresholdValueTenthC: oldLeaf.thresholdValueTenthC,
-    totalPositionBet: oldLeaf.totalPositionBet.add(UInt64.from(addTotalBet)),
-    totalYesPositionBet: oldLeaf.totalYesPositionBet.add(UInt64.from(addYesBet)),
-    resolved: Bool(false),
-    outcome: Bool(false),
-    oracleStatementHash: Field(0)
-  });
-  newLeaf.totalYesPositionBet.lessThanOrEqual(newLeaf.totalPositionBet).assertTrue();
-
-  const marketFieldKey = Field(marketKey);
-  const marketsMap = buildMarketsMerkleMap(state);
-  const receiptsMap = buildReceiptsMerkleMap(state);
-  const intentId = randomUUID();
-  const receiptSalt = randomUUID();
-  const positionKey = fieldFromHexDigest(
-    sha256Hex(`${feePayerPublicKey}:${marketKey}:${marketDate || ''}:${intentId}:${Date.now()}`)
-  );
-  if ((state.receipts || {})[positionKey.toString()]) {
-    throw new Error('receipt key collision; retry transaction build');
-  }
-  const ownerCommitment = ownerCommitmentFromWalletPublicKey(feePayerPublicKey);
-  const receiptCommitment = receiptCommitmentFromBet({
-    marketKey,
-    addTotalBet,
-    addYesBet,
-    ownerCommitment,
-    salt: receiptSalt
-  });
-  const positionLeaf = new PositionLeaf({
-    marketKey: marketFieldKey,
-    sideOver: Bool(addYesBet === addTotalBet),
-    stake: UInt64.from(addTotalBet),
-    ownerCommitment,
-    claimed: Bool(false)
-  });
-
-  const zkapp = new FastPredictionMarketPlatform(zkappAddress);
-  const betAmountNanomina = BigInt(addTotalBet) * 1_000_000_000n;
-  const tx = await Mina.transaction({ sender: feePayer, fee: txFee }, async () => {
-    // Escrow bet principal on-chain: transfer user bet amount into the zkApp account.
-    const bettorPayment = AccountUpdate.createSigned(feePayer);
-    bettorPayment.send({
-      to: zkappAddress,
-      amount: UInt64.from(betAmountNanomina)
-    });
-    zkapp.placeReceiptBet(
-      marketFieldKey,
-      oldLeaf,
-      newLeaf,
-      marketsMap.getWitness(marketFieldKey),
-      positionKey,
-      receiptCommitment,
-      receiptsMap.getWitness(positionKey),
-      ownerCommitment
-    );
-  });
-  const feePayerUpdate = (tx as unknown as { feePayer?: { body?: { preconditions?: { account?: { nonce?: unknown } }; useFullCommitment?: unknown } } }).feePayer;
-  if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
-    feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
-  }
-  if (feePayerUpdate?.body) {
-    feePayerUpdate.body.useFullCommitment = Bool(true);
-  }
-  await tx.prove();
-
-  const positions = await loadUserPositions(USER_POSITIONS_FILE);
-  positions[userId] = positions[userId] || {};
-  const prior = positions[userId][marketKey] || 0;
-  const next = prior + positionDelta(addTotalBet, addYesBet);
-
-  const intent: PendingTxIntent = {
-    id: intentId,
-    type: 'market-bet',
-    marketKey,
-    marketDate,
-    walletPublicKey: feePayerPublicKey,
-    positionKey: positionKey.toString(),
-    addTotalBet,
-    addYesBet,
-    userId,
-    newLeaf: serializeMarketLeaf(newLeaf),
-    newPositionLeaf: serializePositionLeaf(positionLeaf),
-    receiptCommitment: receiptCommitment.toString(),
-    receiptSalt,
-    userNetPositionAfter: next,
-    createdAtUnixMs: Date.now()
-  };
-  pendingTxIntents[intent.id] = intent;
-
-  return {
-    tx: tx.toJSON(),
-    fee: txFee,
-    intent,
-    marketSummary: {
-      totalPositionBet: newLeaf.totalPositionBet.toString(),
-      totalYesPositionBet: newLeaf.totalYesPositionBet.toString()
-    }
-  };
 }
 
 async function buildWalletFeePayerClaimPayoutTx(params: {
@@ -3014,12 +2845,13 @@ async function main(): Promise<void> {
           const currentState = await loadOperatorState(defaultStatePath);
           const selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
           if (!selectedMarket) {
+            await ensureDailyMarkets(projectRoot);
             await refreshState(projectRoot);
             const refreshedState = await loadOperatorState(defaultStatePath);
             const refreshedMarket = findSelectedOnChainMarket(refreshedState, marketKey, marketDate);
             if (!refreshedMarket) {
               throw new Error(
-                `market ${marketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
+                `market ${marketDate} is not active on-chain yet. Automatic daily market creation was triggered, but the market is still unavailable.`
               );
             }
             if (selectedThresholdF !== null && Number.isFinite(Number(refreshedMarket.thresholdF))) {
@@ -3070,136 +2902,12 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-bet') {
-        const body = await readJsonBody(req);
-        const marketKey = requireString(body.marketKey, 'marketKey');
-        const addTotalBet = requireNumber(body.addTotalBet, 'addTotalBet');
-        const addYesBet = requireNonNegativeNumber(body.addYesBet, 'addYesBet');
-        const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
-        const marketDate = requireString(body.marketDate, 'marketDate');
-        const selectedThresholdF =
-          typeof body.thresholdF === 'number' && Number.isFinite(body.thresholdF) ? Math.round(body.thresholdF) : null;
-        const userId = walletPublicKey;
-        if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
-        {
-          const todayIso = currentLocalDate();
-          if (marketDate < todayIso) {
-            throw new Error(`market date ${marketDate} is closed (past date). Today is ${todayIso}`);
-          }
-          const maxDate = isoDateOffset(todayIso, 5);
-          if (marketDate > maxDate) {
-            throw new Error(`market date ${marketDate} is outside rolling window (${todayIso} to ${maxDate})`);
-          }
-        }
-        const forwarded = await forwardToTxProver('/api/prover/market-bet', {
-          marketKey,
-          addTotalBet: Math.floor(addTotalBet),
-          addYesBet: Math.floor(addYesBet),
-          walletPublicKey,
-          marketDate,
-          thresholdF: selectedThresholdF
-        });
-        if (forwarded) {
-          pendingTxIntents[forwarded.intentId] = forwarded.intent;
-          writeJson(res, 200, {
-            ok: true,
-            mode: forwarded.mode || 'wallet-fee-payer',
-            intentId: forwarded.intentId,
-            fee: forwarded.fee,
-            tx: forwarded.tx,
-            marketSummary: forwarded.marketSummary
-          });
-          return;
-        }
-        const built = await withFreshMarketStateRetry(projectRoot, async () => {
-          const currentState = await loadOperatorState(defaultStatePath);
-          const selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
-          if (!selectedMarket) {
-            await refreshState(projectRoot);
-            const refreshedState = await loadOperatorState(defaultStatePath);
-            const refreshedMarket = findSelectedOnChainMarket(refreshedState, marketKey, marketDate);
-            if (!refreshedMarket) {
-              throw new Error(
-                `market ${marketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
-              );
-            }
-            if (selectedThresholdF !== null && Number.isFinite(Number(refreshedMarket.thresholdF))) {
-              const onChainThresholdF = Math.round(Number(refreshedMarket.thresholdF));
-              if (onChainThresholdF !== selectedThresholdF) {
-                throw new Error(
-                  `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
-                );
-              }
-            }
-            return await buildWalletFeePayerMarketBetTx({
-              stateFile: defaultStatePath,
-              marketKey: String(refreshedMarket.marketKey),
-              addTotalBet: Math.floor(addTotalBet),
-              addYesBet: Math.floor(addYesBet),
-              marketDate,
-              feePayerPublicKey: walletPublicKey,
-              userId
-            });
-          }
-          if (selectedThresholdF !== null && Number.isFinite(Number(selectedMarket.thresholdF))) {
-            const onChainThresholdF = Math.round(Number(selectedMarket.thresholdF));
-            if (onChainThresholdF !== selectedThresholdF) {
-              throw new Error(
-                `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
-              );
-            }
-          }
-          return await buildWalletFeePayerMarketBetTx({
-            stateFile: defaultStatePath,
-            marketKey: String(selectedMarket.marketKey),
-            addTotalBet: Math.floor(addTotalBet),
-            addYesBet: Math.floor(addYesBet),
-            marketDate,
-            feePayerPublicKey: walletPublicKey,
-            userId
-          });
-        });
-        writeJson(res, 200, {
-          ok: true,
-          mode: 'wallet-fee-payer',
-          intentId: built.intent.id,
-          fee: built.fee,
-          tx: built.tx,
-          marketSummary: built.marketSummary
-        });
+        throw new Error('server-side /api/tx/market-bet is disabled; use /api/tx/market-bet-context with client-side proving');
         return;
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-close') {
-        const body = await readJsonBody(req);
-        const marketKey = requireString(body.marketKey, 'marketKey');
-        const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
-        const positions = await loadUserPositions(USER_POSITIONS_FILE);
-        const net = positions[walletPublicKey]?.[marketKey] || 0;
-        if (net === 0) throw new Error('no open net position to close');
-        const closeAmount = Math.abs(net);
-        const addTotalBet = closeAmount;
-        const addYesBet = net < 0 ? closeAmount : 0;
-        const built = await withFreshMarketStateRetry(projectRoot, async () =>
-          buildWalletFeePayerMarketBetTx({
-            stateFile: defaultStatePath,
-            marketKey,
-            addTotalBet,
-            addYesBet,
-            marketDate: null,
-            feePayerPublicKey: walletPublicKey,
-            userId: walletPublicKey
-          })
-        );
-        writeJson(res, 200, {
-          ok: true,
-          mode: 'wallet-fee-payer',
-          action: 'close-bet',
-          intentId: built.intent.id,
-          fee: built.fee,
-          tx: built.tx,
-          closeOrder: { addTotalBet, addYesBet, priorNetPosition: net },
-          marketSummary: built.marketSummary
-        });
+        throw new Error('server-side market close is disabled on the fast client-bet path');
         return;
       }
 
