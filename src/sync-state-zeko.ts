@@ -10,7 +10,14 @@ import {
   serializeMarketLeaf,
   serializePositionLeaf
 } from './state-store.js';
-import { getLocalMarketsRoot, getLocalPositionsRoot, getOnChainMarketsRoot, getOnChainPositionsRoot } from './chain-state.js';
+import {
+  getLocalMarketsRoot,
+  getLocalPositionsRoot,
+  getLocalReceiptsRoot,
+  getOnChainMarketsRoot,
+  getOnChainPositionsRoot,
+  getOnChainReceiptsRoot
+} from './chain-state.js';
 
 type ParsedEvent = {
   type: string;
@@ -133,9 +140,11 @@ async function main(): Promise<void> {
   const nextState: OperatorStateFile = {
     markets: {},
     positions: {},
+    receipts: {},
     usedNonces: {},
     marketMeta: existingState.marketMeta || {},
-    positionMeta: existingState.positionMeta || {}
+    positionMeta: existingState.positionMeta || {},
+    receiptMeta: existingState.receiptMeta || {}
   };
 
   for (const evt of parsed) {
@@ -149,6 +158,11 @@ async function main(): Promise<void> {
       } else if (evt.type === 'positionChanged') {
         const { positionKey, leaf } = positionLeafFromEventData(evt.data);
         nextState.positions[positionKey] = serializePositionLeaf(leaf);
+      } else if (evt.type === 'receiptCommitted') {
+        const receiptKey = asField(evt.data.receiptKey, 'receiptKey').toString();
+        const receiptCommitment = asField(evt.data.receiptCommitment, 'receiptCommitment').toString();
+        nextState.receipts = nextState.receipts || {};
+        nextState.receipts[receiptKey] = receiptCommitment;
       }
     } catch {
       // ignore incompatible historical events from older contract versions
@@ -160,17 +174,23 @@ async function main(): Promise<void> {
   const chainRoot = await getOnChainMarketsRoot(zkappAddress);
   const localPositionsRoot = getLocalPositionsRoot(nextState);
   const chainPositionsRoot = await getOnChainPositionsRoot(zkappAddress);
+  const localReceiptsRoot = getLocalReceiptsRoot(nextState);
+  const chainReceiptsRoot = await getOnChainReceiptsRoot(zkappAddress);
 
   console.log('State sync complete.');
   console.log('Markets synced:', Object.keys(nextState.markets).length);
   console.log('Positions synced:', Object.keys(nextState.positions).length);
+  console.log('Receipts synced:', Object.keys(nextState.receipts || {}).length);
   console.log('Used nonces synced:', Object.keys(nextState.usedNonces).length);
   console.log('Local marketsRoot:', localRoot);
   console.log('Chain marketsRoot:', chainRoot);
   console.log('Local positionsRoot:', localPositionsRoot);
   console.log('Chain positionsRoot:', chainPositionsRoot);
+  console.log('Local receiptsRoot:', localReceiptsRoot);
+  console.log('Chain receiptsRoot:', chainReceiptsRoot);
   console.log('Markets root match:', localRoot === chainRoot ? 'yes' : 'no');
   console.log('Positions root match:', localPositionsRoot === chainPositionsRoot ? 'yes' : 'no');
+  console.log('Receipts root match:', localReceiptsRoot === chainReceiptsRoot ? 'yes' : 'no');
 }
 
 main().catch((error: unknown) => {

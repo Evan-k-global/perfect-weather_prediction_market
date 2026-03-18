@@ -994,11 +994,11 @@
         }
         if (positions.length) {
           sections.push(`
-            <div class="small" style="margin:${queued.length ? "12px" : "0"} 0 8px;"><b>On-Chain Positions</b></div>
+            <div class="small" style="margin:${queued.length ? "12px" : "0"} 0 8px;"><b>Active Bets</b></div>
             ${positions.map((item) => `
               <div class="market" style="margin-bottom:8px;">
                 <div class="small"><b>${escapeHtml(item.marketDate || "On-chain market")}</b> | ${escapeHtml(String(item.side || "").toUpperCase())} | ${escapeHtml(String(item.stakeTmina ?? "n/a"))} tMINA</div>
-                <div class="tiny">${item.resolved ? `Resolved ${escapeHtml(String(item.resolvedOutcome || "").toUpperCase())} ${item.won ? "(won)" : "(lost)"}` : "Open on-chain"}${item.claimed ? " | Claimed" : ""}</div>
+                <div class="tiny">${item.claimStatus === "receipt-pending-claims-phase" ? "Receipt committed | claims phase pending" : item.resolved ? `Resolved ${escapeHtml(String(item.resolvedOutcome || "").toUpperCase())} ${item.won ? "(won)" : "(lost)"}` : "Open on-chain"}${item.claimed ? " | Claimed" : ""}</div>
               </div>
             `).join("")}
           `);

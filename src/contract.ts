@@ -113,6 +113,13 @@ export class PayoutClaimedEvent extends Struct({
   amount: UInt64
 }) {}
 
+export class ReceiptCommittedEvent extends Struct({
+  receiptKey: Field,
+  marketKey: Field,
+  ownerCommitment: Field,
+  receiptCommitment: Field
+}) {}
+
 export class PositionsResetEvent extends Struct({
   previousPositionsRoot: Field,
   nextPositionsRoot: Field
@@ -130,6 +137,7 @@ export class PositionSnapshotEvent extends Struct({
 export class PredictionMarketPlatform extends SmartContract {
   @state(Field) marketsRoot = State<Field>();
   @state(Field) positionsRoot = State<Field>();
+  @state(Field) receiptsRoot = State<Field>();
   @state(Field) usedOracleNonceRoot = State<Field>();
   @state(Field) oracleSourceHash = State<Field>();
   @state(Field) oracleRequestPathHash = State<Field>();
@@ -141,6 +149,7 @@ export class PredictionMarketPlatform extends SmartContract {
     marketResolved: MarketResolvedEvent,
     tradeSettled: TradeSettlementEvent,
     payoutClaimed: PayoutClaimedEvent,
+    receiptCommitted: ReceiptCommittedEvent,
     positionsReset: PositionsResetEvent,
     positionChanged: PositionSnapshotEvent
   };
@@ -149,6 +158,7 @@ export class PredictionMarketPlatform extends SmartContract {
     super.init();
     this.marketsRoot.set(EMPTY_MAP_ROOT);
     this.positionsRoot.set(EMPTY_MAP_ROOT);
+    this.receiptsRoot.set(EMPTY_MAP_ROOT);
     this.usedOracleNonceRoot.set(EMPTY_MAP_ROOT);
     this.oracleSourceHash.set(Field(0));
     this.oracleRequestPathHash.set(Field(0));
@@ -343,6 +353,71 @@ export class PredictionMarketPlatform extends SmartContract {
         stake: positionLeaf.stake,
         ownerCommitment: positionLeaf.ownerCommitment,
         claimed: positionLeaf.claimed
+      })
+    );
+  }
+
+  @method async placeReceiptBet(
+    marketKey: Field,
+    oldMarket: MarketLeaf,
+    newMarket: MarketLeaf,
+    marketWitness: MerkleMapWitness,
+    receiptKey: Field,
+    receiptCommitment: Field,
+    receiptWitness: MerkleMapWitness,
+    ownerCommitment: Field
+  ) {
+    const marketsRoot = this.marketsRoot.getAndRequireEquals();
+    const [marketRootBefore, marketWitnessKey] = marketWitness.computeRootAndKey(oldMarket.hash());
+    marketRootBefore.assertEquals(marketsRoot);
+    marketWitnessKey.assertEquals(marketKey);
+
+    const receiptsRoot = this.receiptsRoot.getAndRequireEquals();
+    const [receiptRootBefore, receiptWitnessKey] = receiptWitness.computeRootAndKey(Field(0));
+    receiptRootBefore.assertEquals(receiptsRoot);
+    receiptWitnessKey.assertEquals(receiptKey);
+
+    oldMarket.resolved.assertFalse();
+    newMarket.resolved.assertFalse();
+    newMarket.outcome.assertFalse();
+    newMarket.oracleStatementHash.assertEquals(Field(0));
+
+    oldMarket.configHash.assertEquals(newMarket.configHash);
+    oldMarket.closeSlot.assertEquals(newMarket.closeSlot);
+    oldMarket.expirySlot.assertEquals(newMarket.expirySlot);
+    oldMarket.thresholdValueTenthC.assertEquals(newMarket.thresholdValueTenthC);
+
+    oldMarket.totalPositionBet.lessThanOrEqual(newMarket.totalPositionBet).assertTrue();
+    oldMarket.totalYesPositionBet.lessThanOrEqual(newMarket.totalYesPositionBet).assertTrue();
+    newMarket.totalYesPositionBet.lessThanOrEqual(newMarket.totalPositionBet).assertTrue();
+
+    const [marketRootAfter] = marketWitness.computeRootAndKey(newMarket.hash());
+    const [receiptsRootAfter] = receiptWitness.computeRootAndKey(receiptCommitment);
+    this.marketsRoot.set(marketRootAfter);
+    this.receiptsRoot.set(receiptsRootAfter);
+
+    this.emitEvent(
+      'marketUpdated',
+      new MarketSnapshotEvent({
+        marketKey,
+        configHash: newMarket.configHash,
+        closeSlot: newMarket.closeSlot,
+        expirySlot: newMarket.expirySlot,
+        thresholdValueTenthC: newMarket.thresholdValueTenthC,
+        totalPositionBet: newMarket.totalPositionBet,
+        totalYesPositionBet: newMarket.totalYesPositionBet,
+        resolved: newMarket.resolved,
+        outcome: newMarket.outcome,
+        oracleStatementHash: newMarket.oracleStatementHash
+      })
+    );
+    this.emitEvent(
+      'receiptCommitted',
+      new ReceiptCommittedEvent({
+        receiptKey,
+        marketKey,
+        ownerCommitment,
+        receiptCommitment
       })
     );
   }

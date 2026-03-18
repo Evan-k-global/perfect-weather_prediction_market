@@ -18,9 +18,11 @@ export type StoredMarketLeaf = {
 export type OperatorStateFile = {
   markets: Record<string, StoredMarketLeaf>;
   positions: Record<string, StoredPositionLeaf>;
+  receipts?: Record<string, string>;
   usedNonces: Record<string, string>;
   marketMeta?: Record<string, StoredMarketMeta>;
   positionMeta?: Record<string, StoredPositionMeta>;
+  receiptMeta?: Record<string, StoredReceiptMeta>;
 };
 
 export const DEFAULT_STATE_FILE = './data/operator-state.json';
@@ -54,6 +56,19 @@ export type StoredPositionMeta = {
   claimTxHash?: string | null;
   claimSubmittedAtUnixMs?: number | null;
   claimConfirmedAtUnixMs?: number | null;
+};
+
+export type StoredReceiptMeta = {
+  marketKey: string;
+  marketDate: string | null;
+  walletPublicKey: string;
+  ownerCommitment: string;
+  createdAtUnixMs: number;
+  fundingTxHash: string | null;
+  receiptCommitment: string;
+  receiptSalt: string;
+  side: 'over' | 'under';
+  stakeTmina: number;
 };
 
 function parseBoolField(value: string): Bool {
@@ -116,12 +131,14 @@ export async function loadOperatorState(statePath: string): Promise<OperatorStat
     return {
       markets: parsed.markets || {},
       positions: parsed.positions || {},
+      receipts: parsed.receipts || {},
       usedNonces: parsed.usedNonces || {},
       marketMeta: parsed.marketMeta || {},
-      positionMeta: parsed.positionMeta || {}
+      positionMeta: parsed.positionMeta || {},
+      receiptMeta: parsed.receiptMeta || {}
     };
   } catch {
-    return { markets: {}, positions: {}, usedNonces: {}, marketMeta: {}, positionMeta: {} };
+    return { markets: {}, positions: {}, receipts: {}, usedNonces: {}, marketMeta: {}, positionMeta: {}, receiptMeta: {} };
   }
 }
 
@@ -154,6 +171,14 @@ export function buildNonceMerkleMap(state: OperatorStateFile): MerkleMap {
   const map = new MerkleMap();
   for (const [nonce, value] of Object.entries(state.usedNonces)) {
     map.set(Field(nonce), Field(value));
+  }
+  return map;
+}
+
+export function buildReceiptsMerkleMap(state: OperatorStateFile): MerkleMap {
+  const map = new MerkleMap();
+  for (const [key, commitment] of Object.entries(state.receipts || {})) {
+    map.set(Field(key), Field(commitment));
   }
   return map;
 }

@@ -1,5 +1,5 @@
 import { PublicKey, fetchAccount } from 'o1js';
-import { OperatorStateFile, buildMarketsMerkleMap, buildPositionsMerkleMap } from './state-store.js';
+import { OperatorStateFile, buildMarketsMerkleMap, buildPositionsMerkleMap, buildReceiptsMerkleMap } from './state-store.js';
 
 function stringifyFieldLike(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -39,12 +39,21 @@ export async function getOnChainPositionsRoot(zkappAddress: PublicKey): Promise<
   return getAppStateField(appState, 1, 'positionsRoot');
 }
 
+export async function getOnChainReceiptsRoot(zkappAddress: PublicKey): Promise<string> {
+  const appState = await getOnChainAppState(zkappAddress);
+  return getAppStateField(appState, 2, 'receiptsRoot');
+}
+
 export function getLocalMarketsRoot(state: OperatorStateFile): string {
   return buildMarketsMerkleMap(state).getRoot().toString();
 }
 
 export function getLocalPositionsRoot(state: OperatorStateFile): string {
   return buildPositionsMerkleMap(state).getRoot().toString();
+}
+
+export function getLocalReceiptsRoot(state: OperatorStateFile): string {
+  return buildReceiptsMerkleMap(state).getRoot().toString();
 }
 
 export async function assertLocalMarketsRootMatchesChain(
@@ -69,6 +78,19 @@ export async function assertLocalPositionsRootMatchesChain(
   if (localRoot !== chainRoot) {
     throw new Error(
       `positionsRoot mismatch local=${localRoot} chain=${chainRoot}. Sync authoritative operator state before claiming or batching.`
+    );
+  }
+}
+
+export async function assertLocalReceiptsRootMatchesChain(
+  zkappAddress: PublicKey,
+  state: OperatorStateFile
+): Promise<void> {
+  const localRoot = getLocalReceiptsRoot(state);
+  const chainRoot = await getOnChainReceiptsRoot(zkappAddress);
+  if (localRoot !== chainRoot) {
+    throw new Error(
+      `receiptsRoot mismatch local=${localRoot} chain=${chainRoot}. Sync authoritative operator state before building receipt-backed market txs.`
     );
   }
 }

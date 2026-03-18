@@ -55,10 +55,11 @@ import {
   saveAcpCreditEscrowState
 } from './acp-credit-escrow.js';
 import { MarketLeaf, PositionLeaf, PredictionMarketPlatform } from './contract.js';
-import { assertLocalMarketsRootMatchesChain } from './chain-state.js';
+import { assertLocalMarketsRootMatchesChain, assertLocalReceiptsRootMatchesChain } from './chain-state.js';
 import {
   buildMarketsMerkleMap,
   buildPositionsMerkleMap,
+  buildReceiptsMerkleMap,
   deserializeMarketLeaf,
   deserializePositionLeaf,
   saveOperatorState,
@@ -67,7 +68,8 @@ import {
   type StoredMarketLeaf,
   type StoredMarketMeta,
   type StoredPositionLeaf,
-  type StoredPositionMeta
+  type StoredPositionMeta,
+  type StoredReceiptMeta
 } from './state-store.js';
 import { withTxRetry } from './tx-retry.js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
@@ -130,6 +132,8 @@ type PendingTxIntent = {
   userId: string;
   newLeaf: ReturnType<typeof serializeMarketLeaf> | null;
   newPositionLeaf: ReturnType<typeof serializePositionLeaf>;
+  receiptCommitment?: string | null;
+  receiptSalt?: string | null;
   userNetPositionAfter: number;
   createdAtUnixMs: number;
 };
@@ -329,6 +333,22 @@ function marketDateFromViewTitle(title: string | undefined): string | null {
 
 function ownerCommitmentFromWalletPublicKey(walletPublicKey: string): Field {
   return Poseidon.hash(PublicKey.fromBase58(walletPublicKey).toFields());
+}
+
+function receiptCommitmentFromBet(params: {
+  marketKey: string;
+  addTotalBet: number;
+  addYesBet: number;
+  ownerCommitment: Field;
+  salt: string;
+}): Field {
+  return Poseidon.hash([
+    Field(params.marketKey),
+    Field(params.addTotalBet),
+    Field(params.addYesBet),
+    params.ownerCommitment,
+    fieldFromHexDigest(sha256Hex(`receipt-salt:${params.salt}`))
+  ]);
 }
 
 function encodePrivatePayload(value: string): string {
@@ -1378,16 +1398,16 @@ async function refreshState(projectRoot: string): Promise<void> {
   await runProjectCommand(projectRoot, ['sync-state:zeko', '--', '--state-file', './data/operator-state.json']);
 }
 
-function isMarketsRootMismatchError(error: unknown): boolean {
+function isFreshStateMismatchError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return message.includes('marketsRoot mismatch');
+  return message.includes('marketsRoot mismatch') || message.includes('receiptsRoot mismatch');
 }
 
 async function withFreshMarketStateRetry<T>(projectRoot: string, work: () => Promise<T>): Promise<T> {
   try {
     return await work();
   } catch (error) {
-    if (!isMarketsRootMismatchError(error)) throw error;
+    if (!isFreshStateMismatchError(error)) throw error;
     await refreshState(projectRoot);
     return await work();
   }
@@ -1612,12 +1632,13 @@ async function buildWalletFeePayerMarketBetTx(params: {
 
   const state = await loadOperatorState(stateFile);
   await assertLocalMarketsRootMatchesChain(zkappAddress, state);
+  await assertLocalReceiptsRootMatchesChain(zkappAddress, state);
   const existing = state.markets[marketKey];
   if (!existing) throw new Error(`market ${marketKey} missing in ${stateFile}`);
   const oldLeaf = deserializeMarketLeaf(existing);
   if (oldLeaf.resolved.toBoolean()) throw new Error('cannot trade a resolved market');
   if (!(addYesBet === 0 || addYesBet === addTotalBet)) {
-    throw new Error('claimable payout path requires binary over/under stake; addYesBet must be 0 or equal addTotalBet');
+    throw new Error('binary over/under stake requires addYesBet to be 0 or equal addTotalBet');
   }
 
   const newLeaf = new MarketLeaf({
@@ -1635,19 +1656,28 @@ async function buildWalletFeePayerMarketBetTx(params: {
 
   const marketFieldKey = Field(marketKey);
   const marketsMap = buildMarketsMerkleMap(state);
-  const positionsMap = buildPositionsMerkleMap(state);
+  const receiptsMap = buildReceiptsMerkleMap(state);
   const intentId = randomUUID();
+  const receiptSalt = randomUUID();
   const positionKey = fieldFromHexDigest(
     sha256Hex(`${feePayerPublicKey}:${marketKey}:${marketDate || ''}:${intentId}:${Date.now()}`)
   );
-  if (state.positions[positionKey.toString()]) {
-    throw new Error('position key collision; retry transaction build');
+  if ((state.receipts || {})[positionKey.toString()]) {
+    throw new Error('receipt key collision; retry transaction build');
   }
+  const ownerCommitment = ownerCommitmentFromWalletPublicKey(feePayerPublicKey);
+  const receiptCommitment = receiptCommitmentFromBet({
+    marketKey,
+    addTotalBet,
+    addYesBet,
+    ownerCommitment,
+    salt: receiptSalt
+  });
   const positionLeaf = new PositionLeaf({
     marketKey: marketFieldKey,
     sideOver: Bool(addYesBet === addTotalBet),
     stake: UInt64.from(addTotalBet),
-    ownerCommitment: ownerCommitmentFromWalletPublicKey(feePayerPublicKey),
+    ownerCommitment,
     claimed: Bool(false)
   });
 
@@ -1660,14 +1690,15 @@ async function buildWalletFeePayerMarketBetTx(params: {
       to: zkappAddress,
       amount: UInt64.from(betAmountNanomina)
     });
-    zkapp.placeClaimableBet(
+    zkapp.placeReceiptBet(
       marketFieldKey,
       oldLeaf,
       newLeaf,
       marketsMap.getWitness(marketFieldKey),
       positionKey,
-      positionLeaf,
-      positionsMap.getWitness(positionKey)
+      receiptCommitment,
+      receiptsMap.getWitness(positionKey),
+      ownerCommitment
     );
   });
   const feePayerUpdate = (tx as unknown as { feePayer?: { body?: { preconditions?: { account?: { nonce?: unknown } }; useFullCommitment?: unknown } } }).feePayer;
@@ -1696,6 +1727,8 @@ async function buildWalletFeePayerMarketBetTx(params: {
     userId,
     newLeaf: serializeMarketLeaf(newLeaf),
     newPositionLeaf: serializePositionLeaf(positionLeaf),
+    receiptCommitment: receiptCommitment.toString(),
+    receiptSalt,
     userNetPositionAfter: next,
     createdAtUnixMs: Date.now()
   };
@@ -2214,13 +2247,50 @@ async function main(): Promise<void> {
             if (ad !== bd) return ad < bd ? 1 : -1;
             return (b.createdAtUnixMs || 0) - (a.createdAtUnixMs || 0);
           });
+        const receiptPositions = Object.entries(state.receiptMeta || {})
+          .filter(([, meta]) => meta?.walletPublicKey === walletPublicKey)
+          .map(([receiptKey, meta]) => {
+            const storedMarket = state.markets[meta.marketKey];
+            const marketLeaf = storedMarket ? deserializeMarketLeaf(storedMarket) : null;
+            return {
+              type: 'position' as const,
+              positionKey: receiptKey,
+              marketKey: meta.marketKey,
+              marketDate: meta.marketDate,
+              side: meta.side,
+              stakeTmina: meta.stakeTmina,
+              createdAtUnixMs: meta.createdAtUnixMs,
+              fundingTxHash: meta.fundingTxHash,
+              resolved: marketLeaf?.resolved.toBoolean() || false,
+              resolvedOutcome: marketLeaf?.resolved.toBoolean() ? (marketLeaf.outcome.toBoolean() ? 'over' : 'under') : null,
+              won:
+                marketLeaf?.resolved.toBoolean()
+                  ? meta.side === (marketLeaf.outcome.toBoolean() ? 'over' : 'under')
+                  : null,
+              claimed: false,
+              claimStatus: 'receipt-pending-claims-phase' as const,
+              claimTxHash: null
+            };
+          })
+          .sort((a, b) => {
+            const ad = a.marketDate || '';
+            const bd = b.marketDate || '';
+            if (ad !== bd) return ad < bd ? 1 : -1;
+            return (b.createdAtUnixMs || 0) - (a.createdAtUnixMs || 0);
+          });
+        const combinedPositions = [...receiptPositions, ...positions].sort((a, b) => {
+          const ad = a.marketDate || '';
+          const bd = b.marketDate || '';
+          if (ad !== bd) return ad < bd ? 1 : -1;
+          return (b.createdAtUnixMs || 0) - (a.createdAtUnixMs || 0);
+        });
         writeJson(res, 200, {
           ok: true,
           walletPublicKey,
           queuedCount: queued.length,
-          positionCount: positions.length,
+          positionCount: combinedPositions.length,
           queued,
-          positions
+          positions: combinedPositions
         });
         return;
       }
@@ -2329,8 +2399,10 @@ async function main(): Promise<void> {
         requireOperatorAuthorization(req, body as Record<string, unknown>);
         const importedMarkets = ((body.markets as Record<string, StoredMarketLeaf>) || {});
         const importedPositions = ((body.positions as Record<string, StoredPositionLeaf>) || {});
+        const importedReceipts = ((body.receipts as Record<string, string>) || {});
         const importedMarketMeta = ((body.marketMeta as Record<string, StoredMarketMeta>) || {});
         const importedPositionMeta = ((body.positionMeta as Record<string, StoredPositionMeta>) || {});
+        const importedReceiptMeta = ((body.receiptMeta as Record<string, StoredReceiptMeta>) || {});
         const importedUsedNonces = ((body.usedNonces as Record<string, string>) || {});
         const currentState = await loadOperatorState(defaultStatePath);
         const nextState = {
@@ -2343,6 +2415,10 @@ async function main(): Promise<void> {
             ...(currentState.positions || {}),
             ...importedPositions
           },
+          receipts: {
+            ...(currentState.receipts || {}),
+            ...importedReceipts
+          },
           marketMeta: {
             ...(currentState.marketMeta || {}),
             ...importedMarketMeta
@@ -2350,6 +2426,10 @@ async function main(): Promise<void> {
           positionMeta: {
             ...(currentState.positionMeta || {}),
             ...importedPositionMeta
+          },
+          receiptMeta: {
+            ...(currentState.receiptMeta || {}),
+            ...importedReceiptMeta
           },
           usedNonces: {
             ...currentState.usedNonces,
@@ -2369,8 +2449,10 @@ async function main(): Promise<void> {
           ok: true,
           marketsImported: Object.keys(importedMarkets).length,
           positionsImported: Object.keys(importedPositions).length,
+          receiptsImported: Object.keys(importedReceipts).length,
           marketMetaImported: Object.keys(importedMarketMeta).length,
           positionMetaImported: Object.keys(importedPositionMeta).length,
+          receiptMetaImported: Object.keys(importedReceiptMeta).length,
           dailyMarketsImported: Object.keys((body.dailyMarkets as Record<string, unknown>) || {}).length,
           usedNoncesImported: Object.keys(importedUsedNonces).length
         });
@@ -2502,7 +2584,9 @@ async function main(): Promise<void> {
         await saveOperatorState(defaultStatePath, {
           ...state,
           positions: {},
-          positionMeta: {}
+          receipts: {},
+          positionMeta: {},
+          receiptMeta: {}
         });
         await saveUserPositions(USER_POSITIONS_FILE, {});
         writeJson(res, 200, {
@@ -2557,9 +2641,11 @@ async function main(): Promise<void> {
         await saveOperatorState(defaultStatePath, {
           markets: {},
           positions: {},
+          receipts: {},
           usedNonces: {},
           marketMeta: {},
-          positionMeta: {}
+          positionMeta: {},
+          receiptMeta: {}
         });
         await savePrivateBetQueue(privateBetQueue);
         await writeFile(PRIVATE_BATCH_HISTORY_FILE, JSON.stringify([], null, 2), 'utf8');
@@ -2952,15 +3038,23 @@ async function main(): Promise<void> {
         const state = await loadOperatorState(defaultStatePath);
         if (intent.type === 'market-bet' && intent.newLeaf) {
           state.markets[intent.marketKey] = intent.newLeaf;
-          state.positions[intent.positionKey] = intent.newPositionLeaf;
-          state.positionMeta = state.positionMeta || {};
-          state.positionMeta[intent.positionKey] = {
+          state.receipts = state.receipts || {};
+          if (!intent.receiptCommitment) {
+            throw new Error('receipt commitment missing for market bet finalize');
+          }
+          state.receipts[intent.positionKey] = intent.receiptCommitment;
+          state.receiptMeta = state.receiptMeta || {};
+          state.receiptMeta[intent.positionKey] = {
             marketKey: intent.marketKey,
             marketDate: intent.marketDate,
             walletPublicKey: intent.walletPublicKey,
             ownerCommitment: ownerCommitmentFromWalletPublicKey(intent.walletPublicKey).toString(),
             createdAtUnixMs: intent.createdAtUnixMs,
-            fundingTxHash: txHash
+            fundingTxHash: txHash,
+            receiptCommitment: intent.receiptCommitment,
+            receiptSalt: intent.receiptSalt || '',
+            side: intent.addYesBet === intent.addTotalBet ? 'over' : 'under',
+            stakeTmina: intent.addTotalBet
           };
         } else if (intent.type === 'payout-claim') {
           state.positionMeta = state.positionMeta || {};
