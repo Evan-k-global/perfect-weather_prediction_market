@@ -1413,6 +1413,10 @@ async function ensureDailyMarkets(projectRoot: string): Promise<void> {
   ]);
 }
 
+async function bootstrapFastZkapp(projectRoot: string): Promise<void> {
+  await runProjectCommand(projectRoot, ['bootstrap-fast-zkapp:zeko']);
+}
+
 function isFreshStateMismatchError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes('marketsRoot mismatch') || message.includes('receiptsRoot mismatch');
@@ -2845,6 +2849,7 @@ async function main(): Promise<void> {
           const currentState = await loadOperatorState(defaultStatePath);
           const selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
           if (!selectedMarket) {
+            await bootstrapFastZkapp(projectRoot);
             await ensureDailyMarkets(projectRoot);
             await refreshState(projectRoot);
             const refreshedState = await loadOperatorState(defaultStatePath);

@@ -477,7 +477,7 @@
         }
         if (placeMarketBetBtn) {
           placeMarketBetBtn.disabled = busy;
-          placeMarketBetBtn.textContent = busy ? text : "Place Bet";
+          placeMarketBetBtn.textContent = "Place Bet";
         }
       }
 
@@ -1068,7 +1068,7 @@
           setBetProgress(
             currentMarketOnChainCreated
               ? "Preparing client-side proof"
-              : "Checking market...",
+              : "Preparing bet...",
             true
           );
           const txContext = await req("/api/tx/market-bet-context", {
