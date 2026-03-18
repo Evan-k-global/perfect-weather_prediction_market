@@ -1878,6 +1878,10 @@ function payoutNanominaForStake(totalPositionBet: bigint, totalYesPositionBet: b
   return (totalPositionBet * stake) / pool;
 }
 
+function tminaToNanomina(valueTmina: bigint): bigint {
+  return valueTmina * 1_000_000_000n;
+}
+
 async function listResolvedWalletPositions(
   walletPublicKey: string,
   stateFile: string
@@ -2107,13 +2111,14 @@ async function buildWalletFeePayerClaimPayoutTx(params: {
   if (!won) throw new Error('receipt is not on the winning side');
   if (meta.claimStatus === 'submitted') throw new Error('claim already submitted');
   if (meta.claimStatus === 'confirmed') throw new Error('claim already confirmed');
-  const payoutNanomina = payoutNanominaForStake(
+  const payoutTmina = payoutNanominaForStake(
     BigInt(marketLeaf.totalPositionBet.toString()),
     BigInt(marketLeaf.totalYesPositionBet.toString()),
     marketLeaf.outcome.toBoolean(),
     BigInt(meta.stakeTmina)
   );
-  if (payoutNanomina <= 0n) throw new Error('no payout available for this receipt');
+  if (payoutTmina <= 0n) throw new Error('no payout available for this receipt');
+  const payoutNanomina = tminaToNanomina(payoutTmina);
 
   const tx = await Mina.transaction({ sender: feePayer, fee: txFee }, async () => {
     const payoutUpdate = AccountUpdate.createSigned(zkappAddress);
@@ -2145,7 +2150,7 @@ async function buildWalletFeePayerClaimPayoutTx(params: {
     fee: txFee,
     intent,
     payoutSummary: {
-      payoutTmina: payoutNanomina.toString(),
+      payoutTmina: payoutTmina.toString(),
       marketKey,
       positionKey
     }
@@ -2184,18 +2189,19 @@ async function buildClaimPayoutContext(params: {
   if (!won) throw new Error('receipt is not on the winning side');
   if (meta.claimStatus === 'submitted') throw new Error('claim already submitted');
   if (meta.claimStatus === 'confirmed') throw new Error('claim already confirmed');
-  const payoutNanomina = payoutNanominaForStake(
+  const payoutTmina = payoutNanominaForStake(
     BigInt(marketLeaf.totalPositionBet.toString()),
     BigInt(marketLeaf.totalYesPositionBet.toString()),
     marketLeaf.outcome.toBoolean(),
     BigInt(meta.stakeTmina)
   );
-  if (payoutNanomina <= 0n) throw new Error('no payout available for this receipt');
+  if (payoutTmina <= 0n) throw new Error('no payout available for this receipt');
+  const payoutNanomina = tminaToNanomina(payoutTmina);
 
   return {
     fee: txFee,
     payoutSummary: {
-      payoutTmina: (payoutNanomina / 1_000_000_000n).toString(),
+      payoutTmina: payoutTmina.toString(),
       marketKey,
       positionKey
     },
@@ -2203,7 +2209,7 @@ async function buildClaimPayoutContext(params: {
       walletPublicKey: feePayerPublicKey,
       fee: txFee,
       payoutNanomina: payoutNanomina.toString(),
-      payoutTmina: (payoutNanomina / 1_000_000_000n).toString(),
+      payoutTmina: payoutTmina.toString(),
       marketKey,
       positionKey
     }
