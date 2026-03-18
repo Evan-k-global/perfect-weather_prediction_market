@@ -1346,12 +1346,17 @@ function attachOnChainDailyMarketState(
       .filter((entry): entry is [string, (typeof viewList)[number]] => Boolean(entry[0]))
   );
   return dailyMarkets.map((market) => {
-    const onChain = viewsByKey.get(String(market.marketKey)) || viewsByDate.get(market.marketDate) || null;
+    const canonicalMarketKey = deriveDemoDateMarketKey(market.marketDate);
+    const onChain =
+      viewsByKey.get(canonicalMarketKey) ||
+      viewsByKey.get(String(market.marketKey)) ||
+      viewsByDate.get(market.marketDate) ||
+      null;
     const basePoolTmina = onChain ? Number(onChain.totalPositionBet) : market.totalPositionBet;
     const baseOverTmina = onChain ? Number(onChain.totalYesPositionBet) : market.totalYesPositionBet;
     return {
       ...market,
-      marketKey: onChain ? String(onChain.marketKey) : market.marketKey,
+      marketKey: onChain ? String(onChain.marketKey) : canonicalMarketKey,
       thresholdF: onChain ? Number(onChain.thresholdF) : market.thresholdF,
       totalPositionBet: basePoolTmina,
       totalYesPositionBet: baseOverTmina,

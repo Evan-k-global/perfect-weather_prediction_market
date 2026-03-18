@@ -575,13 +575,7 @@
           placeMarketBetBtn.disabled = privacyMode !== "zk_strong";
           currentMarketResolved = false;
           currentMarketOnChainCreated = false;
-          setMarketAvailabilityNote(
-            currentMarketDate
-              ? (
-                  `Locked market ${currentMarketDate} is not active on-chain yet. It should appear automatically once startup or oracle market creation reaches this date.`
-                )
-              : "Select a market date to see when betting is available."
-          );
+          setMarketAvailabilityNote("");
           return;
         }
         currentMarketKey = String(market.marketKey);
@@ -652,10 +646,8 @@
           selectedPayoutLabelEl.textContent = `Winning odds: OVER ${overPayout} | UNDER ${underPayout} | Pot ${potLabel}`;
         }
         if (!selected.onChainCreated) {
-          placeMarketBetBtn.disabled = true;
-          setMarketAvailabilityNote(
-            `Locked threshold is ${currentThresholdF}F, but this date is not active on-chain yet. It should appear automatically once startup or oracle market creation reaches it.`
-          );
+          placeMarketBetBtn.disabled = privacyMode !== "zk_strong";
+          setMarketAvailabilityNote("");
         }
       }
 
