@@ -14,11 +14,20 @@ fi
 
 SYNC_ON_START="${SYNC_STATE_ON_START:-1}"
 SYNC_BLOCKING="${SYNC_STATE_BLOCKING:-0}"
+BOOTSTRAP_DAILY_MARKETS_ON_START="${BOOTSTRAP_DAILY_MARKETS_ON_START:-1}"
 SYNC_PID=""
+BOOTSTRAP_PID=""
 
 run_state_sync() {
   echo "[render-start] syncing on-chain operator state into ${STATE_FILE}"
   node --enable-source-maps /app/dist/sync-state-zeko.js -- --state-file "${STATE_FILE}"
+}
+
+run_bootstrap_daily_markets() {
+  echo "[render-start] ensuring rolling daily markets into ${DEMO_DAILY_MARKETS_FILE}"
+  node --enable-source-maps /app/dist/ensure-daily-markets-zeko.js -- \
+    --state-file "${STATE_FILE}" \
+    --daily-markets-file "${DEMO_DAILY_MARKETS_FILE}"
 }
 
 mark_ready() {
@@ -39,6 +48,18 @@ fi
 
 node --enable-source-maps /app/dist/marketplace-server.js &
 MARKETPLACE_PID=$!
+
+if [ "$BOOTSTRAP_DAILY_MARKETS_ON_START" = "1" ]; then
+  (
+    sleep 2
+    if run_bootstrap_daily_markets; then
+      echo "[render-start] startup daily market ensure finished"
+    else
+      echo "[render-start] startup daily market ensure failed"
+    fi
+  ) &
+  BOOTSTRAP_PID=$!
+fi
 
 if [ "$SYNC_ON_START" = "1" ] && [ "$SYNC_BLOCKING" != "1" ]; then
   echo "[render-start] startup sync mode=background"
@@ -67,6 +88,9 @@ fi
 cleanup() {
   if [ -n "$SYNC_PID" ]; then
     kill "$SYNC_PID" 2>/dev/null || true
+  fi
+  if [ -n "$BOOTSTRAP_PID" ]; then
+    kill "$BOOTSTRAP_PID" 2>/dev/null || true
   fi
   if [ -n "$DAEMON_PID" ]; then
     kill "$MARKETPLACE_PID" "$DAEMON_PID" 2>/dev/null || true

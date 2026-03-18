@@ -455,7 +455,7 @@
         }
         if (refreshWeatherTopBtn) {
           refreshWeatherTopBtn.disabled = !manualWeatherRefreshEnabled;
-          refreshWeatherTopBtn.textContent = manualWeatherRefreshEnabled ? "Sync Oracle" : "Oracle Worker Syncs";
+          refreshWeatherTopBtn.textContent = "Oracle sync";
           refreshWeatherTopBtn.title = manualWeatherRefreshEnabled
             ? "Refresh oracle data now"
             : "Manual refresh is disabled on the hosted market service because the oracle worker syncs weather in the background.";
@@ -578,7 +578,7 @@
           setMarketAvailabilityNote(
             currentMarketDate
               ? (
-                  `Locked market ${currentMarketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
+                  `Locked market ${currentMarketDate} is not active on-chain yet. It should appear automatically once startup or oracle market creation reaches this date.`
                 )
               : "Select a market date to see when betting is available."
           );
@@ -654,7 +654,7 @@
         if (!selected.onChainCreated) {
           placeMarketBetBtn.disabled = true;
           setMarketAvailabilityNote(
-            `Locked threshold is ${currentThresholdF}F, but this date is not active on-chain yet. It opens automatically once the daily market creation cycle reaches it.`
+            `Locked threshold is ${currentThresholdF}F, but this date is not active on-chain yet. It should appear automatically once startup or oracle market creation reaches it.`
           );
         }
       }
@@ -1068,7 +1068,7 @@
           setBetProgress(
             currentMarketOnChainCreated
               ? "Preparing client-side proof"
-              : "Ensuring market is active on-chain...",
+              : "Checking market...",
             true
           );
           const txContext = await req("/api/tx/market-bet-context", {
