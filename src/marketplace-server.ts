@@ -1378,6 +1378,21 @@ async function refreshState(projectRoot: string): Promise<void> {
   await runProjectCommand(projectRoot, ['sync-state:zeko', '--', '--state-file', './data/operator-state.json']);
 }
 
+function isMarketsRootMismatchError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('marketsRoot mismatch');
+}
+
+async function withFreshMarketStateRetry<T>(projectRoot: string, work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    if (!isMarketsRootMismatchError(error)) throw error;
+    await refreshState(projectRoot);
+    return await work();
+  }
+}
+
 function getOperatorActionToken(): string | null {
   const raw = process.env.OPERATOR_ACTION_TOKEN;
   if (!raw) return null;
@@ -2805,31 +2820,53 @@ async function main(): Promise<void> {
             throw new Error(`market date ${marketDate} is outside rolling window (${todayIso} to ${maxDate})`);
           }
         }
-        await refreshState(projectRoot);
-        const currentState = await loadOperatorState(defaultStatePath);
-        const selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
-        if (!selectedMarket) {
-          throw new Error(
-            `market ${marketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
-          );
-        }
-        const effectiveMarketKey = String(selectedMarket.marketKey);
-        if (selectedThresholdF !== null && Number.isFinite(Number(selectedMarket.thresholdF))) {
-          const onChainThresholdF = Math.round(Number(selectedMarket.thresholdF));
-          if (onChainThresholdF !== selectedThresholdF) {
-            throw new Error(
-              `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
-            );
+        const built = await withFreshMarketStateRetry(projectRoot, async () => {
+          const currentState = await loadOperatorState(defaultStatePath);
+          const selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
+          if (!selectedMarket) {
+            await refreshState(projectRoot);
+            const refreshedState = await loadOperatorState(defaultStatePath);
+            const refreshedMarket = findSelectedOnChainMarket(refreshedState, marketKey, marketDate);
+            if (!refreshedMarket) {
+              throw new Error(
+                `market ${marketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
+              );
+            }
+            if (selectedThresholdF !== null && Number.isFinite(Number(refreshedMarket.thresholdF))) {
+              const onChainThresholdF = Math.round(Number(refreshedMarket.thresholdF));
+              if (onChainThresholdF !== selectedThresholdF) {
+                throw new Error(
+                  `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
+                );
+              }
+            }
+            return await buildWalletFeePayerMarketBetTx({
+              stateFile: defaultStatePath,
+              marketKey: String(refreshedMarket.marketKey),
+              addTotalBet: Math.floor(addTotalBet),
+              addYesBet: Math.floor(addYesBet),
+              marketDate,
+              feePayerPublicKey: walletPublicKey,
+              userId
+            });
           }
-        }
-        const built = await buildWalletFeePayerMarketBetTx({
-          stateFile: defaultStatePath,
-          marketKey: effectiveMarketKey,
-          addTotalBet: Math.floor(addTotalBet),
-          addYesBet: Math.floor(addYesBet),
-          marketDate,
-          feePayerPublicKey: walletPublicKey,
-          userId
+          if (selectedThresholdF !== null && Number.isFinite(Number(selectedMarket.thresholdF))) {
+            const onChainThresholdF = Math.round(Number(selectedMarket.thresholdF));
+            if (onChainThresholdF !== selectedThresholdF) {
+              throw new Error(
+                `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
+              );
+            }
+          }
+          return await buildWalletFeePayerMarketBetTx({
+            stateFile: defaultStatePath,
+            marketKey: String(selectedMarket.marketKey),
+            addTotalBet: Math.floor(addTotalBet),
+            addYesBet: Math.floor(addYesBet),
+            marketDate,
+            feePayerPublicKey: walletPublicKey,
+            userId
+          });
         });
         writeJson(res, 200, {
           ok: true,
@@ -2852,16 +2889,17 @@ async function main(): Promise<void> {
         const closeAmount = Math.abs(net);
         const addTotalBet = closeAmount;
         const addYesBet = net < 0 ? closeAmount : 0;
-        await refreshState(projectRoot);
-        const built = await buildWalletFeePayerMarketBetTx({
-          stateFile: defaultStatePath,
-          marketKey,
-          addTotalBet,
-          addYesBet,
-          marketDate: null,
-          feePayerPublicKey: walletPublicKey,
-          userId: walletPublicKey
-        });
+        const built = await withFreshMarketStateRetry(projectRoot, async () =>
+          buildWalletFeePayerMarketBetTx({
+            stateFile: defaultStatePath,
+            marketKey,
+            addTotalBet,
+            addYesBet,
+            marketDate: null,
+            feePayerPublicKey: walletPublicKey,
+            userId: walletPublicKey
+          })
+        );
         writeJson(res, 200, {
           ok: true,
           mode: 'wallet-fee-payer',
@@ -2880,14 +2918,15 @@ async function main(): Promise<void> {
         const marketKey = requireString(body.marketKey, 'marketKey');
         const positionKey = requireString(body.positionKey, 'positionKey');
         const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
-        await refreshState(projectRoot);
-        const built = await buildWalletFeePayerClaimPayoutTx({
-          stateFile: defaultStatePath,
-          marketKey,
-          positionKey,
-          feePayerPublicKey: walletPublicKey,
-          userId: walletPublicKey
-        });
+        const built = await withFreshMarketStateRetry(projectRoot, async () =>
+          buildWalletFeePayerClaimPayoutTx({
+            stateFile: defaultStatePath,
+            marketKey,
+            positionKey,
+            feePayerPublicKey: walletPublicKey,
+            userId: walletPublicKey
+          })
+        );
         writeJson(res, 200, {
           ok: true,
           mode: 'wallet-fee-payer',
