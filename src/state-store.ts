@@ -70,6 +70,10 @@ export type StoredReceiptMeta = {
   receiptSalt: string;
   side: 'over' | 'under';
   stakeTmina: number;
+  claimStatus?: 'claimable' | 'submitted' | 'confirmed' | 'not-applicable' | null;
+  claimTxHash?: string | null;
+  claimSubmittedAtUnixMs?: number | null;
+  claimConfirmedAtUnixMs?: number | null;
 };
 
 function parseBoolField(value: string): Bool {

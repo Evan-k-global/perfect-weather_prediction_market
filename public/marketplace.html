@@ -96,6 +96,11 @@
       .hint { font-size: 12px; margin: 0 0 8px; }
       .small { font-size: 12px; margin-top: 4px; }
       .tiny { font-size: 11px; margin-top: 4px; }
+      #out {
+        max-height: 320px;
+        overflow-y: auto;
+        padding-right: 4px;
+      }
       .mini-filter-row { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; gap: 6px !important; margin-bottom: 6px !important; }
       .mini-filter-row button { padding: 6px 8px; font-size: 12px; line-height: 1.1; min-height: 32px; }
       .hidden { display: none; }
@@ -156,7 +161,31 @@
         background: rgba(249, 253, 255, 0.95);
       }
       textarea { min-height: 64px; resize: vertical; }
-      button { cursor: pointer; font-weight: 700; }
+      button {
+        cursor: pointer;
+        font-weight: 700;
+        transition:
+          transform 120ms ease,
+          box-shadow 120ms ease,
+          filter 120ms ease,
+          background 120ms ease;
+        box-shadow: 0 4px 10px rgba(18, 58, 92, 0.08);
+      }
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 18px rgba(18, 58, 92, 0.14);
+        filter: saturate(1.03);
+      }
+      button:active {
+        transform: translateY(1px) scale(0.992);
+        box-shadow: 0 2px 6px rgba(18, 58, 92, 0.14) inset;
+      }
+      button:disabled {
+        transform: none;
+        box-shadow: none;
+        filter: none;
+        cursor: not-allowed;
+      }
       .buy { background: linear-gradient(120deg, #2b9fff, #3daeff); color: #fafdff; }
       .ghost { background: rgba(229, 243, 255, 0.96); }
       #connectWallet { padding: 7px 10px; font-size: 13px; align-self: end; }
@@ -207,6 +236,24 @@
       .oracle-table th:nth-child(2), .oracle-table td:nth-child(2) { width: 80px; }
       .oracle-table th:nth-child(3), .oracle-table td:nth-child(3) { width: 80px; }
       .oracle-table th:nth-child(4), .oracle-table td:nth-child(4) { width: 94px; }
+      .panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .panel-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .mini-btn {
+        width: auto;
+        padding: 6px 10px;
+        font-size: 12px;
+        line-height: 1.1;
+      }
 
       pre { margin: 0; white-space: pre-wrap; font-size: 12px; max-height: 180px; overflow: auto; }
       a { color: #106cb0; }
@@ -231,7 +278,7 @@
         <div class="brand">
           <b>Perfect Weather Prediction Market</b>
           <span class="sub">zkTLS weather oracle + temperature prediction market.</span>
-          <span class="sub" id="privacyStatus">Private betting queue, batched settlement</span>
+          <span class="sub" id="privacyStatus">Local server proving on this machine for active on-chain markets</span>
         </div>
         <div class="field">
           <label>Wallet</label>
@@ -272,7 +319,7 @@
               <div class="field">
                 <label for="marketStake">Bet Amount</label>
                 <div class="inline-input">
-                  <input id="marketStake" type="number" value="5" max="99999999" />
+                  <input id="marketStake" type="number" value="5" min="0" step="1" max="99999999" />
                   <span class="unit">tMINA</span>
                 </div>
               </div>
@@ -321,7 +368,7 @@
 
           <section class="card">
             <h3>Resolved Markets</h3>
-            <p class="hint">Fast mode keeps betting and resolution live. Receipt-root payout claims are being finalized separately, so resolved history may appear before claim actions do.</p>
+            <p class="hint">Fast mode keeps betting, resolution, and payout claims on the same local wallet-sign path. Oracle sync handles daily market creation and resolution in the background.</p>
             <div class="row mini-filter-row" id="resolvedFilters">
               <button class="ghost" data-resolved-filter="all">All</button>
               <button class="ghost" data-resolved-filter="claimable">Claimable</button>
@@ -332,7 +379,12 @@
           </section>
 
           <section class="card">
-            <h3>Your Activity</h3>
+            <div class="panel-head">
+              <h3>Your Activity</h3>
+              <div class="panel-actions">
+                <button id="refreshActivityBtn" class="ghost mini-btn" type="button">Refresh</button>
+              </div>
+            </div>
             <div id="out" class="small">Connect wallet to view activity.</div>
           </section>
 
@@ -348,6 +400,7 @@
       const out = document.getElementById("out");
       const weatherMetaEl = document.getElementById("weatherMeta");
       const weatherTableEl = document.getElementById("weatherTable");
+      const refreshActivityBtn = document.getElementById("refreshActivityBtn");
       const marketDateSelectEl = document.getElementById("marketDateSelect");
       const oraclePill = document.getElementById("oraclePill");
       const weatherVizIconEl = document.getElementById("weatherVizIcon");
@@ -385,45 +438,20 @@
       let privacyMode = "zk_strong";
       let zkappConfigError = null;
       let manualWeatherRefreshEnabled = true;
-      let localServerBetProvingEnabled = false;
+      let localServerBetProvingEnabled = true;
       let latestOracleRows = [];
-      let clientBettingModulePromise = null;
 
-      function supportsClientBetting() {
-        return Boolean(window.Worker && window.crypto && typeof window.crypto.randomUUID === "function");
-      }
-
-      async function getClientBettingModule() {
-        if (!clientBettingModulePromise) {
-          clientBettingModulePromise = import("/public/browser/client-bet-entry.js");
+      function syncSelectedWeatherDayToCurrentMarketDate() {
+        if (!currentMarketDate) return;
+        const rowIdx = latestOracleRows.findIndex((row) => row.marketDate === currentMarketDate);
+        if (rowIdx >= 0) {
+          selectedWeatherDay = rowIdx;
+          return;
         }
-        return clientBettingModulePromise;
-      }
-
-      function prewarmClientBetting() {
-        if (!supportsClientBetting()) return;
-        const start = async () => {
-          try {
-            const mod = await getClientBettingModule();
-            const health = await req("/api/health");
-            const zkappPublicKey = typeof health.zkappPublicKey === "string" ? health.zkappPublicKey : null;
-            if (!zkappPublicKey) return;
-            await mod.warmupReceiptBetClient({
-              graphql: "https://testnet.zeko.io",
-              networkId: "testnet"
-            });
-          } catch (error) {
-            console.warn("client bet warmup failed", error);
-          }
-        };
-        if ("requestIdleCallback" in window) {
-          window.requestIdleCallback(() => {
-            start().catch((error) => console.warn("client bet idle warmup failed", error));
-          });
-        } else {
-          setTimeout(() => {
-            start().catch((error) => console.warn("client bet timeout warmup failed", error));
-          }, 250);
+        const probs = latestWeather?.sevenDayProbabilities || [];
+        const probIdx = probs.findIndex((row) => row.marketDate === currentMarketDate);
+        if (probIdx >= 0) {
+          selectedWeatherDay = probIdx;
         }
       }
 
@@ -451,18 +479,16 @@
         privacyMode = String(health.privacyMode || "zk_strong");
         zkappConfigError = typeof health.zkappConfigError === "string" ? health.zkappConfigError : null;
         manualWeatherRefreshEnabled = health?.features?.manualWeatherRefreshEnabled !== false;
-        localServerBetProvingEnabled = health?.features?.localServerBetProvingEnabled === true;
+        localServerBetProvingEnabled = health?.features?.localServerBetProvingEnabled !== false;
         if (privacyStatusEl) {
-          privacyStatusEl.textContent = localServerBetProvingEnabled
-            ? "Local server proving on this machine for active on-chain markets"
-            : "Client-side proving for active on-chain markets";
+          privacyStatusEl.textContent = "Local server proving on this machine for active on-chain markets";
         }
         if (refreshWeatherTopBtn) {
           refreshWeatherTopBtn.disabled = !manualWeatherRefreshEnabled;
           refreshWeatherTopBtn.textContent = "Oracle sync";
           refreshWeatherTopBtn.title = manualWeatherRefreshEnabled
             ? "Refresh oracle data now"
-            : "Manual refresh is disabled on the hosted market service because the oracle worker syncs weather in the background.";
+            : "Manual refresh is disabled because the oracle sync runs separately in the background.";
         }
         if (!health.zkappPublicKey) {
           placeMarketBetBtn.disabled = true;
@@ -512,7 +538,6 @@
         const connectBtn = document.getElementById("connectWallet");
         connectBtn.textContent = "Connected";
         connectBtn.disabled = true;
-        prewarmClientBetting();
         refreshResolvedMarkets().catch((e) => {
           out.textContent = toJson({ error: String(e) });
         });
@@ -653,6 +678,7 @@
           placeMarketBetBtn.disabled = privacyMode !== "zk_strong";
           setMarketAvailabilityNote("");
         }
+        syncSelectedWeatherDayToCurrentMarketDate();
       }
 
       async function refreshDailyMarkets() {
@@ -760,6 +786,7 @@
         }
 
         const probs = latestWeather.sevenDayProbabilities.slice(0, 6);
+        syncSelectedWeatherDayToCurrentMarketDate();
         selectedWeatherDay = Math.max(0, Math.min(selectedWeatherDay, probs.length - 1));
         const selected = probs[selectedWeatherDay];
         const temp = Number(selected.expectedHighF);
@@ -787,8 +814,18 @@
           .join("");
 
         document.querySelectorAll("[data-viz-day]").forEach((el) => {
-          el.onclick = () => {
+          el.onclick = async () => {
             selectedWeatherDay = Number(el.getAttribute("data-viz-day"));
+            const selectedProb = probs[selectedWeatherDay] || null;
+            if (selectedProb && marketDateSelectEl) {
+              marketDateSelectEl.value = selectedProb.marketDate;
+              applySelectedDailyMarket();
+              try {
+                await refreshMarket();
+              } catch (e) {
+                out.textContent = toJson({ error: String(e) });
+              }
+            }
             renderWeatherVisualizer();
           };
         });
@@ -872,12 +909,34 @@
       }
 
       async function claimResolvedPosition(position) {
-        out.textContent = toJson({
-          note: "Receipt-root payout claims are not live yet on the fast bet zkApp.",
-          marketDate: position.marketDate || null,
-          marketKey: position.marketKey,
-          positionKey: position.positionKey
-        });
+        try {
+          setBetProgress("Generating claim tx...", true);
+          const walletKey = await ensureWalletConnected();
+          const built = await req("/api/tx/claim-payout", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              marketKey: position.marketKey,
+              positionKey: position.positionKey,
+              walletPublicKey: walletKey
+            })
+          });
+          setBetProgress("Waiting for wallet signature...", true);
+          const txHash = await sendOnchainTx(built.tx, built.fee);
+          setBetProgress("Finalizing claim...", true);
+          const finalized = await req("/api/tx/finalize", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ intentId: built.intentId, txHash })
+          });
+          out.textContent = toJson({ txHash, claim: finalized, payoutSummary: built.payoutSummary });
+          await refreshResolvedMarkets();
+          await refreshWalletActivity();
+          setBetProgress("Claim submitted", false);
+        } catch (e) {
+          setBetProgress("Claim failed", false);
+          out.textContent = toJson({ error: String(e) });
+        }
       }
 
       async function refreshResolvedMarkets() {
@@ -898,13 +957,14 @@
           resolvedMarketsPanelEl.textContent =
             positions.length > 0
               ? `No resolved positions match the ${resolvedFilter} filter yet.`
-              : "No resolved positions found for this wallet yet. Fast mode claims are still being finalized.";
+              : "No resolved positions found for this wallet yet.";
           return;
         }
         resolvedMarketsPanelEl.innerHTML = filtered.map((p, idx) => {
           const claimed = Boolean(p.claimed);
           const won = Boolean(p.won);
-          const canClaim = won && !claimed && p.claimStatus !== "submitted";
+          const claimsLive = true;
+          const canClaim = claimsLive && won && !claimed && p.claimStatus !== "submitted";
           const buttonLabel = won
             ? claimed
               ? "Claimed"
@@ -939,31 +999,20 @@
           return;
         }
         const activity = await req(`/api/wallet/activity?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
-        const queued = Array.isArray(activity.queued) ? activity.queued : [];
+        const queued = [];
         const positions = Array.isArray(activity.positions) ? activity.positions : [];
         if (!queued.length && !positions.length) {
           out.textContent = "No wallet activity for this wallet yet.";
           return;
         }
         const sections = [];
-        if (queued.length) {
-          sections.push(`
-            <div class="small" style="margin-bottom:8px;"><b>Deferred Bets</b></div>
-            ${queued.map((item) => `
-              <div class="market" style="margin-bottom:8px;">
-                <div class="small"><b>${escapeHtml(item.marketDate || "Queued market")}</b> | ${escapeHtml(String(item.side || "").toUpperCase())} | ${escapeHtml(String(item.stakeTmina))} tMINA</div>
-                <div class="tiny">Status ${escapeHtml(item.status || "QUEUED")} | Waiting for automatic market creation</div>
-              </div>
-            `).join("")}
-          `);
-        }
         if (positions.length) {
           sections.push(`
-            <div class="small" style="margin:${queued.length ? "12px" : "0"} 0 8px;"><b>Active Bets</b></div>
+            <div class="small" style="margin:0 0 8px;"><b>Active Bets</b></div>
             ${positions.map((item) => `
               <div class="market" style="margin-bottom:8px;">
                 <div class="small"><b>${escapeHtml(item.marketDate || "On-chain market")}</b> | ${escapeHtml(String(item.side || "").toUpperCase())} | ${escapeHtml(String(item.stakeTmina ?? "n/a"))} tMINA</div>
-                <div class="tiny">${item.claimStatus === "receipt-pending-claims-phase" ? "Receipt committed | claims phase pending" : item.resolved ? `Resolved ${escapeHtml(String(item.resolvedOutcome || "").toUpperCase())} ${item.won ? "(won)" : "(lost)"}` : "Open on-chain"}${item.claimed ? " | Claimed" : ""}</div>
+                <div class="tiny">${item.claimStatus === "receipt-pending-claims-phase" ? "Bet recorded | claim unlocks after daily finalization" : item.resolved ? `Resolved ${escapeHtml(String(item.resolvedOutcome || "").toUpperCase())} ${item.won ? "(won)" : "(lost)"}` : "Open on-chain"}${item.claimed ? " | Claimed" : ""}</div>
               </div>
             `).join("")}
           `);
@@ -1049,6 +1098,7 @@
           };
         });
 
+        syncSelectedWeatherDayToCurrentMarketDate();
         renderOracleTable();
         renderWeatherVisualizer();
       }
@@ -1057,8 +1107,12 @@
         try {
           setBetProgress("Preparing bet...", true);
           const walletKey = await ensureWalletConnected();
-          const stake = Number(document.getElementById("marketStake").value);
-          if (!Number.isFinite(stake) || stake <= 0) throw new Error("stake must be > 0");
+          const stakeInputEl = document.getElementById("marketStake");
+          const stake = Number(stakeInputEl.value);
+          if (!Number.isFinite(stake) || stake <= 0) {
+            stakeInputEl.value = "0";
+            throw new Error("bet amount must be >0");
+          }
           const side = String(document.getElementById("betSide").value || "over");
 
           setBetProgress(
@@ -1067,46 +1121,21 @@
               : "Creating market...",
             true
           );
-          let txPayload;
-          let txFee;
-          let intentId;
-          if (localServerBetProvingEnabled) {
-            const built = await req("/api/tx/market-bet", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                marketKey: currentMarketKey,
-                addTotalBet: Math.floor(stake),
-                addYesBet: side === "over" ? Math.floor(stake) : 0,
-                walletPublicKey: walletKey,
-                marketDate: currentMarketDate,
-                thresholdF: currentThresholdF
-              })
-            });
-            txPayload = built.tx;
-            txFee = built.fee;
-            intentId = built.intentId;
-          } else {
-            const txContext = await req("/api/tx/market-bet-context", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                marketKey: currentMarketKey,
-                addTotalBet: Math.floor(stake),
-                addYesBet: side === "over" ? Math.floor(stake) : 0,
-                walletPublicKey: walletKey,
-                marketDate: currentMarketDate,
-                thresholdF: currentThresholdF
-              })
-            });
-            const clientBetting = await getClientBettingModule();
-            if (!currentMarketOnChainCreated) {
-              setBetProgress("Generating zkProof", true);
-            }
-            txPayload = await clientBetting.buildReceiptBetTx(txContext.buildContext);
-            txFee = txContext.fee;
-            intentId = txContext.intentId;
-          }
+          const built = await req("/api/tx/market-bet", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              marketKey: currentMarketKey,
+              addTotalBet: Math.floor(stake),
+              addYesBet: side === "over" ? Math.floor(stake) : 0,
+              walletPublicKey: walletKey,
+              marketDate: currentMarketDate,
+              thresholdF: currentThresholdF
+            })
+          });
+          const txPayload = built.tx;
+          const txFee = built.fee;
+          const intentId = built.intentId;
           setBetProgress("Waiting for wallet signature...", true);
           const txHash = await sendOnchainTx(txPayload, txFee);
           setBetProgress("Finalizing market state...", true);
@@ -1117,8 +1146,8 @@
           });
           out.textContent = toJson({ txHash, marketDate: currentMarketDate, thresholdF: currentThresholdF, finalized });
           setBetProgress("Refreshing odds...", true);
-          await refreshMarket();
           await refreshDailyMarkets();
+          await refreshMarket();
           await refreshWalletActivity();
           setBetProgress("Bet placed successfully", false);
         } catch (e) {
@@ -1130,7 +1159,7 @@
       refreshWeatherTopBtn.onclick = async () => {
         if (!manualWeatherRefreshEnabled) {
           out.textContent = toJson({
-            note: "Manual oracle refresh is disabled on the hosted market service. The oracle worker syncs forecast data automatically."
+            note: "Manual oracle refresh is disabled here. Oracle sync runs separately in the background."
           });
           return;
         }
@@ -1190,9 +1219,9 @@
           refreshDailyMarkets,
           refreshMarket,
           refreshWeather,
-          refreshResolvedMarkets,
-          refreshWalletActivity
+          refreshResolvedMarkets
         ];
+        steps.push(refreshWalletActivity);
         for (const step of steps) {
           try {
             await step();
@@ -1202,15 +1231,22 @@
         }
       }
 
+      if (refreshActivityBtn) {
+        refreshActivityBtn.onclick = () => {
+          refreshWalletActivity().catch((e) => {
+            console.warn("manual activity refresh failed", e);
+          });
+        };
+      }
+
       refreshPageState().catch((e) => {
         console.warn("initial refresh failed", e);
       });
-      prewarmClientBetting();
       setInterval(() => {
         refreshPageState().catch((e) => {
           console.warn("interval refresh failed", e);
         });
-      }, 60000);
+      }, 10000);
     </script>
   </body>
 </html>

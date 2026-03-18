@@ -122,11 +122,52 @@ Why split:
 - reduces web-service memory pressure
 - gives better control over settlement/operator jobs
 
+## Build Recommendation
+
+After iterating through local builds, hosted Render deploys, heavy worker splits, server-side provers, and browser proving, the current recommendation is:
+
+- keep the **market web service** focused on UI, lightweight API state, and finalize/indexing
+- keep the **oracle worker** responsible for forward market creation and resolution
+- keep the **operator / private queue** out of the normal user betting path
+- use **client-side proving** for active on-chain bets
+- treat any queued/deferred path as exceptional fallback only, not primary UX
+
+### What we learned the hard way
+
+- A large all-in-one zkApp contract is too heavy for fast browser proving and too fragile for web-service proving.
+- Moving heavy proving onto the hosted web service causes slow responses, 502s, and rollout instability.
+- Adding more workers and services does not fix a broken core proving/state model. It can hide the problem while increasing operational complexity.
+- The old queued private-bet path improved live intent privacy, but it was operationally slow and economically awkward without slippage controls.
+- State trees that cannot be reconstructed from chain events become recovery hazards. Fresh zkApp rollouts and clean recovery tooling matter.
+- Browser proving is a better fit for active bets than server proving, but only if the proving surface is intentionally small.
+
+### Current architectural direction
+
+- **Public market state, more private user intent**
+  - pool and odds can be public
+  - user directional intent should not be trivially attributable at click time
+- **Fast path**
+  - active market exists on-chain
+  - browser builds and proves the bet locally
+  - wallet signs and sends
+- **Background path**
+  - oracle worker creates the next daily markets and resolves finished ones
+- **Deferred path**
+  - claims and richer receipt-root settlement can happen after the hot betting path
+
+### What to avoid
+
+- Do not put normal bet proving behind the operator queue unless you deliberately want slower micro-batch privacy.
+- Do not treat extra hosted workers as a substitute for simplifying the proving surface.
+- Do not mix legacy claim/position machinery back into the hot bet path unless you accept much slower proofs.
+- Do not assume local success means hosted success; Render memory/CPU and startup behavior exposed several issues that did not show up locally.
+
 ## Developer Docs
 
 - protocol vs demo: `docs/protocol-vs-demo.md`
 - developer setup and implementation details: `docs/developer-setup.md`
 - operator runbook: `docs/operator-runbook.md`
+- build recommendations and architecture retrospective: `docs/build-recommendations.md`
 - zkTLS hardening notes: `docs/zktls-hardening-notes.md`
 - production deploy and fresh-zkApp rollout: `deploy/README.production.md`
 - blog post / overview: `docs/blog-zeko-private-market.md`

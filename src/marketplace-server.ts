@@ -31,29 +31,6 @@ import {
   settleContest
 } from './weather-contest.js';
 import { verifyTlsnAttestationFile } from './tlsn-verifier.js';
-import {
-  loadOracleCommitteeState,
-  saveOracleCommitteeState,
-  submitCommitteeCommit,
-  tryFinalizeCommitteeRound
-} from './oracle-committee.js';
-import {
-  approveEmergencyProposal,
-  canExecuteEmergencyProposal,
-  createEmergencyProposal,
-  loadGovernanceState,
-  markProposalExecuted,
-  saveGovernanceState
-} from './governance-resolution.js';
-import {
-  acpCreateCreditsIntent,
-  acpCreateRelayJobFromCredits,
-  acpMarkIntentFunded,
-  acpRelayRunJob,
-  acpRevealAndSettleRelayJob,
-  loadAcpCreditEscrowState,
-  saveAcpCreditEscrowState
-} from './acp-credit-escrow.js';
 import { PositionLeaf } from './contract.js';
 import { FastPredictionMarketPlatform } from './fast-contract.js';
 import { MarketLeaf } from './market-types.js';
@@ -74,7 +51,6 @@ import {
 } from './state-store.js';
 import { withTxRetry } from './tx-retry.js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
-import { proveAndSendPrivateQueuedBet } from './private-batch-processor.js';
 
 const execFileAsync = promisify(execFile);
 const USER_POSITIONS_FILE = './data/user-positions.json';
@@ -132,7 +108,7 @@ type PendingTxIntent = {
   addYesBet: number;
   userId: string;
   newLeaf: ReturnType<typeof serializeMarketLeaf> | null;
-  newPositionLeaf: ReturnType<typeof serializePositionLeaf>;
+  newPositionLeaf?: ReturnType<typeof serializePositionLeaf>;
   receiptCommitment?: string | null;
   receiptSalt?: string | null;
   userNetPositionAfter: number;
@@ -839,22 +815,63 @@ async function loadDemoDailyMarkets(filePath: string = DEMO_DAILY_MARKETS_FILE):
     try {
       const state = await loadOperatorState(process.env.STATE_FILE || DEFAULT_STATE_FILE);
       const { merged, changed } = mergeDemoDailyMarketsWithOnChainState(parsed, state);
-      if (changed) {
-        await saveDemoDailyMarkets(merged, filePath);
+      const seeded = seedFallbackRollingDailyMarkets(merged);
+      if (changed || seeded.changed) {
+        await saveDemoDailyMarkets(seeded.markets, filePath);
       }
-      return merged;
+      return seeded.markets;
     } catch {
-      return parsed;
+      const seeded = seedFallbackRollingDailyMarkets(parsed);
+      if (seeded.changed) {
+        await saveDemoDailyMarkets(seeded.markets, filePath);
+      }
+      return seeded.markets;
     }
   } catch {
     try {
       const state = await loadOperatorState(process.env.STATE_FILE || DEFAULT_STATE_FILE);
       const { merged } = mergeDemoDailyMarketsWithOnChainState({}, state);
-      return merged;
+      const seeded = seedFallbackRollingDailyMarkets(merged);
+      if (seeded.changed) {
+        await saveDemoDailyMarkets(seeded.markets, filePath);
+      }
+      return seeded.markets;
     } catch {
-      return {};
+      return seedFallbackRollingDailyMarkets({}).markets;
     }
   }
+}
+
+function seedFallbackRollingDailyMarkets(
+  markets: Record<string, DemoDailyMarket>
+): { markets: Record<string, DemoDailyMarket>; changed: boolean } {
+  const todayIso = currentLocalDate();
+  const maxWindowDate = isoDateOffset(todayIso, 5);
+  const currentEntries = Object.entries(markets).filter(([marketDate]) => marketDate >= todayIso && marketDate <= maxWindowDate);
+  if (currentEntries.length > 0) {
+    return { markets, changed: false };
+  }
+  const existingThresholds = Object.values(markets)
+    .map((market) => Math.round(Number(market.thresholdF)))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const fallbackThreshold = existingThresholds.length > 0 ? existingThresholds[existingThresholds.length - 1] : 68;
+  const seeded: Record<string, DemoDailyMarket> = { ...markets };
+  for (let dayIndex = 0; dayIndex < 6; dayIndex += 1) {
+    const marketDate = isoDateOffset(todayIso, dayIndex);
+    if (!seeded[marketDate]) {
+      seeded[marketDate] = {
+        marketDate,
+        marketKey: deriveDemoDateMarketKey(marketDate),
+        thresholdF: fallbackThreshold,
+        lockedAtUnixMs: Date.now(),
+        sourceDayIndexWhenLocked: dayIndex,
+        sourceForecastHighFWhenLocked: fallbackThreshold,
+        totalPositionBet: 0,
+        totalYesPositionBet: 0
+      };
+    }
+  }
+  return { markets: seeded, changed: true };
 }
 
 async function saveDemoDailyMarkets(
@@ -1290,6 +1307,20 @@ async function readProjectedDemoDailyMarketsFromSnapshot(
     .sort((a, b) => (a.marketDate < b.marketDate ? -1 : a.marketDate > b.marketDate ? 1 : 0));
 }
 
+async function readDisplayDailyMarkets(
+  state: Awaited<ReturnType<typeof loadOperatorState>>,
+  snapshot: Awaited<ReturnType<typeof loadWeatherSnapshot>>
+): Promise<DemoDailyMarket[]> {
+  if (snapshot) {
+    return await readProjectedDemoDailyMarketsFromSnapshot(snapshot);
+  }
+  const projected = await readProjectedDemoDailyMarketsFromSnapshot(null);
+  if (projected.length > 0) {
+    return projected;
+  }
+  return deriveDailyMarketsFromOnChainState(state);
+}
+
 function withCurrentForecast(
   markets: DemoDailyMarket[],
   snapshot: Awaited<ReturnType<typeof loadWeatherSnapshot>>
@@ -1499,14 +1530,30 @@ async function refreshState(projectRoot: string): Promise<void> {
 }
 
 async function ensureDailyMarkets(projectRoot: string): Promise<void> {
-  await runProjectCommand(projectRoot, [
-    'ensure-daily-markets:zeko',
-    '--',
-    '--state-file',
-    './data/operator-state.json',
-    '--daily-markets-file',
-    './data/demo-daily-threshold-markets.json'
-  ]);
+  await refreshState(projectRoot);
+  try {
+    await runProjectCommand(projectRoot, [
+      'ensure-daily-markets:zeko',
+      '--',
+      '--state-file',
+      './data/operator-state.json',
+      '--daily-markets-file',
+      './data/demo-daily-threshold-markets.json'
+    ]);
+  } catch (error) {
+    if (!isFreshStateMismatchError(error)) {
+      throw error;
+    }
+    await refreshState(projectRoot);
+    await runProjectCommand(projectRoot, [
+      'ensure-daily-markets:zeko',
+      '--',
+      '--state-file',
+      './data/operator-state.json',
+      '--daily-markets-file',
+      './data/demo-daily-threshold-markets.json'
+    ]);
+  }
 }
 
 async function bootstrapFastZkapp(projectRoot: string): Promise<void> {
@@ -1713,36 +1760,28 @@ async function buildLocalServerReceiptBetTx(context: BrowserMarketBetContext): P
     );
   });
 
-  const feePayerUpdate = (tx as unknown as { feePayer?: { body?: { preconditions?: { account?: { nonce?: unknown } }; useFullCommitment?: Bool } } }).feePayer;
-  if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
-    feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
-  }
-  if (feePayerUpdate?.body) {
-    feePayerUpdate.body.useFullCommitment = Bool(true);
-  }
-
   await tx.prove();
   return tx.toJSON();
 }
 
-function getOperatorActionToken(): string | null {
-  const raw = process.env.OPERATOR_ACTION_TOKEN;
+function getOracleActionToken(): string | null {
+  const raw = process.env.ORACLE_ACTION_TOKEN || process.env.OPERATOR_ACTION_TOKEN;
   if (!raw) return null;
   const token = raw.trim();
   return token.length > 0 ? token : null;
 }
 
-function requireOperatorAuthorization(req: IncomingMessage, body: Record<string, unknown> | null): void {
-  const expected = getOperatorActionToken();
+function requireOracleAuthorization(req: IncomingMessage, body: Record<string, unknown> | null): void {
+  const expected = getOracleActionToken();
   if (!expected) {
-    throw new Error('operator actions disabled: set OPERATOR_ACTION_TOKEN');
+    throw new Error('oracle actions disabled: set ORACLE_ACTION_TOKEN');
   }
-  const headerToken = req.headers['x-operator-token'];
+  const headerToken = req.headers['x-oracle-token'];
   const supplied =
     (typeof headerToken === 'string' ? headerToken : Array.isArray(headerToken) ? headerToken[0] : null) ||
-    (body && typeof body.operatorToken === 'string' ? body.operatorToken : null);
+    (body && typeof body.oracleToken === 'string' ? body.oracleToken : null);
   if (!supplied || supplied !== expected) {
-    throw new Error('operator authorization failed');
+    throw new Error('oracle authorization failed');
   }
 }
 
@@ -1861,6 +1900,35 @@ async function listResolvedWalletPositions(
       claimConfirmedAtUnixMs: meta?.claimConfirmedAtUnixMs || null
     });
   }
+  for (const [receiptKey, meta] of Object.entries(state.receiptMeta || {})) {
+    if (!meta || meta.walletPublicKey !== walletPublicKey) continue;
+    const storedMarket = state.markets[meta.marketKey];
+    if (!storedMarket) continue;
+    const marketLeaf = deserializeMarketLeaf(storedMarket);
+    if (!marketLeaf.resolved.toBoolean()) continue;
+    const resolvedOutcome = marketLeaf.outcome.toBoolean() ? 'over' : 'under';
+    const totalPot = BigInt(marketLeaf.totalPositionBet.toString());
+    const totalYes = BigInt(marketLeaf.totalYesPositionBet.toString());
+    const stake = BigInt(meta.stakeTmina);
+    const won = meta.side === resolvedOutcome;
+    const payout = won ? payoutNanominaForStake(totalPot, totalYes, marketLeaf.outcome.toBoolean(), stake) : 0n;
+    result.push({
+      positionKey: receiptKey,
+      marketKey: meta.marketKey,
+      marketDate: meta.marketDate || null,
+      side: meta.side,
+      stakeTmina: Number(stake),
+      totalPotTmina: Number(totalPot),
+      payoutTmina: Number(payout),
+      resolvedOutcome,
+      won,
+      claimed: meta.claimStatus === 'confirmed',
+      claimStatus: won ? (meta.claimStatus || 'claimable') : 'not-applicable',
+      claimTxHash: meta.claimTxHash || null,
+      claimSubmittedAtUnixMs: meta.claimSubmittedAtUnixMs || null,
+      claimConfirmedAtUnixMs: meta.claimConfirmedAtUnixMs || null
+    });
+  }
   return result.sort((a, b) => {
     const ad = a.marketDate || '';
     const bd = b.marketDate || '';
@@ -1891,21 +1959,69 @@ function markPositionClaimConfirmed(state: Awaited<ReturnType<typeof loadOperato
   return true;
 }
 
+function finalizeReceiptClaimStatuses(state: Awaited<ReturnType<typeof loadOperatorState>>): boolean {
+  let dirty = false;
+  state.receiptMeta = state.receiptMeta || {};
+  for (const [receiptKey, meta] of Object.entries(state.receiptMeta)) {
+    if (!meta) continue;
+    const storedMarket = state.markets[meta.marketKey];
+    if (!storedMarket) continue;
+    const marketLeaf = deserializeMarketLeaf(storedMarket);
+    if (!marketLeaf.resolved.toBoolean()) continue;
+    const won = meta.side === (marketLeaf.outcome.toBoolean() ? 'over' : 'under');
+    if (meta.claimStatus === 'confirmed' || meta.claimStatus === 'submitted') continue;
+    const nextStatus: StoredReceiptMeta['claimStatus'] = won ? 'claimable' : 'not-applicable';
+    if (meta.claimStatus !== nextStatus) {
+      meta.claimStatus = nextStatus;
+      dirty = true;
+    }
+  }
+  return dirty;
+}
+
+function markReceiptClaimConfirmed(state: Awaited<ReturnType<typeof loadOperatorState>>, receiptKey: string, confirmedAtUnixMs: number) {
+  state.receiptMeta = state.receiptMeta || {};
+  const meta = state.receiptMeta[receiptKey];
+  if (!meta) return false;
+  meta.claimStatus = 'confirmed';
+  meta.claimConfirmedAtUnixMs = confirmedAtUnixMs;
+  return true;
+}
+
 async function reconcileSubmittedPayoutClaims(stateFile: string) {
   setActiveZekoNetwork();
   const state = await loadOperatorState(stateFile);
+  let dirty = finalizeReceiptClaimStatuses(state);
   const pendingClaims = Object.entries(state.positionMeta || {}).filter(([, meta]) => {
     return Boolean(meta?.claimStatus === 'submitted' && meta?.claimTxHash);
   });
-  if (!pendingClaims.length) return state;
+  const pendingReceiptClaims = Object.entries(state.receiptMeta || {}).filter(([, meta]) => {
+    return Boolean(meta?.claimStatus === 'submitted' && meta?.claimTxHash);
+  });
+  if (!pendingClaims.length && !pendingReceiptClaims.length) {
+    if (dirty) {
+      await saveOperatorState(stateFile, state);
+    }
+    return state;
+  }
   const { graphql } = getNetworkConfig();
-  let dirty = false;
   for (const [positionKey, meta] of pendingClaims) {
     if (!meta?.claimTxHash) continue;
     try {
       const status = await fetchTransactionStatus(meta.claimTxHash, graphql);
       if (status === 'INCLUDED') {
         dirty = markPositionClaimConfirmed(state, positionKey, Date.now()) || dirty;
+      }
+    } catch {
+      // Leave claim pending if status cannot be fetched yet.
+    }
+  }
+  for (const [receiptKey, meta] of pendingReceiptClaims) {
+    if (!meta?.claimTxHash) continue;
+    try {
+      const status = await fetchTransactionStatus(meta.claimTxHash, graphql);
+      if (status === 'INCLUDED') {
+        dirty = markReceiptClaimConfirmed(state, receiptKey, Date.now()) || dirty;
       }
     } catch {
       // Leave claim pending if status cannot be fetched yet.
@@ -1929,8 +2045,84 @@ async function buildWalletFeePayerClaimPayoutTx(params: {
   intent: PendingTxIntent;
   payoutSummary: { payoutTmina: string; marketKey: string; positionKey: string };
 }> {
-  void params;
-  throw new Error('public payout claims are temporarily disabled on the fast bet zkApp while receipt-root claim finalization is being built');
+  const { stateFile, marketKey, positionKey, feePayerPublicKey, userId } = params;
+  setActiveZekoNetwork();
+  const { txFee } = getNetworkConfig();
+  const zkappPrivateKey = getOptionalZkappPrivateKey();
+  if (!zkappPrivateKey) {
+    throw new Error('Missing ZKAPP_PRIVATE_KEY for local claim payout path');
+  }
+  const feePayer = PublicKey.fromBase58(feePayerPublicKey);
+  const feePayerAccount = await fetchAccount({ publicKey: feePayer });
+  if (feePayerAccount.error) {
+    throw new Error(`fee payer account not found: ${feePayerAccount.error.statusText || 'unknown'}`);
+  }
+  const zkappAddress = zkappPrivateKey.toPublicKey();
+  const zkappAccount = await fetchAccount({ publicKey: zkappAddress });
+  if (zkappAccount.error) {
+    throw new Error(`zkApp account not found: ${zkappAccount.error.statusText || 'unknown'}`);
+  }
+
+  const state = await reconcileSubmittedPayoutClaims(stateFile);
+  const meta = state.receiptMeta?.[positionKey];
+  if (!meta) throw new Error('receipt metadata missing for payout claim');
+  if (meta.walletPublicKey !== feePayerPublicKey) {
+    throw new Error('wallet does not own this receipt position');
+  }
+  if (meta.marketKey !== marketKey) {
+    throw new Error('receipt metadata market mismatch');
+  }
+  const storedMarket = state.markets[marketKey];
+  if (!storedMarket) throw new Error('market missing for payout claim');
+  const marketLeaf = deserializeMarketLeaf(storedMarket);
+  if (!marketLeaf.resolved.toBoolean()) throw new Error('market is not resolved yet');
+  const won = meta.side === (marketLeaf.outcome.toBoolean() ? 'over' : 'under');
+  if (!won) throw new Error('receipt is not on the winning side');
+  if (meta.claimStatus === 'submitted') throw new Error('claim already submitted');
+  if (meta.claimStatus === 'confirmed') throw new Error('claim already confirmed');
+  const payoutNanomina = payoutNanominaForStake(
+    BigInt(marketLeaf.totalPositionBet.toString()),
+    BigInt(marketLeaf.totalYesPositionBet.toString()),
+    marketLeaf.outcome.toBoolean(),
+    BigInt(meta.stakeTmina)
+  );
+  if (payoutNanomina <= 0n) throw new Error('no payout available for this receipt');
+
+  const tx = await Mina.transaction({ sender: feePayer, fee: txFee }, async () => {
+    const payoutUpdate = AccountUpdate.createSigned(zkappAddress);
+    payoutUpdate.send({
+      to: feePayer,
+      amount: UInt64.from(payoutNanomina.toString())
+    });
+  });
+  tx.sign([zkappPrivateKey]);
+
+  const intent: PendingTxIntent = {
+    id: randomUUID(),
+    type: 'payout-claim',
+    marketKey,
+    marketDate: meta.marketDate,
+    walletPublicKey: feePayerPublicKey,
+    positionKey,
+    addTotalBet: 0,
+    addYesBet: 0,
+    userId,
+    newLeaf: null,
+    userNetPositionAfter: 0,
+    createdAtUnixMs: Date.now()
+  };
+  pendingTxIntents[intent.id] = intent;
+
+  return {
+    tx: tx.toJSON(),
+    fee: txFee,
+    intent,
+    payoutSummary: {
+      payoutTmina: payoutNanomina.toString(),
+      marketKey,
+      positionKey
+    }
+  };
 }
 
 async function processPrivateBetBatch(params: {
@@ -1945,50 +2137,8 @@ async function processPrivateBetBatch(params: {
   totalYesBetAdded: number;
   relayerReimbursedNanomina: string;
 }> {
-  if (privateBatchInFlight) {
-    throw new Error('private batch processor already running');
-  }
-  if (privateBetQueue.length === 0) {
-    return {
-      processed: 0,
-      txHash: null,
-      marketKey: null,
-      marketDate: null,
-      totalPositionBetAdded: 0,
-      totalYesBetAdded: 0,
-      relayerReimbursedNanomina: '0'
-    };
-  }
-  privateBatchInFlight = true;
-  try {
-    const first = privateBetQueue[0];
-    if (!first) {
-      return {
-        processed: 0,
-        txHash: null,
-        marketKey: null,
-        marketDate: null,
-        totalPositionBetAdded: 0,
-        totalYesBetAdded: 0,
-        relayerReimbursedNanomina: '0'
-      };
-    }
-    const proofResult = await proveAndSendPrivateQueuedBet({
-      queuedBet: first,
-      stateFile: params.stateFile
-    });
-    return await applySuccessfulPrivateBetBatch({
-      stateFile: params.stateFile,
-      queuedBet: first,
-      txHash: proofResult.txHash,
-      relayerReimbursedNanomina: proofResult.relayerReimbursedNanomina
-    });
-  } catch (error) {
-    await recordPrivateBatchFailure(error);
-    throw error;
-  } finally {
-    privateBatchInFlight = false;
-  }
+  void params;
+  throw new Error('private queued betting has been retired from this build');
 }
 
 async function main(): Promise<void> {
@@ -2000,16 +2150,9 @@ async function main(): Promise<void> {
   const distRoot = path.resolve(projectRoot, 'dist');
   const o1jsWebRoot = path.resolve(projectRoot, 'node_modules', 'o1js', 'dist', 'web');
   const reflectRoot = path.resolve(projectRoot, 'node_modules', 'reflect-metadata');
-  const port = Number.parseInt(
-    process.env.MARKETPLACE_PORT || process.env.PORT || '8790',
-    10
-  );
-  const host = process.env.MARKETPLACE_HOST || '0.0.0.0';
+  const port = Number.parseInt(process.env.MARKETPLACE_PORT || '8790', 10);
+  const host = process.env.MARKETPLACE_HOST || '127.0.0.1';
   const defaultStatePath = process.env.STATE_FILE || DEFAULT_STATE_FILE;
-  const committeeEnabled = process.env.ENABLE_ORACLE_COMMITTEE_PATH === '1';
-  const governanceEnabled = process.env.ENABLE_GOVERNANCE_PATH === '1';
-  const acpCreditEscrowEnabled = process.env.ENABLE_ACP_CREDIT_ESCROW_PATH === '1';
-
   // Durable startup state for private batching.
   const restoredQueue = await loadPrivateBetQueue();
   privateBetQueue.splice(0, privateBetQueue.length, ...restoredQueue);
@@ -2128,9 +2271,6 @@ async function main(): Promise<void> {
           zkappConfigError,
           dailySettle: dailySettleState,
           features: {
-            oracleCommitteePathEnabled: committeeEnabled,
-            governancePathEnabled: governanceEnabled,
-            acpCreditEscrowPathEnabled: acpCreditEscrowEnabled,
             manualWeatherRefreshEnabled: !(process.env.RENDER === 'true' || process.env.IS_RENDER === 'true'),
             localServerBetProvingEnabled: useLocalServerBetProving()
           },
@@ -2148,832 +2288,6 @@ async function main(): Promise<void> {
           reason: readiness.reason,
           ts: new Date().toISOString()
         });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/private-bets/submit') {
-        if (getPrivacyMode() !== 'zk_strong') {
-          throw new Error('private queue path is only required in PRIVACY_MODE=zk_strong');
-        }
-        const body = await readJsonBody(req);
-        const marketKey = requireString(body.marketKey, 'marketKey');
-        const addTotalBet = requireNumber(body.addTotalBet, 'addTotalBet');
-        const addYesBet = requireNonNegativeNumber(body.addYesBet, 'addYesBet');
-        const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
-        const fundingTxHash = typeof body.fundingTxHash === 'string' && body.fundingTxHash.length > 0 ? body.fundingTxHash : null;
-        const marketDate = requireString(body.marketDate, 'marketDate');
-        const selectedThresholdF =
-          typeof body.thresholdF === 'number' && Number.isFinite(body.thresholdF) ? Math.round(body.thresholdF) : null;
-        if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
-        if (!(Math.floor(addYesBet) === 0 || Math.floor(addYesBet) === Math.floor(addTotalBet))) {
-          throw new Error('private payout path requires binary over/under stake; use full OVER or full UNDER amount');
-        }
-        if (marketDate) {
-          const todayIso = currentLocalDate();
-          if (marketDate < todayIso) {
-            throw new Error(`market date ${marketDate} is closed (past date). Today is ${todayIso}`);
-          }
-          const maxDate = isoDateOffset(todayIso, 5);
-          if (marketDate > maxDate) {
-            throw new Error(`market date ${marketDate} is outside rolling window (${todayIso} to ${maxDate})`);
-          }
-        }
-        const state = await loadOperatorState(defaultStatePath);
-        const selectedMarket = findSelectedOnChainMarket(state, marketKey, marketDate);
-        const dailyMarkets = marketDate ? await loadDemoDailyMarkets() : {};
-        const selectedDailyMarket = marketDate ? dailyMarkets[marketDate] || null : null;
-        let effectiveMarketKey: string;
-        if (selectedMarket) {
-          effectiveMarketKey = String(selectedMarket.marketKey);
-          const existingMarket = state.markets[effectiveMarketKey];
-          if (!existingMarket) {
-            throw new Error(`market ${marketDate} is temporarily unavailable on-chain`);
-          }
-          const existingLeaf = deserializeMarketLeaf(existingMarket);
-          if (existingLeaf.resolved.toBoolean()) {
-            throw new Error(`market ${marketDate} is already resolved`);
-          }
-          if (selectedThresholdF !== null) {
-            const thresholdValueTenthC = Number(existingLeaf.thresholdValueTenthC.toString());
-            const onChainThresholdF = Math.round(((thresholdValueTenthC / 10) * 9) / 5 + 32);
-            if (onChainThresholdF !== selectedThresholdF) {
-              throw new Error(
-                `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
-              );
-            }
-          }
-        } else {
-          if (!marketDate || !selectedDailyMarket) {
-            throw new Error(
-              `locked market ${marketDate} is unavailable. Wait for the next oracle upkeep cycle or refresh forecast state.`
-            );
-          }
-          const dailyThresholdF = Math.round(Number(selectedDailyMarket.thresholdF));
-          if (selectedThresholdF !== null && dailyThresholdF !== selectedThresholdF) {
-            throw new Error(
-              `selected threshold ${selectedThresholdF}F does not match locked threshold ${dailyThresholdF}F for ${marketDate}`
-            );
-          }
-          effectiveMarketKey =
-            typeof selectedDailyMarket.marketKey === 'string' && selectedDailyMarket.marketKey.length > 0
-              ? selectedDailyMarket.marketKey
-              : deriveDemoDateMarketKey(marketDate);
-        }
-        const id = randomUUID();
-        const positionKey = fieldFromHexDigest(
-          sha256Hex(`${walletPublicKey}:${effectiveMarketKey}:${marketDate || ''}:${id}:${Date.now()}`)
-        ).toString();
-        const ownerCommitment = ownerCommitmentFromWalletPublicKey(walletPublicKey).toString();
-        const walletCommitment = sha256Hex(
-          `${walletPublicKey}:${effectiveMarketKey}:${marketDate || ''}:${Math.floor(addTotalBet)}:${Math.floor(addYesBet)}:${id}:${Date.now()}`
-        );
-        privateBetQueue.push({
-          id,
-          marketKey: effectiveMarketKey,
-          marketDate,
-          walletPublicKey,
-          positionKey,
-          ownerCommitment,
-          addTotalBet: Math.floor(addTotalBet),
-          addYesBet: Math.floor(addYesBet),
-          fundingTxHash,
-          walletCommitment,
-          createdAtUnixMs: Date.now(),
-          leaseExpiryCount: 0,
-          status: 'QUEUED'
-        });
-        await savePrivateBetQueue(privateBetQueue);
-        writeJson(res, 200, {
-          ok: true,
-          privacyMode: 'zk_strong',
-          queueDepth: privateBetQueue.length,
-          intent: {
-            id,
-            marketKey: effectiveMarketKey,
-            marketDate,
-            positionKey,
-            fundingTxHash,
-            walletCommitment,
-            status: 'QUEUED'
-          },
-          note: 'Private commitment queued. Batch proof/settlement executor must post aggregated on-chain transition.'
-        });
-        return;
-      }
-
-      if (req.method === 'GET' && url.pathname === '/api/private-bets/status') {
-        const now = Date.now();
-        await releaseExpiredPrivateBatchLease(now);
-        const oldest = privateBetQueue[0];
-        writeJson(res, 200, {
-          ok: true,
-          privacyMode: getPrivacyMode(),
-          queueDepth: privateBetQueue.length,
-          inFlight: privateBatchInFlight,
-          leaseAgeMs: privateBatchInFlight && privateBatchLeaseStartedAtUnixMs ? now - privateBatchLeaseStartedAtUnixMs : null,
-          oldestAgeMs: oldest ? now - oldest.createdAtUnixMs : null,
-          recentBatch: privateBatchHistory[0] || null
-        });
-        return;
-      }
-
-      if (req.method === 'GET' && url.pathname === '/api/private-bets/history') {
-        const limitParam = Number.parseInt(url.searchParams.get('limit') || '20', 10);
-        const limit = Math.max(1, Math.min(100, Number.isFinite(limitParam) ? limitParam : 20));
-        writeJson(res, 200, {
-          ok: true,
-          count: privateBatchHistory.length,
-          history: privateBatchHistory.slice(0, limit)
-        });
-        return;
-      }
-
-      if (req.method === 'GET' && url.pathname === '/api/payouts/resolved-markets') {
-        const walletPublicKey = requireString(url.searchParams.get('walletPublicKey'), 'walletPublicKey');
-        const positions = await listResolvedWalletPositions(walletPublicKey, defaultStatePath);
-        writeJson(res, 200, {
-          ok: true,
-          walletPublicKey,
-          count: positions.length,
-          positions,
-          note: 'Winning resolved positions can be claimed publicly. Losing resolved positions are shown for history.'
-        });
-        return;
-      }
-
-      if (req.method === 'GET' && url.pathname === '/api/wallet/activity') {
-        const walletPublicKey = requireString(url.searchParams.get('walletPublicKey'), 'walletPublicKey');
-        const state = await loadOperatorState(defaultStatePath);
-        const queued = privateBetQueue
-          .filter((entry) => entry.walletPublicKey === walletPublicKey)
-          .map((entry) => ({
-            type: 'queued-private-bet' as const,
-            id: entry.id,
-            marketKey: entry.marketKey,
-            marketDate: entry.marketDate,
-            side: entry.addYesBet === entry.addTotalBet ? 'over' : 'under',
-            stakeTmina: entry.addTotalBet,
-            createdAtUnixMs: entry.createdAtUnixMs,
-            fundingTxHash: entry.fundingTxHash,
-            status: entry.status
-          }));
-        const positions = Object.entries(state.positionMeta || {})
-          .filter(([, meta]) => meta?.walletPublicKey === walletPublicKey)
-          .map(([positionKey, meta]) => {
-            const storedPosition = state.positions[positionKey];
-            const storedMarket = state.markets[meta.marketKey];
-            const positionLeaf = storedPosition ? deserializePositionLeaf(storedPosition) : null;
-            const marketLeaf = storedMarket ? deserializeMarketLeaf(storedMarket) : null;
-            const side = positionLeaf?.sideOver.toBoolean() ? 'over' : 'under';
-            const resolved = marketLeaf?.resolved.toBoolean() || false;
-            const resolvedOutcome = resolved ? (marketLeaf?.outcome.toBoolean() ? 'over' : 'under') : null;
-            return {
-              type: 'position' as const,
-              positionKey,
-              marketKey: meta.marketKey,
-              marketDate: meta.marketDate,
-              side,
-              stakeTmina: positionLeaf ? Number(positionLeaf.stake.toString()) : null,
-              createdAtUnixMs: meta.createdAtUnixMs,
-              fundingTxHash: meta.fundingTxHash,
-              resolved,
-              resolvedOutcome,
-              won: resolved && resolvedOutcome !== null ? side === resolvedOutcome : null,
-              claimed: positionLeaf?.claimed.toBoolean() || false,
-              claimStatus: meta.claimStatus || null,
-              claimTxHash: meta.claimTxHash || null
-            };
-          })
-          .sort((a, b) => {
-            const ad = a.marketDate || '';
-            const bd = b.marketDate || '';
-            if (ad !== bd) return ad < bd ? 1 : -1;
-            return (b.createdAtUnixMs || 0) - (a.createdAtUnixMs || 0);
-          });
-        const receiptPositions = Object.entries(state.receiptMeta || {})
-          .filter(([, meta]) => meta?.walletPublicKey === walletPublicKey)
-          .map(([receiptKey, meta]) => {
-            const storedMarket = state.markets[meta.marketKey];
-            const marketLeaf = storedMarket ? deserializeMarketLeaf(storedMarket) : null;
-            return {
-              type: 'position' as const,
-              positionKey: receiptKey,
-              marketKey: meta.marketKey,
-              marketDate: meta.marketDate,
-              side: meta.side,
-              stakeTmina: meta.stakeTmina,
-              createdAtUnixMs: meta.createdAtUnixMs,
-              fundingTxHash: meta.fundingTxHash,
-              resolved: marketLeaf?.resolved.toBoolean() || false,
-              resolvedOutcome: marketLeaf?.resolved.toBoolean() ? (marketLeaf.outcome.toBoolean() ? 'over' : 'under') : null,
-              won:
-                marketLeaf?.resolved.toBoolean()
-                  ? meta.side === (marketLeaf.outcome.toBoolean() ? 'over' : 'under')
-                  : null,
-              claimed: false,
-              claimStatus: 'receipt-pending-claims-phase' as const,
-              claimTxHash: null
-            };
-          })
-          .sort((a, b) => {
-            const ad = a.marketDate || '';
-            const bd = b.marketDate || '';
-            if (ad !== bd) return ad < bd ? 1 : -1;
-            return (b.createdAtUnixMs || 0) - (a.createdAtUnixMs || 0);
-          });
-        const combinedPositions = [...receiptPositions, ...positions].sort((a, b) => {
-          const ad = a.marketDate || '';
-          const bd = b.marketDate || '';
-          if (ad !== bd) return ad < bd ? 1 : -1;
-          return (b.createdAtUnixMs || 0) - (a.createdAtUnixMs || 0);
-        });
-        writeJson(res, 200, {
-          ok: true,
-          walletPublicKey,
-          queuedCount: queued.length,
-          positionCount: combinedPositions.length,
-          queued,
-          positions: combinedPositions
-        });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/private-bets/process-batch') {
-        if (getPrivacyMode() !== 'zk_strong') {
-          throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
-        }
-        if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
-          throw new Error('direct private batch processing is disabled on the hosted web service; use the operator worker');
-        }
-        const body = await readJsonBody(req);
-        const maxItemsRaw = typeof body.maxItems === 'number' && Number.isFinite(body.maxItems) ? body.maxItems : 32;
-        const result = await processPrivateBetBatch({
-          stateFile: defaultStatePath,
-          maxItems: maxItemsRaw
-        });
-        writeJson(res, 200, {
-          ok: true,
-          privacyMode: 'zk_strong',
-          ...result,
-          queueDepth: privateBetQueue.length
-        });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/operator/process-private-batch') {
-        if (getPrivacyMode() !== 'zk_strong') {
-          throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
-        }
-        if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
-          throw new Error('direct private batch processing is disabled on the hosted web service; use /api/operator/lease-private-batch from the operator worker');
-        }
-        const body = await readJsonBody(req);
-        requireOperatorAuthorization(req, body as Record<string, unknown>);
-        const result = await processPrivateBetBatch({
-          stateFile: defaultStatePath,
-          maxItems: Number.parseInt(process.env.PRIVATE_BATCH_MAX_ITEMS || '64', 10)
-        });
-        await refreshState(projectRoot);
-        writeJson(res, 200, {
-          ok: true,
-          privacyMode: 'zk_strong',
-          result,
-          queueDepth: privateBetQueue.length
-        });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/operator/lease-private-batch') {
-        if (getPrivacyMode() !== 'zk_strong') {
-          throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
-        }
-        const body = await readJsonBody(req);
-        requireOperatorAuthorization(req, body as Record<string, unknown>);
-        await releaseExpiredPrivateBatchLease();
-        const first = privateBetQueue[0] || null;
-        if (!first) {
-          writeJson(res, 200, {
-            ok: true,
-            leased: false,
-            queueDepth: 0,
-            inFlight: privateBatchInFlight
-          });
-          return;
-        }
-        if (privateBatchInFlight) {
-          writeJson(res, 200, {
-            ok: true,
-            leased: false,
-            queueDepth: privateBetQueue.length,
-            inFlight: true
-          });
-          return;
-        }
-        const state = await loadOperatorState(defaultStatePath);
-        const dailyMarkets = await loadDemoDailyMarkets();
-        privateBatchInFlight = true;
-        privateBatchLeaseStartedAtUnixMs = Date.now();
-        writeJson(res, 200, {
-          ok: true,
-          leased: true,
-          batch: first,
-          queueDepth: privateBetQueue.length,
-          state,
-          dailyMarkets
-        });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/operator/export-state') {
-        const body = await readJsonBody(req);
-        requireOperatorAuthorization(req, body as Record<string, unknown>);
-        const state = await loadOperatorState(defaultStatePath);
-        const dailyMarkets = await loadDemoDailyMarkets();
-        writeJson(res, 200, {
-          ok: true,
-          state,
-          dailyMarkets
-        });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/operator/import-state') {
-        const body = await readJsonBody(req);
-        requireOperatorAuthorization(req, body as Record<string, unknown>);
-        const importedMarkets = ((body.markets as Record<string, StoredMarketLeaf>) || {});
-        const importedPositions = ((body.positions as Record<string, StoredPositionLeaf>) || {});
-        const importedReceipts = ((body.receipts as Record<string, string>) || {});
-        const importedMarketMeta = ((body.marketMeta as Record<string, StoredMarketMeta>) || {});
-        const importedPositionMeta = ((body.positionMeta as Record<string, StoredPositionMeta>) || {});
-        const importedReceiptMeta = ((body.receiptMeta as Record<string, StoredReceiptMeta>) || {});
-        const importedUsedNonces = ((body.usedNonces as Record<string, string>) || {});
-        const currentState = await loadOperatorState(defaultStatePath);
-        const nextState = {
-          ...currentState,
-          markets: {
-            ...currentState.markets,
-            ...importedMarkets
-          },
-          positions: {
-            ...(currentState.positions || {}),
-            ...importedPositions
-          },
-          receipts: {
-            ...(currentState.receipts || {}),
-            ...importedReceipts
-          },
-          marketMeta: {
-            ...(currentState.marketMeta || {}),
-            ...importedMarketMeta
-          },
-          positionMeta: {
-            ...(currentState.positionMeta || {}),
-            ...importedPositionMeta
-          },
-          receiptMeta: {
-            ...(currentState.receiptMeta || {}),
-            ...importedReceiptMeta
-          },
-          usedNonces: {
-            ...currentState.usedNonces,
-            ...importedUsedNonces
-          }
-        };
-        await saveOperatorState(defaultStatePath, nextState);
-        const dailyMarketsPatch = body.dailyMarkets;
-        if (dailyMarketsPatch && typeof dailyMarketsPatch === 'object') {
-          const currentDailyMarkets = await loadDemoDailyMarkets();
-          await saveDemoDailyMarkets({
-            ...currentDailyMarkets,
-            ...(dailyMarketsPatch as Record<string, DemoDailyMarket>)
-          });
-        }
-        writeJson(res, 200, {
-          ok: true,
-          marketsImported: Object.keys(importedMarkets).length,
-          positionsImported: Object.keys(importedPositions).length,
-          receiptsImported: Object.keys(importedReceipts).length,
-          marketMetaImported: Object.keys(importedMarketMeta).length,
-          positionMetaImported: Object.keys(importedPositionMeta).length,
-          receiptMetaImported: Object.keys(importedReceiptMeta).length,
-          dailyMarketsImported: Object.keys((body.dailyMarkets as Record<string, unknown>) || {}).length,
-          usedNoncesImported: Object.keys(importedUsedNonces).length
-        });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/operator/complete-private-batch') {
-        if (getPrivacyMode() !== 'zk_strong') {
-          throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
-        }
-        const body = await readJsonBody(req);
-        requireOperatorAuthorization(req, body as Record<string, unknown>);
-        const batchId = requireString(body.id, 'id');
-        const txHash =
-          typeof body.txHash === 'string' && body.txHash.trim().length > 0 ? body.txHash.trim() : null;
-        const relayerReimbursedNanomina =
-          typeof body.relayerReimbursedNanomina === 'string' && body.relayerReimbursedNanomina.trim().length > 0
-            ? body.relayerReimbursedNanomina.trim()
-            : '0';
-        const first = privateBetQueue[0];
-        if (!first || first.id !== batchId) {
-          throw new Error('leased private batch no longer matches queue head');
-        }
-        const result = await applySuccessfulPrivateBetBatch({
-          stateFile: defaultStatePath,
-          queuedBet: first,
-          txHash,
-          relayerReimbursedNanomina
-        });
-        privateBatchInFlight = false;
-        privateBatchLeaseStartedAtUnixMs = null;
-        writeJson(res, 200, {
-          ok: true,
-          result,
-          queueDepth: privateBetQueue.length
-        });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/operator/fail-private-batch') {
-        if (getPrivacyMode() !== 'zk_strong') {
-          throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
-        }
-        const body = await readJsonBody(req);
-        requireOperatorAuthorization(req, body as Record<string, unknown>);
-        const batchId = requireString(body.id, 'id');
-        const first = privateBetQueue[0];
-        if (!first || first.id !== batchId) {
-          throw new Error('leased private batch no longer matches queue head');
-        }
-        await recordPrivateBatchFailure(body.error, first.marketKey);
-        privateBetQueue.shift();
-        await savePrivateBetQueue(privateBetQueue);
-        privateBatchInFlight = false;
-        privateBatchLeaseStartedAtUnixMs = null;
-        writeJson(res, 200, {
-          ok: true,
-          queueDepth: privateBetQueue.length
-        });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/operator/clear-private-queue') {
-        if (getPrivacyMode() !== 'zk_strong') {
-          throw new Error('batch processor is only required in PRIVACY_MODE=zk_strong');
-        }
-        const body = await readJsonBody(req);
-        requireOperatorAuthorization(req, body as Record<string, unknown>);
-        const reason =
-          typeof body.reason === 'string' && body.reason.trim().length > 0
-            ? body.reason.trim()
-            : 'manual queue reset';
-        const cleared = [...privateBetQueue];
-        for (const queuedBet of cleared) {
-          await appendPrivateBatchHistory({
-            id: randomUUID(),
-            atUnixMs: Date.now(),
-            marketKey: queuedBet.marketKey,
-            processed: 0,
-            totalPositionBetAdded: queuedBet.addTotalBet,
-            totalYesBetAdded: queuedBet.addYesBet,
-            txHash: null,
-            relayerReimbursedNanomina: '0',
-            status: 'failed',
-            error: `${reason} (cleared queued bet ${queuedBet.id})`
-          });
-        }
-        privateBetQueue.splice(0, privateBetQueue.length);
-        await savePrivateBetQueue(privateBetQueue);
-        privateBatchInFlight = false;
-        privateBatchLeaseStartedAtUnixMs = null;
-        writeJson(res, 200, {
-          ok: true,
-          cleared: cleared.length,
-          reason
-        });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/operator/emergency-reset-positions-state') {
-        const body = await readJsonBody(req);
-        requireOperatorAuthorization(req, body as Record<string, unknown>);
-        const state = await loadOperatorState(defaultStatePath);
-        const clearedPositions = Object.keys(state.positions || {}).length;
-        const clearedPositionMeta = Object.keys(state.positionMeta || {}).length;
-        const clearedQueuedBets = privateBetQueue.length;
-        const reason = 'emergency positions reset';
-        if (clearedQueuedBets > 0) {
-          const cleared = [...privateBetQueue];
-          for (const queuedBet of cleared) {
-            await appendPrivateBatchHistory({
-              id: randomUUID(),
-              atUnixMs: Date.now(),
-              marketKey: queuedBet.marketKey,
-              processed: 0,
-              totalPositionBetAdded: queuedBet.addTotalBet,
-              totalYesBetAdded: queuedBet.addYesBet,
-              txHash: null,
-              relayerReimbursedNanomina: '0',
-              status: 'failed',
-              error: `${reason} (cleared queued bet ${queuedBet.id})`
-            });
-          }
-        }
-        privateBetQueue.splice(0, privateBetQueue.length);
-        await savePrivateBetQueue(privateBetQueue);
-        privateBatchInFlight = false;
-        privateBatchLeaseStartedAtUnixMs = null;
-        await saveOperatorState(defaultStatePath, {
-          ...state,
-          positions: {},
-          receipts: {},
-          positionMeta: {},
-          receiptMeta: {}
-        });
-        await saveUserPositions(USER_POSITIONS_FILE, {});
-        writeJson(res, 200, {
-          ok: true,
-          clearedPositions,
-          clearedPositionMeta,
-          clearedQueuedBets
-        });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/operator/reset-fresh-zkapp-state') {
-        const body = await readJsonBody(req);
-        requireOperatorAuthorization(req, body as Record<string, unknown>);
-        const reason =
-          typeof body.reason === 'string' && body.reason.trim().length > 0
-            ? body.reason.trim()
-            : 'fresh zkApp rollout reset';
-        const resetAt = new Date().toISOString();
-        const archiveDir = path.join(
-          FRESH_ZKAPP_ARCHIVE_DIR,
-          resetAt.replace(/[:.]/g, '-')
-        );
-        await mkdir(archiveDir, { recursive: true });
-        const currentState = await loadOperatorState(defaultStatePath);
-        const currentDailyMarkets = await loadDemoDailyMarkets();
-        const currentUserPositions = await loadUserPositions(USER_POSITIONS_FILE);
-        const queuedBefore = privateBetQueue.length;
-        const historyBefore = privateBatchHistory.length;
-        const positionsBefore = Object.keys(currentState.positions || {}).length;
-        const marketsBefore = Object.keys(currentState.markets || {}).length;
-        const userPositionsBefore = Object.keys(currentUserPositions || {}).length;
-        const dailyMarketsBefore = Object.keys(currentDailyMarkets || {}).length;
-
-        const archived = await Promise.all([
-          archiveJsonFileForFreshZkappReset(defaultStatePath, archiveDir),
-          archiveJsonFileForFreshZkappReset(PRIVATE_BET_QUEUE_FILE, archiveDir),
-          archiveJsonFileForFreshZkappReset(PRIVATE_BATCH_HISTORY_FILE, archiveDir),
-          archiveJsonFileForFreshZkappReset(USER_POSITIONS_FILE, archiveDir),
-          archiveJsonFileForFreshZkappReset(DEMO_DAILY_MARKETS_FILE, archiveDir),
-          archiveJsonFileForFreshZkappReset(DAILY_SETTLE_STATE_FILE, archiveDir)
-        ]);
-
-        privateBetQueue.splice(0, privateBetQueue.length);
-        privateBatchHistory.splice(0, privateBatchHistory.length);
-        privateBatchInFlight = false;
-        privateBatchLeaseStartedAtUnixMs = null;
-        for (const key of Object.keys(pendingTxIntents)) {
-          delete pendingTxIntents[key];
-        }
-
-        await saveOperatorState(defaultStatePath, {
-          markets: {},
-          positions: {},
-          receipts: {},
-          usedNonces: {},
-          marketMeta: {},
-          positionMeta: {},
-          receiptMeta: {}
-        });
-        await savePrivateBetQueue(privateBetQueue);
-        await writeFile(PRIVATE_BATCH_HISTORY_FILE, JSON.stringify([], null, 2), 'utf8');
-        await saveUserPositions(USER_POSITIONS_FILE, {});
-        await saveDemoDailyMarkets(sanitizeDailyMarketsForFreshZkappReset(currentDailyMarkets));
-        await writeFile(DAILY_SETTLE_STATE_FILE, JSON.stringify(emptyDailySettleState(), null, 2), 'utf8');
-        await writeFile(
-          path.join(archiveDir, 'manifest.json'),
-          JSON.stringify(
-            {
-              ok: true,
-              reason,
-              resetAt,
-              archived,
-              summary: {
-                marketsBefore,
-                positionsBefore,
-                queuedBefore,
-                historyBefore,
-                userPositionsBefore,
-                dailyMarketsBefore
-              }
-            },
-            null,
-            2
-          ),
-          'utf8'
-        );
-
-        writeJson(res, 200, {
-          ok: true,
-          reason,
-          resetAt,
-          archiveDir,
-          archived,
-          summary: {
-            marketsBefore,
-            positionsBefore,
-            queuedBefore,
-            historyBefore,
-            userPositionsBefore,
-            dailyMarketsBefore
-          }
-        });
-        return;
-      }
-
-      // Hidden baseline: committee-based oracle consensus path (disabled by default).
-      if (req.method === 'POST' && url.pathname === '/api/internal/oracle-committee/commit') {
-        if (!committeeEnabled) throw new Error('oracle committee path disabled');
-        const body = await readJsonBody(req);
-        const roundId = requireString(body.roundId, 'roundId');
-        const marketDate = requireString(body.marketDate, 'marketDate');
-        const memberId = requireString(body.memberId, 'memberId');
-        const snapshotHash = requireString(body.snapshotHash, 'snapshotHash');
-        const attestationHash = requireString(body.attestationHash, 'attestationHash');
-
-        let state = await loadOracleCommitteeState();
-        state = submitCommitteeCommit(state, {
-          roundId,
-          marketDate,
-          memberId,
-          snapshotHash,
-          attestationHash,
-          nowUnixMs: Date.now()
-        });
-        const finalized = tryFinalizeCommitteeRound(state, roundId, Date.now());
-        await saveOracleCommitteeState(finalized.state);
-        writeJson(res, 200, {
-          ok: true,
-          finalized: finalized.finalized,
-          round: finalized.state.rounds[roundId] || null
-        });
-        return;
-      }
-
-      if (req.method === 'GET' && url.pathname === '/api/internal/oracle-committee/state') {
-        if (!committeeEnabled) throw new Error('oracle committee path disabled');
-        const state = await loadOracleCommitteeState();
-        writeJson(res, 200, { state });
-        return;
-      }
-
-      // Hidden baseline: governance emergency resolution path (disabled by default).
-      if (req.method === 'POST' && url.pathname === '/api/internal/governance/proposals') {
-        if (!governanceEnabled) throw new Error('governance path disabled');
-        const body = await readJsonBody(req);
-        const marketKey = requireString(body.marketKey, 'marketKey');
-        const actionType = requireString(body.actionType, 'actionType') as 'force-settlement' | 'pause-market' | 'resume-market';
-        const reason = requireString(body.reason, 'reason');
-        const proposer = requireString(body.proposer, 'proposer');
-
-        let state = await loadGovernanceState();
-        const created = createEmergencyProposal(state, {
-          marketKey,
-          actionType,
-          reason,
-          proposer,
-          nowUnixMs: Date.now()
-        });
-        state = created.state;
-        await saveGovernanceState(state);
-        writeJson(res, 200, { proposal: created.proposal });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname.match(/^\/api\/internal\/governance\/proposals\/[^/]+\/approve$/)) {
-        if (!governanceEnabled) throw new Error('governance path disabled');
-        const proposalId = url.pathname.split('/')[5];
-        const body = await readJsonBody(req);
-        const approver = requireString(body.approver, 'approver');
-        let state = await loadGovernanceState();
-        state = approveEmergencyProposal(state, proposalId, approver);
-        await saveGovernanceState(state);
-        writeJson(res, 200, { proposal: state.proposals[proposalId] || null });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname.match(/^\/api\/internal\/governance\/proposals\/[^/]+\/execute$/)) {
-        if (!governanceEnabled) throw new Error('governance path disabled');
-        const proposalId = url.pathname.split('/')[5];
-        let state = await loadGovernanceState();
-        const check = canExecuteEmergencyProposal(state, proposalId, Date.now());
-        if (!check.ok) throw new Error(`proposal not executable: ${check.reason}`);
-        state = markProposalExecuted(state, proposalId, Date.now());
-        await saveGovernanceState(state);
-        writeJson(res, 200, {
-          executed: true,
-          proposal: state.proposals[proposalId] || null
-        });
-        return;
-      }
-
-      if (req.method === 'GET' && url.pathname === '/api/internal/governance/state') {
-        if (!governanceEnabled) throw new Error('governance path disabled');
-        const state = await loadGovernanceState();
-        writeJson(res, 200, { state });
-        return;
-      }
-
-      // Hidden baseline: ACP-style credits escrow + relayer path (disabled by default).
-      if (req.method === 'POST' && url.pathname === '/api/internal/acp/credits/intent') {
-        if (!acpCreditEscrowEnabled) throw new Error('acp credit escrow path disabled');
-        const body = await readJsonBody(req);
-        const owner = requireString(body.owner, 'owner');
-        const amount = requireNumber(body.amount, 'amount');
-        const nonce = requireString(body.nonce, 'nonce');
-        let state = await loadAcpCreditEscrowState();
-        const created = acpCreateCreditsIntent(state, {
-          owner,
-          amount,
-          nonce,
-          nowUnixMs: Date.now()
-        });
-        state = created.state;
-        await saveAcpCreditEscrowState(state);
-        writeJson(res, 200, { intent: created.intent });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/internal/acp/credits/fund') {
-        if (!acpCreditEscrowEnabled) throw new Error('acp credit escrow path disabled');
-        const body = await readJsonBody(req);
-        const intentId = requireString(body.intentId, 'intentId');
-        let state = await loadAcpCreditEscrowState();
-        const funded = acpMarkIntentFunded(state, { intentId });
-        state = funded.state;
-        await saveAcpCreditEscrowState(state);
-        writeJson(res, 200, { intent: funded.intent, balance: state.balances[funded.intent.owner] || 0 });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/api/internal/acp/credits/spend-relay') {
-        if (!acpCreditEscrowEnabled) throw new Error('acp credit escrow path disabled');
-        const body = await readJsonBody(req);
-        const owner = requireString(body.owner, 'owner');
-        const spendAmount = requireNumber(body.spendAmount, 'spendAmount');
-        const agentId = requireString(body.agentId, 'agentId');
-        const prompt = requireString(body.prompt, 'prompt');
-        const intentId = typeof body.intentId === 'string' ? body.intentId : undefined;
-        let state = await loadAcpCreditEscrowState();
-        const created = acpCreateRelayJobFromCredits(state, {
-          owner,
-          spendAmount,
-          agentId,
-          prompt,
-          nowUnixMs: Date.now(),
-          intentId
-        });
-        state = created.state;
-        await saveAcpCreditEscrowState(state);
-        writeJson(res, 200, { job: created.job, balance: state.balances[owner] || 0 });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname.match(/^\/api\/internal\/acp\/relay\/jobs\/[^/]+\/run$/)) {
-        if (!acpCreditEscrowEnabled) throw new Error('acp credit escrow path disabled');
-        const jobId = url.pathname.split('/')[6];
-        const body = await readJsonBody(req);
-        const outputPlaintext = requireString(body.outputPlaintext, 'outputPlaintext');
-        let state = await loadAcpCreditEscrowState();
-        const ran = acpRelayRunJob(state, { jobId, outputPlaintext });
-        state = ran.state;
-        await saveAcpCreditEscrowState(state);
-        writeJson(res, 200, { job: ran.job });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname.match(/^\/api\/internal\/acp\/relay\/jobs\/[^/]+\/settle$/)) {
-        if (!acpCreditEscrowEnabled) throw new Error('acp credit escrow path disabled');
-        const jobId = url.pathname.split('/')[6];
-        const body = await readJsonBody(req);
-        const outputPlaintext = requireString(body.outputPlaintext, 'outputPlaintext');
-        let state = await loadAcpCreditEscrowState();
-        const settled = acpRevealAndSettleRelayJob(state, { jobId, outputPlaintext });
-        state = settled.state;
-        await saveAcpCreditEscrowState(state);
-        writeJson(res, 200, { job: settled.job });
-        return;
-      }
-
-      if (req.method === 'GET' && url.pathname === '/api/internal/acp/state') {
-        if (!acpCreditEscrowEnabled) throw new Error('acp credit escrow path disabled');
-        const state = await loadAcpCreditEscrowState();
-        writeJson(res, 200, { state });
         return;
       }
 
@@ -3063,12 +2377,24 @@ async function main(): Promise<void> {
         const userId = walletPublicKey;
         if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
 
-        const currentState = await loadOperatorState(defaultStatePath);
-        const selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
-        if (!selectedMarket) {
-          throw new Error(`market ${marketDate} is not active on-chain yet. Wait for oracle sync, then try again.`);
-        }
-        if (selectedThresholdF !== null && Number.isFinite(Number(selectedMarket.thresholdF))) {
+        const ensureLocalBettableMarket = async () => {
+          let currentState = await loadOperatorState(defaultStatePath);
+          let selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
+          let createdOnDemand = false;
+          if (!selectedMarket) {
+            await ensureDailyMarkets(projectRoot);
+            await refreshState(projectRoot);
+            currentState = await loadOperatorState(defaultStatePath);
+            selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
+            createdOnDemand = true;
+          }
+          if (!selectedMarket) {
+            throw new Error(`market ${marketDate} is not active on-chain yet. Local market creation was attempted, but the market is still unavailable.`);
+          }
+          return { currentState, selectedMarket, createdOnDemand };
+        };
+        const { selectedMarket, createdOnDemand } = await ensureLocalBettableMarket();
+        if (!createdOnDemand && selectedThresholdF !== null && Number.isFinite(Number(selectedMarket.thresholdF))) {
           const onChainThresholdF = Math.round(Number(selectedMarket.thresholdF));
           if (onChainThresholdF !== selectedThresholdF) {
             throw new Error(
@@ -3077,15 +2403,17 @@ async function main(): Promise<void> {
           }
         }
 
-        const built = await buildBrowserFeePayerMarketBetContext({
-          stateFile: defaultStatePath,
-          marketKey: String(selectedMarket.marketKey),
-          addTotalBet: Math.floor(addTotalBet),
-          addYesBet: Math.floor(addYesBet),
-          marketDate,
-          feePayerPublicKey: walletPublicKey,
-          userId
-        });
+        const built = await withFreshMarketStateRetry(projectRoot, async () =>
+          buildBrowserFeePayerMarketBetContext({
+            stateFile: defaultStatePath,
+            marketKey: String(selectedMarket.marketKey),
+            addTotalBet: Math.floor(addTotalBet),
+            addYesBet: Math.floor(addYesBet),
+            marketDate,
+            feePayerPublicKey: walletPublicKey,
+            userId
+          })
+        );
         const tx = await buildLocalServerReceiptBetTx(built.buildContext);
         writeJson(res, 200, {
           ok: true,
@@ -3161,19 +2489,34 @@ async function main(): Promise<void> {
             stakeTmina: intent.addTotalBet
           };
         } else if (intent.type === 'payout-claim') {
+          const claimRecordedAt = Date.now();
           state.positionMeta = state.positionMeta || {};
-          const existingMeta = state.positionMeta[intent.positionKey];
-          if (!existingMeta) throw new Error('position metadata missing for payout claim');
-          existingMeta.claimStatus = 'submitted';
-          existingMeta.claimTxHash = txHash;
-          existingMeta.claimSubmittedAtUnixMs = Date.now();
-          existingMeta.claimConfirmedAtUnixMs = null;
+          state.receiptMeta = state.receiptMeta || {};
+          const existingPositionMeta = state.positionMeta[intent.positionKey];
+          const existingReceiptMeta = state.receiptMeta[intent.positionKey];
+          if (existingPositionMeta) {
+            existingPositionMeta.claimStatus = 'submitted';
+            existingPositionMeta.claimTxHash = txHash;
+            existingPositionMeta.claimSubmittedAtUnixMs = claimRecordedAt;
+            existingPositionMeta.claimConfirmedAtUnixMs = null;
+          } else if (existingReceiptMeta) {
+            existingReceiptMeta.claimStatus = 'submitted';
+            existingReceiptMeta.claimTxHash = txHash;
+            existingReceiptMeta.claimSubmittedAtUnixMs = claimRecordedAt;
+            existingReceiptMeta.claimConfirmedAtUnixMs = null;
+          } else {
+            throw new Error('claim metadata missing for payout claim');
+          }
           try {
             setActiveZekoNetwork();
             const { graphql } = getNetworkConfig();
             const claimTxStatus = await fetchTransactionStatus(txHash, graphql);
             if (claimTxStatus === 'INCLUDED') {
-              markPositionClaimConfirmed(state, intent.positionKey, Date.now());
+              if (existingPositionMeta) {
+                markPositionClaimConfirmed(state, intent.positionKey, Date.now());
+              } else {
+                markReceiptClaimConfirmed(state, intent.positionKey, Date.now());
+              }
             }
           } catch {
             // Leave claim in submitted state until a later refresh confirms inclusion.
@@ -3211,8 +2554,99 @@ async function main(): Promise<void> {
           userNetPosition: intent.userNetPositionAfter,
           claimStatus:
             intent.type === 'payout-claim'
-              ? state.positionMeta?.[intent.positionKey]?.claimStatus || 'submitted'
+              ? state.positionMeta?.[intent.positionKey]?.claimStatus || state.receiptMeta?.[intent.positionKey]?.claimStatus || 'submitted'
               : undefined
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/payouts/resolved-markets') {
+        const walletPublicKey = requireString(url.searchParams.get('walletPublicKey'), 'walletPublicKey');
+        const positions = await listResolvedWalletPositions(walletPublicKey, defaultStatePath);
+        writeJson(res, 200, {
+          ok: true,
+          walletPublicKey,
+          count: positions.length,
+          positions,
+          note: 'Winning resolved receipt bets can be claimed locally after daily finalization. Losing resolved bets remain visible for history.'
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/wallet/activity') {
+        const walletPublicKey = requireString(url.searchParams.get('walletPublicKey'), 'walletPublicKey');
+        const state = await loadOperatorState(defaultStatePath);
+        const positions = Object.entries(state.positionMeta || {})
+          .filter(([, meta]) => meta?.walletPublicKey === walletPublicKey)
+          .map(([positionKey, meta]) => {
+            const storedPosition = state.positions[positionKey];
+            const storedMarket = state.markets[meta.marketKey];
+            const positionLeaf = storedPosition ? deserializePositionLeaf(storedPosition) : null;
+            const marketLeaf = storedMarket ? deserializeMarketLeaf(storedMarket) : null;
+            const side = positionLeaf?.sideOver.toBoolean() ? 'over' : 'under';
+            const resolved = marketLeaf?.resolved.toBoolean() || false;
+            const resolvedOutcome = resolved ? (marketLeaf?.outcome.toBoolean() ? 'over' : 'under') : null;
+            return {
+              type: 'position' as const,
+              positionKey,
+              marketKey: meta.marketKey,
+              marketDate: meta.marketDate,
+              side,
+              stakeTmina: positionLeaf ? Number(positionLeaf.stake.toString()) : null,
+              createdAtUnixMs: meta.createdAtUnixMs,
+              fundingTxHash: meta.fundingTxHash,
+              resolved,
+              resolvedOutcome,
+              won: resolved && resolvedOutcome !== null ? side === resolvedOutcome : null,
+              claimed: positionLeaf?.claimed.toBoolean() || false,
+              claimStatus: meta.claimStatus || null,
+              claimTxHash: meta.claimTxHash || null
+            };
+          })
+          .sort((a, b) => (b.createdAtUnixMs || 0) - (a.createdAtUnixMs || 0));
+        const receiptPositions = Object.entries(state.receiptMeta || {})
+          .filter(([, meta]) => meta?.walletPublicKey === walletPublicKey)
+          .map(([receiptKey, meta]) => {
+            const storedMarket = state.markets[meta.marketKey];
+            const marketLeaf = storedMarket ? deserializeMarketLeaf(storedMarket) : null;
+            const won =
+              marketLeaf?.resolved.toBoolean()
+                ? meta.side === (marketLeaf.outcome.toBoolean() ? 'over' : 'under')
+                : null;
+            const claimStatus =
+              marketLeaf?.resolved.toBoolean()
+                ? won
+                  ? meta.claimStatus || 'claimable'
+                  : 'not-applicable'
+                : 'receipt-pending-claims-phase';
+            return {
+              type: 'position' as const,
+              positionKey: receiptKey,
+              marketKey: meta.marketKey,
+              marketDate: meta.marketDate,
+              side: meta.side,
+              stakeTmina: meta.stakeTmina,
+              createdAtUnixMs: meta.createdAtUnixMs,
+              fundingTxHash: meta.fundingTxHash,
+              resolved: marketLeaf?.resolved.toBoolean() || false,
+              resolvedOutcome: marketLeaf?.resolved.toBoolean() ? (marketLeaf.outcome.toBoolean() ? 'over' : 'under') : null,
+              won,
+              claimed: meta.claimStatus === 'confirmed',
+              claimStatus,
+              claimTxHash: meta.claimTxHash || null
+            };
+          })
+          .sort((a, b) => (b.createdAtUnixMs || 0) - (a.createdAtUnixMs || 0));
+        const combinedPositions = [...receiptPositions, ...positions].sort(
+          (a, b) => (b.createdAtUnixMs || 0) - (a.createdAtUnixMs || 0)
+        );
+        writeJson(res, 200, {
+          ok: true,
+          walletPublicKey,
+          queuedCount: 0,
+          positionCount: combinedPositions.length,
+          queued: [],
+          positions: combinedPositions
         });
         return;
       }
@@ -3462,9 +2896,9 @@ async function main(): Promise<void> {
         return;
       }
 
-      if (req.method === 'POST' && url.pathname === '/api/operator/weather-sync') {
+      if (req.method === 'POST' && url.pathname === '/api/oracle/weather-sync') {
         const body = await readJsonBody(req);
-        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        requireOracleAuthorization(req, body as Record<string, unknown>);
         const { snapshot, tlsnStatus } = parseOracleWorkerSyncPayload(body);
         await saveWeatherSnapshot(snapshot as NonNullable<typeof snapshot>);
         await saveTlsnStatus(tlsnStatus ?? null);
@@ -3474,7 +2908,7 @@ async function main(): Promise<void> {
         contest = maybeAutoSettleContest(contest, snapshot, nowLocalHour(), Date.now());
         await saveContestState(contest, contestStateFileForDate(selectedDate));
         const autoSettledDates = await autoSettleDailyContestsFromSnapshot(snapshot);
-        dailySettleState = await recordDailySettleRun(dailySettleState, 'operator-weather-sync', autoSettledDates);
+        dailySettleState = await recordDailySettleRun(dailySettleState, 'oracle-sync', autoSettledDates);
         writeJson(res, 200, {
           ok: true,
           snapshotVerified: snapshot.verified,
@@ -3484,9 +2918,9 @@ async function main(): Promise<void> {
         return;
       }
 
-      if (req.method === 'POST' && url.pathname === '/api/operator/resolve-daily-market') {
+      if (req.method === 'POST' && url.pathname === '/api/oracle/resolve-daily-market') {
         const body = await readJsonBody(req);
-        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        requireOracleAuthorization(req, body as Record<string, unknown>);
         const marketDate = requireString(body.marketDate, 'marketDate');
         const output = await runProjectCommand(projectRoot, [
           'resolve-daily-market:zeko',
@@ -3507,9 +2941,9 @@ async function main(): Promise<void> {
         return;
       }
 
-      if (req.method === 'POST' && url.pathname === '/api/operator/ensure-daily-markets') {
+      if (req.method === 'POST' && url.pathname === '/api/oracle/ensure-daily-markets') {
         const body = await readJsonBody(req);
-        requireOperatorAuthorization(req, body as Record<string, unknown>);
+        requireOracleAuthorization(req, body as Record<string, unknown>);
         const output = await runProjectCommand(projectRoot, [
           'ensure-daily-markets:zeko',
           '--',
@@ -3586,10 +3020,7 @@ async function main(): Promise<void> {
         const snapshot = await loadDisplayWeatherSnapshot();
         const tlsnStatus = normalizeTlsnStatus(snapshot, await loadTlsnStatus());
         const oracle = getOracleFreshness(snapshot, Date.now());
-        const baseDailyMarkets =
-          snapshot || Object.keys(await loadDemoDailyMarkets()).length > 0
-            ? await readProjectedDemoDailyMarketsFromSnapshot(snapshot)
-            : deriveDailyMarketsFromOnChainState(state);
+        const baseDailyMarkets = await readDisplayDailyMarkets(state, snapshot);
         const dailyMarkets = attachOnChainDailyMarketState(
           await withDailySettlementInfo(withCurrentForecast(baseDailyMarkets, snapshot)),
           state
@@ -3623,10 +3054,7 @@ async function main(): Promise<void> {
       if (req.method === 'GET' && url.pathname === '/api/demo/daily-markets') {
         const snapshot = await loadWeatherSnapshot();
         const state = await loadOperatorState(defaultStatePath);
-        const baseDailyMarkets =
-          snapshot || Object.keys(await loadDemoDailyMarkets()).length > 0
-            ? await readProjectedDemoDailyMarketsFromSnapshot(snapshot)
-            : deriveDailyMarketsFromOnChainState(state);
+        const baseDailyMarkets = await readDisplayDailyMarkets(state, snapshot);
         const dailyMarkets = attachOnChainDailyMarketState(
           await withDailySettlementInfo(withCurrentForecast(baseDailyMarkets, snapshot)),
           state
@@ -3717,42 +3145,8 @@ async function main(): Promise<void> {
     const net = getNetworkConfig();
     console.log(`Unified marketplace listening on http://${host}:${port}/marketplace`);
     console.log(`[network] graphql=${net.graphql} networkId=${net.networkId} txFee=${net.txFee}`);
-    console.log(`[private-batch] restored queueDepth=${privateBetQueue.length} history=${privateBatchHistory.length}`);
-    try {
-      const relayer = getRelayerPrivateKey();
-      const deployerRaw = process.env.DEPLOYER_PRIVATE_KEY;
-      const relayerRaw = process.env.RELAYER_PRIVATE_KEY;
-      const source = deployerRaw ? 'DEPLOYER_PRIVATE_KEY' : relayerRaw ? 'RELAYER_PRIVATE_KEY' : 'missing';
-      console.log(
-        `[private-batch] signer_source=${source} signer_pub=${relayer ? relayer.toPublicKey().toBase58() : 'missing'}`
-      );
-    } catch (error) {
-      console.warn('[private-batch] signer inspection failed:', error instanceof Error ? error.message : String(error));
-    }
-    if (getPrivacyMode() === 'zk_strong') {
-      const intervalMs = getPrivateBatchIntervalMs();
-      if (intervalMs > 0) {
-        console.log(`[private-batch] enabled interval processor every ${intervalMs}ms`);
-        setInterval(async () => {
-          if (privateBetQueue.length === 0 || privateBatchInFlight) return;
-          try {
-            const result = await processPrivateBetBatch({
-              stateFile: defaultStatePath,
-              maxItems: Number.parseInt(process.env.PRIVATE_BATCH_MAX_ITEMS || '64', 10)
-            });
-            if (result.processed > 0) {
-              console.log(
-                `[private-batch] processed=${result.processed} market=${result.marketKey} date=${result.marketDate || 'n/a'} total+=${result.totalPositionBetAdded} yes+=${result.totalYesBetAdded} txHash=${result.txHash || 'n/a'}`
-              );
-            }
-          } catch (error) {
-            console.warn('[private-batch] cycle failed:', error instanceof Error ? error.message : String(error));
-          }
-        }, intervalMs);
-      } else {
-        console.log('[private-batch] interval disabled (PRIVATE_BATCH_INTERVAL_MS <= 0)');
-      }
-    }
+    privateBetQueue.splice(0, privateBetQueue.length);
+    console.log('[fast-path] private queue disabled in this build');
 
     const autoSettleIntervalMs = getHostedSafeIntervalMs('DAILY_AUTO_SETTLE_INTERVAL_MS', 60000);
     if (autoSettleIntervalMs > 0) {

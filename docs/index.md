@@ -3,6 +3,7 @@
 ## Live Demo
 
 - [Blog: Private Market on Zeko](/Users/evankereiakes/Documents/Codex/private-prediction-market/docs/blog-zeko-private-market.md)
+- [Build Recommendations](/Users/evankereiakes/Documents/Codex/private-prediction-market/docs/build-recommendations.md)
 - [Protocol vs Demo](/Users/evankereiakes/Documents/Codex/private-prediction-market/docs/protocol-vs-demo.md)
 - [Developer Setup](/Users/evankereiakes/Documents/Codex/private-prediction-market/docs/developer-setup.md)
 - [Operator Runbook](/Users/evankereiakes/Documents/Codex/private-prediction-market/docs/operator-runbook.md)
@@ -15,9 +16,10 @@
 ## Reading Order
 
 1. protocol vs demo
-2. operator runbook
-3. zkTLS hardening notes
-4. payout upgrade
+2. build recommendations
+3. operator runbook
+4. zkTLS hardening notes
+5. payout upgrade
 
 ## Skills
 

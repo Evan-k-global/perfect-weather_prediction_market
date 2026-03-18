@@ -61,12 +61,12 @@ async function readTlsnStatus(filePath: string): Promise<{ stage: string; ok: bo
   }
 }
 
-async function req(baseUrl: string, operatorToken: string, endpoint: string, body: Record<string, unknown>): Promise<any> {
+async function req(baseUrl: string, oracleToken: string, endpoint: string, body: Record<string, unknown>): Promise<any> {
   const res = await fetch(`${baseUrl}${endpoint}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-operator-token': operatorToken
+      'x-oracle-token': oracleToken
     },
     body: JSON.stringify(body)
   });
@@ -115,9 +115,9 @@ function changedKeys<T>(before: Record<string, T> | undefined, after: Record<str
   return result;
 }
 
-async function maybeRunChainActions(baseUrl: string, operatorToken: string): Promise<void> {
+async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promise<void> {
   if (!envEnabled('ORACLE_WORKER_ENABLE_CHAIN_ACTIONS', true)) return;
-  const exportPayload = await req(baseUrl, operatorToken, '/api/operator/export-state', {
+  const exportPayload = await req(baseUrl, oracleToken, '/api/oracle/export-state', {
     method: 'POST',
     body: JSON.stringify({})
   });
@@ -181,7 +181,7 @@ async function maybeRunChainActions(baseUrl: string, operatorToken: string): Pro
   ) {
     return;
   }
-  const imported = await req(baseUrl, operatorToken, '/api/operator/import-state', {
+  const imported = await req(baseUrl, oracleToken, '/api/oracle/import-state', {
     method: 'POST',
     body: JSON.stringify({
       markets,
@@ -195,7 +195,7 @@ async function maybeRunChainActions(baseUrl: string, operatorToken: string): Pro
   );
 }
 
-async function runCycle(baseUrl: string, operatorToken: string): Promise<void> {
+async function runCycle(baseUrl: string, oracleToken: string): Promise<void> {
   try {
     await runWeatherAttestation();
     const attestationPath = process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json';
@@ -217,7 +217,7 @@ async function runCycle(baseUrl: string, operatorToken: string): Promise<void> {
       ts: new Date(snapshot.fetchedAtUnixMs).toISOString(),
       message: 'oracle worker verified snapshot'
     };
-    const result = await req(baseUrl, operatorToken, '/api/operator/weather-sync', {
+    const result = await req(baseUrl, oracleToken, '/api/oracle/weather-sync', {
       snapshot,
       tlsnStatus
     });
@@ -227,12 +227,14 @@ async function runCycle(baseUrl: string, operatorToken: string): Promise<void> {
   } catch (error) {
     console.error('[oracle-worker] weather sync failed, continuing with chain actions:', error);
   }
-  await maybeRunChainActions(baseUrl, operatorToken);
+  await maybeRunChainActions(baseUrl, oracleToken);
 }
 
 async function main(): Promise<void> {
-  const baseUrl = requireEnv('OPERATOR_BASE_URL').replace(/\/+$/, '');
-  const operatorToken = requireEnv('OPERATOR_ACTION_TOKEN');
+  const baseUrl = (process.env.MARKET_BASE_URL || process.env.OPERATOR_BASE_URL || '').replace(/\/+$/, '');
+  if (!baseUrl) throw new Error('Missing env MARKET_BASE_URL');
+  const oracleToken = process.env.ORACLE_ACTION_TOKEN || process.env.OPERATOR_ACTION_TOKEN;
+  if (!oracleToken) throw new Error('Missing env ORACLE_ACTION_TOKEN');
   const intervalMs = envInt('ORACLE_WORKER_INTERVAL_MS', 5 * 60 * 1000);
   const retryMs = envInt('ORACLE_WORKER_RETRY_MS', 60 * 1000);
   const startDelayMs = envInt('ORACLE_WORKER_START_DELAY_MS', 5000);
@@ -240,7 +242,7 @@ async function main(): Promise<void> {
   process.env.WEATHER_TLSN_ATTESTATION_FILE =
     process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json';
 
-  console.log(`[oracle-worker] base_url=${baseUrl}`);
+  console.log(`[oracle-worker] market_base_url=${baseUrl}`);
   console.log(`[oracle-worker] interval_ms=${intervalMs} retry_ms=${retryMs} start_delay_ms=${startDelayMs}`);
   console.log(`[oracle-worker] chain_actions=${envEnabled('ORACLE_WORKER_ENABLE_CHAIN_ACTIONS', true) ? 'enabled' : 'disabled'}`);
   if (startDelayMs > 0) {
@@ -254,7 +256,7 @@ async function main(): Promise<void> {
     const started = Date.now();
     console.log(`[oracle-worker] cycle=${cycle} start=${new Date().toISOString()}`);
     try {
-      await runCycle(baseUrl, operatorToken);
+      await runCycle(baseUrl, oracleToken);
       console.log(`[oracle-worker] cycle=${cycle} done=${new Date().toISOString()}`);
       const elapsed = Date.now() - started;
       await sleep(Math.max(1000, intervalMs - elapsed));

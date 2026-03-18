@@ -126,6 +126,79 @@ This matters because prediction markets are not just contract design. They are o
 
 The repo now includes that operational layer, not just the headline features.
 
+## What we learned by actually trying to host it
+
+This project got much better once we stopped treating architecture as a whiteboard exercise and started treating it as a deployment problem.
+
+We tried several versions of the system:
+
+- local-first flows that felt fast on a strong machine
+- hosted market-service proving
+- operator-queue settlement as the main private path
+- more workers and bigger hosted machines
+- browser/client proving
+- a trimmed fast contract
+
+That trial and error clarified a few things.
+
+### Hosted proving is not the same as local proving
+
+A flow that feels fine on a developer laptop can fail badly on a hosted web service.
+
+When heavy proving lived on the market service, we saw:
+
+- long request times
+- 502s
+- startup readiness problems
+- workers and web traffic interfering with each other
+
+The lesson was not “Render is bad.” The lesson was that the market web service should not be the place where user traffic and heavy proof generation compete for the same budget.
+
+### More workers are not automatically better
+
+We added operator and separate proving paths to isolate failures. That helped us debug, but it also made the system more complicated.
+
+Eventually the pattern became clear:
+
+- workers are good for true background duties
+- workers are not a substitute for simplifying the hot path
+
+The oracle worker makes sense because market creation and resolution are background tasks. The operator queue made much less sense once it became the default route for normal user betting.
+
+### Privacy and speed are not enemies, but they do have to be scoped honestly
+
+One of the most useful product clarifications was this:
+
+- it is okay for aggregate pool movement to be public
+- what we really want to protect is live user intent attribution
+
+That changed the design target.
+
+The early queue path did provide some privacy benefits, but it was slow and operationally awkward. Once we reframed the goal as “public market, more private user intent,” the architecture got simpler and more honest.
+
+### Recovery tooling matters as much as core protocol logic
+
+One painful lesson was that local state trees can become a trap if they are essential but not reconstructible from chain events.
+
+That forced us to add:
+
+- fresh zkApp rollout tooling
+- hosted state reset flows
+- cleaner contract cutover discipline
+
+In practice, a market stack is not only about proving and settlement. It is also about what happens when a deployment goes wrong at 2 AM.
+
+### The cleanest path ended up being closer to the product roots
+
+After trying more elaborate hosted/operator architectures, we came back to a simpler center of gravity:
+
+- market service for UI and lightweight state handling
+- oracle worker for market upkeep and resolution
+- browser/client proving for active bets
+- queue/operator only as optional fallback or research surface
+
+That return to a simpler architecture was not a retreat. It was progress. It reflected what the product actually needed instead of what sounded abstractly powerful.
+
 ## Why this is a strong foundation
 
 The most exciting part of this project is not that it solves every possible privacy or payout problem today. It is that the architecture is honest, extensible, and already useful.
