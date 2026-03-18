@@ -138,6 +138,32 @@ type PendingTxIntent = {
   createdAtUnixMs: number;
 };
 
+type SerializedMerkleWitness = {
+  isLefts: boolean[];
+  siblings: string[];
+};
+
+type BrowserMarketBetContext = {
+  network: {
+    graphql: string;
+    networkId: string;
+  };
+  zkappPublicKey: string;
+  walletPublicKey: string;
+  marketKey: string;
+  marketDate: string | null;
+  addTotalBet: number;
+  addYesBet: number;
+  receiptKey: string;
+  receiptCommitment: string;
+  ownerCommitment: string;
+  fee: string;
+  oldLeaf: StoredMarketLeaf;
+  newLeaf: StoredMarketLeaf;
+  marketWitness: SerializedMerkleWitness;
+  receiptWitness: SerializedMerkleWitness;
+};
+
 type DemoDailyMarket = {
   marketDate: string;
   marketKey: string;
@@ -383,7 +409,9 @@ function contentTypeForFile(filePath: string): string {
   if (ext === '.html') return 'text/html; charset=utf-8';
   if (ext === '.css') return 'text/css; charset=utf-8';
   if (ext === '.js') return 'application/javascript; charset=utf-8';
+  if (ext === '.mjs') return 'application/javascript; charset=utf-8';
   if (ext === '.json') return 'application/json; charset=utf-8';
+  if (ext === '.wasm') return 'application/wasm';
   if (ext === '.mp4') return 'video/mp4';
   if (ext === '.png') return 'image/png';
   if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
@@ -1413,6 +1441,135 @@ async function withFreshMarketStateRetry<T>(projectRoot: string, work: () => Pro
   }
 }
 
+function serializeMerkleWitness(witness: { isLefts: Bool[]; siblings: Field[] }): SerializedMerkleWitness {
+  return {
+    isLefts: witness.isLefts.map((value) => value.toBoolean()),
+    siblings: witness.siblings.map((value) => value.toString())
+  };
+}
+
+async function buildBrowserFeePayerMarketBetContext(params: {
+  stateFile: string;
+  marketKey: string;
+  addTotalBet: number;
+  addYesBet: number;
+  marketDate: string | null;
+  feePayerPublicKey: string;
+  userId: string;
+}): Promise<{
+  intent: PendingTxIntent;
+  fee: string;
+  marketSummary: { totalPositionBet: string; totalYesPositionBet: string };
+  buildContext: BrowserMarketBetContext;
+}> {
+  const { stateFile, marketKey, addTotalBet, addYesBet, marketDate, feePayerPublicKey, userId } = params;
+  if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
+
+  setActiveZekoNetwork();
+  const { graphql, networkId, txFee } = getNetworkConfig();
+  const zkappAddress = getZkappPublicKey();
+  const state = await loadOperatorState(stateFile);
+  await assertLocalMarketsRootMatchesChain(zkappAddress, state);
+  await assertLocalReceiptsRootMatchesChain(zkappAddress, state);
+  const existing = state.markets[marketKey];
+  if (!existing) throw new Error(`market ${marketKey} missing in ${stateFile}`);
+  const oldLeaf = deserializeMarketLeaf(existing);
+  if (oldLeaf.resolved.toBoolean()) throw new Error('cannot trade a resolved market');
+  if (!(addYesBet === 0 || addYesBet === addTotalBet)) {
+    throw new Error('binary over/under stake requires addYesBet to be 0 or equal addTotalBet');
+  }
+
+  const newLeaf = new MarketLeaf({
+    configHash: oldLeaf.configHash,
+    closeSlot: oldLeaf.closeSlot,
+    expirySlot: oldLeaf.expirySlot,
+    thresholdValueTenthC: oldLeaf.thresholdValueTenthC,
+    totalPositionBet: oldLeaf.totalPositionBet.add(UInt64.from(addTotalBet)),
+    totalYesPositionBet: oldLeaf.totalYesPositionBet.add(UInt64.from(addYesBet)),
+    resolved: Bool(false),
+    outcome: Bool(false),
+    oracleStatementHash: Field(0)
+  });
+  newLeaf.totalYesPositionBet.lessThanOrEqual(newLeaf.totalPositionBet).assertTrue();
+
+  const marketFieldKey = Field(marketKey);
+  const marketsMap = buildMarketsMerkleMap(state);
+  const receiptsMap = buildReceiptsMerkleMap(state);
+  const intentId = randomUUID();
+  const receiptSalt = randomUUID();
+  const positionKey = fieldFromHexDigest(
+    sha256Hex(`${feePayerPublicKey}:${marketKey}:${marketDate || ''}:${intentId}:${Date.now()}`)
+  );
+  if ((state.receipts || {})[positionKey.toString()]) {
+    throw new Error('receipt key collision; retry transaction build');
+  }
+  const ownerCommitment = ownerCommitmentFromWalletPublicKey(feePayerPublicKey);
+  const receiptCommitment = receiptCommitmentFromBet({
+    marketKey,
+    addTotalBet,
+    addYesBet,
+    ownerCommitment,
+    salt: receiptSalt
+  });
+  const positionLeaf = new PositionLeaf({
+    marketKey: marketFieldKey,
+    sideOver: Bool(addYesBet === addTotalBet),
+    stake: UInt64.from(addTotalBet),
+    ownerCommitment,
+    claimed: Bool(false)
+  });
+
+  const positions = await loadUserPositions(USER_POSITIONS_FILE);
+  positions[userId] = positions[userId] || {};
+  const prior = positions[userId][marketKey] || 0;
+  const next = prior + positionDelta(addTotalBet, addYesBet);
+
+  const intent: PendingTxIntent = {
+    id: intentId,
+    type: 'market-bet',
+    marketKey,
+    marketDate,
+    walletPublicKey: feePayerPublicKey,
+    positionKey: positionKey.toString(),
+    addTotalBet,
+    addYesBet,
+    userId,
+    newLeaf: serializeMarketLeaf(newLeaf),
+    newPositionLeaf: serializePositionLeaf(positionLeaf),
+    receiptCommitment: receiptCommitment.toString(),
+    receiptSalt,
+    userNetPositionAfter: next,
+    createdAtUnixMs: Date.now()
+  };
+  pendingTxIntents[intent.id] = intent;
+
+  return {
+    intent,
+    fee: txFee,
+    marketSummary: {
+      totalPositionBet: newLeaf.totalPositionBet.toString(),
+      totalYesPositionBet: newLeaf.totalYesPositionBet.toString()
+    },
+    buildContext: {
+      network: { graphql, networkId },
+      zkappPublicKey: zkappAddress.toBase58(),
+      walletPublicKey: feePayerPublicKey,
+      marketKey,
+      marketDate,
+      addTotalBet,
+      addYesBet,
+      receiptKey: positionKey.toString(),
+      receiptCommitment: receiptCommitment.toString(),
+      ownerCommitment: ownerCommitment.toString(),
+      fee: txFee,
+      oldLeaf: serializeMarketLeaf(oldLeaf),
+      newLeaf: serializeMarketLeaf(newLeaf),
+      marketWitness: serializeMerkleWitness(marketsMap.getWitness(marketFieldKey)),
+      receiptWitness: serializeMerkleWitness(receiptsMap.getWitness(positionKey))
+    }
+  };
+}
+
 async function forwardToTxProver(pathname: string, body: Record<string, unknown>): Promise<any> {
   const baseUrl = (process.env.TX_PROVER_BASE_URL || '').trim().replace(/\/+$/, '');
   if (!baseUrl) return null;
@@ -1945,6 +2102,9 @@ async function main(): Promise<void> {
   const projectRoot = path.resolve(__dirname, '..');
   const pagePath = path.resolve(projectRoot, 'public', 'marketplace.html');
   const publicRoot = path.resolve(projectRoot, 'public');
+  const distRoot = path.resolve(projectRoot, 'dist');
+  const o1jsWebRoot = path.resolve(projectRoot, 'node_modules', 'o1js', 'dist', 'web');
+  const reflectRoot = path.resolve(projectRoot, 'node_modules', 'reflect-metadata');
   const port = Number.parseInt(
     process.env.MARKETPLACE_PORT || process.env.PORT || '8790',
     10
@@ -1978,66 +2138,82 @@ async function main(): Promise<void> {
         return;
       }
 
-      if ((req.method === 'GET' || req.method === 'HEAD') && (url.pathname.startsWith('/assets/') || url.pathname.startsWith('/public/'))) {
-        const rawPath = url.pathname.startsWith('/public/')
-          ? url.pathname.slice('/public/'.length)
-          : url.pathname.slice(1);
-        const normalized = path.normalize(rawPath).replace(/^(\.\.(\/|\\|$))+/, '');
-        const target = path.resolve(publicRoot, normalized);
-        if (!target.startsWith(publicRoot)) {
-          writeJson(res, 400, { error: 'invalid asset path' });
-          return;
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        let staticRoot: string | null = null;
+        let rawPath: string | null = null;
+        if (url.pathname.startsWith('/assets/') || url.pathname.startsWith('/public/')) {
+          staticRoot = publicRoot;
+          rawPath = url.pathname.startsWith('/public/')
+            ? url.pathname.slice('/public/'.length)
+            : url.pathname.slice(1);
+        } else if (url.pathname.startsWith('/dist/')) {
+          staticRoot = distRoot;
+          rawPath = url.pathname.slice('/dist/'.length);
+        } else if (url.pathname.startsWith('/vendor/o1js/')) {
+          staticRoot = o1jsWebRoot;
+          rawPath = url.pathname.slice('/vendor/o1js/'.length);
+        } else if (url.pathname.startsWith('/vendor/reflect-metadata/')) {
+          staticRoot = reflectRoot;
+          rawPath = url.pathname.slice('/vendor/reflect-metadata/'.length);
         }
-        const ctype = contentTypeForFile(target);
-        let fileStat;
-        try {
-          fileStat = await stat(target);
-        } catch {
-          writeJson(res, 404, { error: 'asset not found' });
-          return;
-        }
-        const fileSize = fileStat.size;
-        const range = req.headers.range;
-
-        res.setHeader('Content-Type', ctype);
-        res.setHeader('Cache-Control', 'public, max-age=300');
-        res.setHeader('Accept-Ranges', 'bytes');
-
-        if (range && ctype === 'video/mp4') {
-          const match = /bytes=(\d*)-(\d*)/.exec(range);
-          if (match) {
-            const start = match[1] ? Number.parseInt(match[1], 10) : 0;
-            const end = match[2] ? Number.parseInt(match[2], 10) : fileSize - 1;
-            const safeStart = Math.max(0, Math.min(start, fileSize - 1));
-            const safeEnd = Math.max(safeStart, Math.min(end, fileSize - 1));
-            const chunkSize = safeEnd - safeStart + 1;
-            if (safeStart >= fileSize || safeEnd >= fileSize) {
-              res.statusCode = 416;
-              res.setHeader('Content-Range', `bytes */${fileSize}`);
-              res.end();
-              return;
-            }
-
-            res.statusCode = 206;
-            res.setHeader('Content-Range', `bytes ${safeStart}-${safeEnd}/${fileSize}`);
-            res.setHeader('Content-Length', String(chunkSize));
-            if (req.method === 'HEAD') {
-              res.end();
-              return;
-            }
-            createReadStream(target, { start: safeStart, end: safeEnd }).pipe(res);
+        if (staticRoot && rawPath !== null) {
+          const normalized = path.normalize(rawPath).replace(/^(\.\.(\/|\\|$))+/, '');
+          const target = path.resolve(staticRoot, normalized);
+          if (!target.startsWith(staticRoot)) {
+            writeJson(res, 400, { error: 'invalid asset path' });
             return;
           }
-        }
+          const ctype = contentTypeForFile(target);
+          let fileStat;
+          try {
+            fileStat = await stat(target);
+          } catch {
+            writeJson(res, 404, { error: 'asset not found' });
+            return;
+          }
+          const fileSize = fileStat.size;
+          const range = req.headers.range;
 
-        res.statusCode = 200;
-        res.setHeader('Content-Length', String(fileSize));
-        if (req.method === 'HEAD') {
-          res.end();
+          res.setHeader('Content-Type', ctype);
+          res.setHeader('Cache-Control', 'public, max-age=300');
+          res.setHeader('Accept-Ranges', 'bytes');
+
+          if (range && ctype === 'video/mp4') {
+            const match = /bytes=(\d*)-(\d*)/.exec(range);
+            if (match) {
+              const start = match[1] ? Number.parseInt(match[1], 10) : 0;
+              const end = match[2] ? Number.parseInt(match[2], 10) : fileSize - 1;
+              const safeStart = Math.max(0, Math.min(start, fileSize - 1));
+              const safeEnd = Math.max(safeStart, Math.min(end, fileSize - 1));
+              const chunkSize = safeEnd - safeStart + 1;
+              if (safeStart >= fileSize || safeEnd >= fileSize) {
+                res.statusCode = 416;
+                res.setHeader('Content-Range', `bytes */${fileSize}`);
+                res.end();
+                return;
+              }
+
+              res.statusCode = 206;
+              res.setHeader('Content-Range', `bytes ${safeStart}-${safeEnd}/${fileSize}`);
+              res.setHeader('Content-Length', String(chunkSize));
+              if (req.method === 'HEAD') {
+                res.end();
+                return;
+              }
+              createReadStream(target, { start: safeStart, end: safeEnd }).pipe(res);
+              return;
+            }
+          }
+
+          res.statusCode = 200;
+          res.setHeader('Content-Length', String(fileSize));
+          if (req.method === 'HEAD') {
+            res.end();
+            return;
+          }
+          createReadStream(target).pipe(res);
           return;
         }
-        createReadStream(target).pipe(res);
-        return;
       }
 
       if (req.method === 'GET' && url.pathname === '/api/health') {
@@ -2913,6 +3089,87 @@ async function main(): Promise<void> {
         const snapshot = await loadDisplayWeatherSnapshot();
         const oracle = getOracleFreshness(snapshot, Date.now());
         writeJson(res, 200, { count: markets.length, markets, oracle, oraclePolicy: getOraclePolicy() });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/tx/market-bet-context') {
+        const body = await readJsonBody(req);
+        const marketKey = requireString(body.marketKey, 'marketKey');
+        const addTotalBet = requireNumber(body.addTotalBet, 'addTotalBet');
+        const addYesBet = requireNonNegativeNumber(body.addYesBet, 'addYesBet');
+        const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
+        const marketDate = requireString(body.marketDate, 'marketDate');
+        const selectedThresholdF =
+          typeof body.thresholdF === 'number' && Number.isFinite(body.thresholdF) ? Math.round(body.thresholdF) : null;
+        const userId = walletPublicKey;
+        if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
+        {
+          const todayIso = currentLocalDate();
+          if (marketDate < todayIso) {
+            throw new Error(`market date ${marketDate} is closed (past date). Today is ${todayIso}`);
+          }
+          const maxDate = isoDateOffset(todayIso, 5);
+          if (marketDate > maxDate) {
+            throw new Error(`market date ${marketDate} is outside rolling window (${todayIso} to ${maxDate})`);
+          }
+        }
+
+        const built = await withFreshMarketStateRetry(projectRoot, async () => {
+          const currentState = await loadOperatorState(defaultStatePath);
+          const selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
+          if (!selectedMarket) {
+            await refreshState(projectRoot);
+            const refreshedState = await loadOperatorState(defaultStatePath);
+            const refreshedMarket = findSelectedOnChainMarket(refreshedState, marketKey, marketDate);
+            if (!refreshedMarket) {
+              throw new Error(
+                `market ${marketDate} is not active on-chain yet. Betting opens after the automatic daily market creation cycle reaches this date.`
+              );
+            }
+            if (selectedThresholdF !== null && Number.isFinite(Number(refreshedMarket.thresholdF))) {
+              const onChainThresholdF = Math.round(Number(refreshedMarket.thresholdF));
+              if (onChainThresholdF !== selectedThresholdF) {
+                throw new Error(
+                  `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
+                );
+              }
+            }
+            return await buildBrowserFeePayerMarketBetContext({
+              stateFile: defaultStatePath,
+              marketKey: String(refreshedMarket.marketKey),
+              addTotalBet: Math.floor(addTotalBet),
+              addYesBet: Math.floor(addYesBet),
+              marketDate,
+              feePayerPublicKey: walletPublicKey,
+              userId
+            });
+          }
+          if (selectedThresholdF !== null && Number.isFinite(Number(selectedMarket.thresholdF))) {
+            const onChainThresholdF = Math.round(Number(selectedMarket.thresholdF));
+            if (onChainThresholdF !== selectedThresholdF) {
+              throw new Error(
+                `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
+              );
+            }
+          }
+          return await buildBrowserFeePayerMarketBetContext({
+            stateFile: defaultStatePath,
+            marketKey: String(selectedMarket.marketKey),
+            addTotalBet: Math.floor(addTotalBet),
+            addYesBet: Math.floor(addYesBet),
+            marketDate,
+            feePayerPublicKey: walletPublicKey,
+            userId
+          });
+        });
+        writeJson(res, 200, {
+          ok: true,
+          mode: 'wallet-fee-payer-browser',
+          intentId: built.intent.id,
+          fee: built.fee,
+          buildContext: built.buildContext,
+          marketSummary: built.marketSummary
+        });
         return;
       }
 

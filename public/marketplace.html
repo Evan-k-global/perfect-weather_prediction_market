@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Perfect Weather Prediction Market</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "o1js": "/vendor/o1js/index.js",
+          "reflect-metadata": "/vendor/reflect-metadata/Reflect.js"
+        }
+      }
+    </script>
     <style>
       :root {
         --ink: #123a5c;
@@ -381,6 +389,45 @@
       let zkappConfigError = null;
       let manualWeatherRefreshEnabled = true;
       let latestOracleRows = [];
+      let clientBettingModulePromise = null;
+
+      function supportsClientBetting() {
+        return Boolean(window.mina && window.crypto && typeof window.crypto.randomUUID === "function");
+      }
+
+      async function getClientBettingModule() {
+        if (!clientBettingModulePromise) {
+          clientBettingModulePromise = import("/public/browser/client-bet-entry.js");
+        }
+        return clientBettingModulePromise;
+      }
+
+      function prewarmClientBetting() {
+        if (!supportsClientBetting()) return;
+        const start = async () => {
+          try {
+            const mod = await getClientBettingModule();
+            const health = await req("/api/health");
+            const zkappPublicKey = typeof health.zkappPublicKey === "string" ? health.zkappPublicKey : null;
+            if (!zkappPublicKey) return;
+            await mod.warmupReceiptBetClient({
+              graphql: "https://testnet.zeko.io",
+              networkId: "testnet"
+            });
+          } catch (error) {
+            console.warn("client bet warmup failed", error);
+          }
+        };
+        if ("requestIdleCallback" in window) {
+          window.requestIdleCallback(() => {
+            start().catch((error) => console.warn("client bet idle warmup failed", error));
+          });
+        } else {
+          setTimeout(() => {
+            start().catch((error) => console.warn("client bet timeout warmup failed", error));
+          }, 250);
+        }
+      }
 
       async function req(path, opts = {}) {
         const res = await fetch(base + path, { cache: "no-store", ...opts });
@@ -1132,8 +1179,8 @@
             return;
           }
 
-          setBetProgress("Generating direct tx proof", true);
-          const txBuild = await req("/api/tx/market-bet", {
+          setBetProgress("Preparing client-side proof", true);
+          const txContext = await req("/api/tx/market-bet-context", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
@@ -1145,13 +1192,16 @@
               thresholdF: currentThresholdF
             })
           });
+          const clientBetting = await getClientBettingModule();
+          setBetProgress("Generating browser proof", true);
+          const txPayload = await clientBetting.buildReceiptBetTx(txContext.buildContext);
           setBetProgress("Waiting for wallet signature...", true);
-          const txHash = await sendOnchainTx(txBuild.tx, txBuild.fee);
+          const txHash = await sendOnchainTx(txPayload, txContext.fee);
           setBetProgress("Finalizing market state...", true);
           const finalized = await req("/api/tx/finalize", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ intentId: txBuild.intentId, txHash })
+            body: JSON.stringify({ intentId: txContext.intentId, txHash })
           });
           out.textContent = toJson({ txHash, marketDate: currentMarketDate, thresholdF: currentThresholdF, finalized });
           setBetProgress("Refreshing odds...", true);
@@ -1251,6 +1301,7 @@
       refreshPageState().catch((e) => {
         console.warn("initial refresh failed", e);
       });
+      prewarmClientBetting();
       setInterval(() => {
         refreshPageState().catch((e) => {
           console.warn("interval refresh failed", e);
