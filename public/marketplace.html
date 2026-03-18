@@ -1059,8 +1059,8 @@
 
           setBetProgress(
             currentMarketOnChainCreated
-              ? "Preparing client-side proof"
-              : "Preparing bet...",
+              ? "Generating zkProof"
+              : "Creating market...",
             true
           );
           const txContext = await req("/api/tx/market-bet-context", {
@@ -1076,7 +1076,9 @@
             })
           });
           const clientBetting = await getClientBettingModule();
-          setBetProgress("Generating zkProof", true);
+          if (!currentMarketOnChainCreated) {
+            setBetProgress("Generating zkProof", true);
+          }
           const txPayload = await clientBetting.buildReceiptBetTx(txContext.buildContext);
           setBetProgress("Waiting for wallet signature...", true);
           const txHash = await sendOnchainTx(txPayload, txContext.fee);
