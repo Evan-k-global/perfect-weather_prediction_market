@@ -1051,6 +1051,7 @@ async function applySuccessfulPrivateBetBatch(params: {
     marketKey: queuedBet.marketKey,
     marketDate: queuedBet.marketDate,
     walletPublicKey: queuedBet.walletPublicKey,
+    ownerCommitment: queuedBet.ownerCommitment,
     createdAtUnixMs: queuedBet.createdAtUnixMs,
     fundingTxHash: queuedBet.fundingTxHash
   };
@@ -1421,13 +1422,16 @@ async function listResolvedWalletPositions(
   stateFile: string
 ): Promise<ResolvedWalletPosition[]> {
   const state = await reconcileSubmittedPayoutClaims(stateFile);
+  const ownerCommitment = ownerCommitmentFromWalletPublicKey(walletPublicKey).toString();
   const result: ResolvedWalletPosition[] = [];
-  for (const [positionKey, meta] of Object.entries(state.positionMeta || {})) {
-    if (!meta || meta.walletPublicKey !== walletPublicKey) continue;
-    const storedPosition = state.positions[positionKey];
-    if (!storedPosition) continue;
+  for (const [positionKey, storedPosition] of Object.entries(state.positions || {})) {
+    const meta = state.positionMeta?.[positionKey];
     const positionLeaf = deserializePositionLeaf(storedPosition);
-    const storedMarket = state.markets[meta.marketKey];
+    const metaMatchesWallet = Boolean(meta && meta.walletPublicKey === walletPublicKey);
+    const leafMatchesWallet = positionLeaf.ownerCommitment.toString() === ownerCommitment;
+    if (!metaMatchesWallet && !leafMatchesWallet) continue;
+    const marketKey = meta?.marketKey || positionLeaf.marketKey.toString();
+    const storedMarket = state.markets[marketKey];
     if (!storedMarket) continue;
     const marketLeaf = deserializeMarketLeaf(storedMarket);
     if (!marketLeaf.resolved.toBoolean()) continue;
@@ -1440,8 +1444,8 @@ async function listResolvedWalletPositions(
     const payout = won ? payoutNanominaForStake(totalPot, totalYes, marketLeaf.outcome.toBoolean(), stake) : 0n;
     result.push({
       positionKey,
-      marketKey: meta.marketKey,
-      marketDate: meta.marketDate,
+      marketKey,
+      marketDate: meta?.marketDate || null,
       side,
       stakeTmina: Number(stake),
       totalPotTmina: Number(totalPot),
@@ -1452,13 +1456,13 @@ async function listResolvedWalletPositions(
       claimStatus: won
         ? positionLeaf.claimed.toBoolean()
           ? 'confirmed'
-          : meta.claimStatus === 'submitted'
+          : meta?.claimStatus === 'submitted'
             ? 'submitted'
             : 'claimable'
         : 'not-applicable',
-      claimTxHash: meta.claimTxHash || null,
-      claimSubmittedAtUnixMs: meta.claimSubmittedAtUnixMs || null,
-      claimConfirmedAtUnixMs: meta.claimConfirmedAtUnixMs || null
+      claimTxHash: meta?.claimTxHash || null,
+      claimSubmittedAtUnixMs: meta?.claimSubmittedAtUnixMs || null,
+      claimConfirmedAtUnixMs: meta?.claimConfirmedAtUnixMs || null
     });
   }
   return result.sort((a, b) => {
@@ -2783,6 +2787,7 @@ async function main(): Promise<void> {
             marketKey: intent.marketKey,
             marketDate: intent.marketDate,
             walletPublicKey: intent.walletPublicKey,
+            ownerCommitment: ownerCommitmentFromWalletPublicKey(intent.walletPublicKey).toString(),
             createdAtUnixMs: intent.createdAtUnixMs,
             fundingTxHash: txHash
           };

@@ -1,15 +1,16 @@
 import 'reflect-metadata';
 import './env.js';
 import { Bool, Field, Mina, PrivateKey, UInt64 } from 'o1js';
-import { MarketLeaf, PredictionMarketPlatform } from './contract.js';
+import { MarketLeaf, PositionLeaf, PredictionMarketPlatform } from './contract.js';
 import {
   DEFAULT_STATE_FILE,
   OperatorStateFile,
   loadOperatorState,
   saveOperatorState,
-  serializeMarketLeaf
+  serializeMarketLeaf,
+  serializePositionLeaf
 } from './state-store.js';
-import { getLocalMarketsRoot, getOnChainMarketsRoot } from './chain-state.js';
+import { getLocalMarketsRoot, getLocalPositionsRoot, getOnChainMarketsRoot, getOnChainPositionsRoot } from './chain-state.js';
 
 type ParsedEvent = {
   type: string;
@@ -98,6 +99,18 @@ function leafFromEventData(data: Record<string, unknown>): { marketKey: string; 
   return { marketKey, leaf, oracleNonce };
 }
 
+function positionLeafFromEventData(data: Record<string, unknown>): { positionKey: string; leaf: PositionLeaf } {
+  const positionKey = asField(data.positionKey, 'positionKey').toString();
+  const leaf = new PositionLeaf({
+    marketKey: asField(data.marketKey, 'marketKey'),
+    sideOver: asBool(data.sideOver, 'sideOver'),
+    stake: asUInt64(data.stake, 'stake'),
+    ownerCommitment: asField(data.ownerCommitment, 'ownerCommitment'),
+    claimed: asBool(data.claimed, 'claimed')
+  });
+  return { positionKey, leaf };
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const stateFile = parseOptionalArgValue(args, 'state-file') || DEFAULT_STATE_FILE;
@@ -119,21 +132,23 @@ async function main(): Promise<void> {
   const parsed = extractParsedEvents(rawEvents as unknown[]);
   const nextState: OperatorStateFile = {
     markets: {},
-    positions: existingState.positions || {},
+    positions: {},
     usedNonces: {},
     marketMeta: existingState.marketMeta || {},
     positionMeta: existingState.positionMeta || {}
   };
 
   for (const evt of parsed) {
-    if (evt.type !== 'marketCreated' && evt.type !== 'marketUpdated' && evt.type !== 'marketResolved') {
-      continue;
-    }
     try {
-      const { marketKey, leaf, oracleNonce } = leafFromEventData(evt.data);
-      nextState.markets[marketKey] = serializeMarketLeaf(leaf);
-      if (oracleNonce) {
-        nextState.usedNonces[oracleNonce] = '1';
+      if (evt.type === 'marketCreated' || evt.type === 'marketUpdated' || evt.type === 'marketResolved') {
+        const { marketKey, leaf, oracleNonce } = leafFromEventData(evt.data);
+        nextState.markets[marketKey] = serializeMarketLeaf(leaf);
+        if (oracleNonce) {
+          nextState.usedNonces[oracleNonce] = '1';
+        }
+      } else if (evt.type === 'positionChanged') {
+        const { positionKey, leaf } = positionLeafFromEventData(evt.data);
+        nextState.positions[positionKey] = serializePositionLeaf(leaf);
       }
     } catch {
       // ignore incompatible historical events from older contract versions
@@ -143,13 +158,19 @@ async function main(): Promise<void> {
   await saveOperatorState(stateFile, nextState);
   const localRoot = getLocalMarketsRoot(nextState);
   const chainRoot = await getOnChainMarketsRoot(zkappAddress);
+  const localPositionsRoot = getLocalPositionsRoot(nextState);
+  const chainPositionsRoot = await getOnChainPositionsRoot(zkappAddress);
 
   console.log('State sync complete.');
   console.log('Markets synced:', Object.keys(nextState.markets).length);
+  console.log('Positions synced:', Object.keys(nextState.positions).length);
   console.log('Used nonces synced:', Object.keys(nextState.usedNonces).length);
   console.log('Local marketsRoot:', localRoot);
   console.log('Chain marketsRoot:', chainRoot);
-  console.log('Roots match:', localRoot === chainRoot ? 'yes' : 'no');
+  console.log('Local positionsRoot:', localPositionsRoot);
+  console.log('Chain positionsRoot:', chainPositionsRoot);
+  console.log('Markets root match:', localRoot === chainRoot ? 'yes' : 'no');
+  console.log('Positions root match:', localPositionsRoot === chainPositionsRoot ? 'yes' : 'no');
 }
 
 main().catch((error: unknown) => {

@@ -47,6 +47,7 @@ export type StoredPositionMeta = {
   marketKey: string;
   marketDate: string | null;
   walletPublicKey: string;
+  ownerCommitment?: string | null;
   createdAtUnixMs: number;
   fundingTxHash: string | null;
   claimStatus?: 'submitted' | 'confirmed' | null;

@@ -118,6 +118,15 @@ export class PositionsResetEvent extends Struct({
   nextPositionsRoot: Field
 }) {}
 
+export class PositionSnapshotEvent extends Struct({
+  positionKey: Field,
+  marketKey: Field,
+  sideOver: Bool,
+  stake: UInt64,
+  ownerCommitment: Field,
+  claimed: Bool
+}) {}
+
 export class PredictionMarketPlatform extends SmartContract {
   @state(Field) marketsRoot = State<Field>();
   @state(Field) positionsRoot = State<Field>();
@@ -132,7 +141,8 @@ export class PredictionMarketPlatform extends SmartContract {
     marketResolved: MarketResolvedEvent,
     tradeSettled: TradeSettlementEvent,
     payoutClaimed: PayoutClaimedEvent,
-    positionsReset: PositionsResetEvent
+    positionsReset: PositionsResetEvent,
+    positionChanged: PositionSnapshotEvent
   };
 
   init() {
@@ -324,6 +334,17 @@ export class PredictionMarketPlatform extends SmartContract {
         nextPositionsRoot: positionsRootAfter
       })
     );
+    this.emitEvent(
+      'positionChanged',
+      new PositionSnapshotEvent({
+        positionKey,
+        marketKey: positionLeaf.marketKey,
+        sideOver: positionLeaf.sideOver,
+        stake: positionLeaf.stake,
+        ownerCommitment: positionLeaf.ownerCommitment,
+        claimed: positionLeaf.claimed
+      })
+    );
   }
 
   @method async resolveWeatherMarket(
@@ -459,6 +480,17 @@ export class PredictionMarketPlatform extends SmartContract {
         positionKey,
         ownerCommitment: positionLeaf.ownerCommitment,
         amount: payout
+      })
+    );
+    this.emitEvent(
+      'positionChanged',
+      new PositionSnapshotEvent({
+        positionKey,
+        marketKey: claimedLeaf.marketKey,
+        sideOver: claimedLeaf.sideOver,
+        stake: claimedLeaf.stake,
+        ownerCommitment: claimedLeaf.ownerCommitment,
+        claimed: claimedLeaf.claimed
       })
     );
   }
