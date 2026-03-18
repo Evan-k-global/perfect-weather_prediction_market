@@ -51,6 +51,7 @@ import {
 } from './state-store.js';
 import { withTxRetry } from './tx-retry.js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
+import { getSuggestedSequencerFee } from './sequencer-fee.js';
 
 const execFileAsync = promisify(execFile);
 const USER_POSITIONS_FILE = './data/user-positions.json';
@@ -560,8 +561,7 @@ function getNetworkConfig() {
   const requestedNetworkId = process.env.ZEKO_NETWORK_ID || 'testnet';
   const isZekoTestnet = /testnet\.zeko\.io/i.test(graphql);
   const networkId = isZekoTestnet && requestedNetworkId === 'zeko' ? 'testnet' : requestedNetworkId;
-  const txFee = process.env.TX_FEE || '1200000000';
-  return { graphql, networkId, txFee };
+  return { graphql, networkId };
 }
 
 function setActiveZekoNetwork() {
@@ -1639,7 +1639,8 @@ async function buildBrowserFeePayerMarketBetContext(params: {
   if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
 
   setActiveZekoNetwork();
-  const { graphql, networkId, txFee } = getNetworkConfig();
+  const { graphql, networkId } = getNetworkConfig();
+  const { feeRaw: txFee } = await getSuggestedSequencerFee(graphql);
   const zkappAddress = getZkappPublicKey();
   const state = await loadOperatorState(stateFile);
   if (shouldAssertChainRootsInBetContext()) {
@@ -2072,7 +2073,8 @@ async function buildWalletFeePayerClaimPayoutTx(params: {
 }> {
   const { stateFile, marketKey, positionKey, feePayerPublicKey, userId } = params;
   setActiveZekoNetwork();
-  const { txFee } = getNetworkConfig();
+  const { graphql } = getNetworkConfig();
+  const { feeRaw: txFee } = await getSuggestedSequencerFee(graphql);
   const zkappPrivateKey = getOptionalZkappPrivateKey();
   if (!zkappPrivateKey) {
     throw new Error('Missing ZKAPP_PRIVATE_KEY for local claim payout path');
@@ -2162,7 +2164,8 @@ async function buildClaimPayoutContext(params: {
 }> {
   const { stateFile, marketKey, positionKey, feePayerPublicKey } = params;
   setActiveZekoNetwork();
-  const { txFee } = getNetworkConfig();
+  const { graphql } = getNetworkConfig();
+  const { feeRaw: txFee } = await getSuggestedSequencerFee(graphql);
 
   const state = await reconcileSubmittedPayoutClaims(stateFile);
   const meta = state.receiptMeta?.[positionKey];
@@ -3308,7 +3311,7 @@ async function main(): Promise<void> {
   server.listen(port, host, () => {
     const net = getNetworkConfig();
     console.log(`Unified marketplace listening on http://${host}:${port}/marketplace`);
-    console.log(`[network] graphql=${net.graphql} networkId=${net.networkId} txFee=${net.txFee}`);
+    console.log(`[network] graphql=${net.graphql} networkId=${net.networkId}`);
     privateBetQueue.splice(0, privateBetQueue.length);
     console.log('[fast-path] private queue disabled in this build');
 
