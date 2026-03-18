@@ -1199,6 +1199,52 @@ async function ensureDemoDailyMarketsFromSnapshot(
     .sort((a, b) => (a.marketDate < b.marketDate ? -1 : a.marketDate > b.marketDate ? 1 : 0));
 }
 
+async function readProjectedDemoDailyMarketsFromSnapshot(
+  snapshot: Awaited<ReturnType<typeof loadWeatherSnapshot>>,
+  filePath: string = DEMO_DAILY_MARKETS_FILE
+): Promise<DemoDailyMarket[]> {
+  const existing = await loadDemoDailyMarkets(filePath);
+  const todayIso = currentLocalDate();
+  const maxWindowDate = isoDateOffset(todayIso, 5);
+  const trimmed: Record<string, DemoDailyMarket> = {};
+  for (const [marketDate, market] of Object.entries(existing)) {
+    if (marketDate >= todayIso && marketDate <= maxWindowDate) {
+      trimmed[marketDate] = {
+        ...market,
+        marketKey:
+          typeof market.marketKey === 'string' && market.marketKey.length > 0
+            ? market.marketKey
+            : deriveDemoDateMarketKey(marketDate)
+      };
+    }
+  }
+  if (snapshot) {
+    snapshot.dailyHighsF.slice(0, 6).forEach((high, dayIndex) => {
+      const marketDate = isoDateOffset(snapshot.localDate, dayIndex);
+      if (!trimmed[marketDate]) {
+        trimmed[marketDate] = {
+          marketDate,
+          marketKey: deriveDemoDateMarketKey(marketDate),
+          thresholdF: Math.round(high),
+          lockedAtUnixMs: Date.now(),
+          sourceDayIndexWhenLocked: dayIndex,
+          sourceForecastHighFWhenLocked: high,
+          totalPositionBet: 0,
+          totalYesPositionBet: 0
+        };
+      }
+    });
+  }
+  return Object.values(trimmed)
+    .map((m) => ({
+      ...m,
+      marketKey: typeof m.marketKey === 'string' && m.marketKey.length > 0 ? m.marketKey : deriveDemoDateMarketKey(m.marketDate),
+      totalPositionBet: Number.isFinite(m.totalPositionBet) ? m.totalPositionBet : 0,
+      totalYesPositionBet: Number.isFinite(m.totalYesPositionBet) ? m.totalYesPositionBet : 0
+    }))
+    .sort((a, b) => (a.marketDate < b.marketDate ? -1 : a.marketDate > b.marketDate ? 1 : 0));
+}
+
 function withCurrentForecast(
   markets: DemoDailyMarket[],
   snapshot: Awaited<ReturnType<typeof loadWeatherSnapshot>>
@@ -3406,20 +3452,14 @@ async function main(): Promise<void> {
         const oracle = getOracleFreshness(snapshot, Date.now());
         const baseDailyMarkets =
           snapshot || Object.keys(await loadDemoDailyMarkets()).length > 0
-            ? await ensureDemoDailyMarketsFromSnapshot(snapshot)
+            ? await readProjectedDemoDailyMarketsFromSnapshot(snapshot)
             : deriveDailyMarketsFromOnChainState(state);
         const dailyMarkets = attachOnChainDailyMarketState(
           await withDailySettlementInfo(withCurrentForecast(baseDailyMarkets, snapshot)),
           state
         );
-        let contest = await loadContestState(selectedDate, 15, contestStateFileForDate(selectedDate));
-        let autoSettledDates: string[] = [];
-        if (snapshot) {
-          contest = maybeAutoSettleContest(contest, snapshot, nowLocalHour(), Date.now());
-          await saveContestState(contest, contestStateFileForDate(selectedDate));
-          autoSettledDates = await autoSettleDailyContestsFromSnapshot(snapshot);
-          dailySettleState = await recordDailySettleRun(dailySettleState, 'api-weather-read', autoSettledDates);
-        }
+        const contest = await loadContestState(selectedDate, 15, contestStateFileForDate(selectedDate));
+        const autoSettledDates: string[] = [];
         const baseProbs = snapshot
           ? buildSevenDayHighProbabilities(snapshot.dailyHighsF, Number.isFinite(thresholdF) ? thresholdF : 86)
           : [];
@@ -3449,7 +3489,7 @@ async function main(): Promise<void> {
         const state = await loadOperatorState(defaultStatePath);
         const baseDailyMarkets =
           snapshot || Object.keys(await loadDemoDailyMarkets()).length > 0
-            ? await ensureDemoDailyMarketsFromSnapshot(snapshot)
+            ? await readProjectedDemoDailyMarketsFromSnapshot(snapshot)
             : deriveDailyMarketsFromOnChainState(state);
         const dailyMarkets = attachOnChainDailyMarketState(
           await withDailySettlementInfo(withCurrentForecast(baseDailyMarkets, snapshot)),

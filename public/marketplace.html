@@ -1076,7 +1076,7 @@
             })
           });
           const clientBetting = await getClientBettingModule();
-          setBetProgress("Generating browser proof", true);
+          setBetProgress("Generating zkProof", true);
           const txPayload = await clientBetting.buildReceiptBetTx(txContext.buildContext);
           setBetProgress("Waiting for wallet signature...", true);
           const txHash = await sendOnchainTx(txPayload, txContext.fee);
@@ -1183,7 +1183,7 @@
         refreshPageState().catch((e) => {
           console.warn("interval refresh failed", e);
         });
-      }, 15000);
+      }, 60000);
     </script>
   </body>
 </html>
