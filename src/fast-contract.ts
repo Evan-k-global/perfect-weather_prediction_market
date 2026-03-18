@@ -57,6 +57,7 @@ export class FastPredictionMarketPlatform extends SmartContract {
   @state(Field) usedOracleNonceRoot = State<Field>();
   @state(Field) oracleSourceHash = State<Field>();
   @state(Field) oracleRequestPathHash = State<Field>();
+  @state(UInt64) marketCount = State<UInt64>();
 
   events = {
     marketCreated: MarketSnapshotEvent,
@@ -72,6 +73,7 @@ export class FastPredictionMarketPlatform extends SmartContract {
     this.usedOracleNonceRoot.set(EMPTY_MAP_ROOT);
     this.oracleSourceHash.set(Field(0));
     this.oracleRequestPathHash.set(Field(0));
+    this.marketCount.set(UInt64.from(0));
 
     this.account.permissions.set({
       ...Permissions.default(),
@@ -100,6 +102,9 @@ export class FastPredictionMarketPlatform extends SmartContract {
 
     const [rootAfter] = marketWitness.computeRootAndKey(market.hash());
     this.marketsRoot.set(rootAfter);
+
+    const count = this.marketCount.getAndRequireEquals();
+    this.marketCount.set(count.add(1));
 
     this.emitEvent(
       'marketCreated',
