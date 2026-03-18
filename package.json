@@ -7,8 +7,10 @@
   "scripts": {
     "dev": "tsc -w -p tsconfig.json",
     "build": "tsc -p tsconfig.json",
+    "build:local-fast": "pnpm build && pnpm fast-cache:build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm typecheck",
+    "fast-cache:build": "node --enable-source-maps dist/build-fast-browser-cache.js",
     "bootstrap-fast-zkapp:zeko": "node --enable-source-maps dist/bootstrap-fast-zkapp-zeko.js",
     "deploy:zeko": "node --enable-source-maps dist/deploy.js",
     "emergency-reset-positions:zeko": "node --enable-source-maps dist/emergency-reset-positions-zeko.js",
