@@ -13,6 +13,10 @@ services:
         value: production
       - key: ZKVERIFY_POC_ROOT
         value: /opt/zk-verify-poc
+      - key: BOOTSTRAP_FAST_ZKAPP_ON_START
+        value: "1"
+      - key: BOOTSTRAP_DAILY_MARKETS_ON_START
+        value: "1"
       - key: WEATHER_DAEMON_ENABLED
         value: "0"
       - key: SYNC_STATE_ON_START
@@ -37,6 +41,11 @@ services:
         value: production
       - key: ZKVERIFY_POC_ROOT
         value: /opt/zk-verify-poc
+      - key: MARKET_BASE_URL
+        fromService:
+          type: web
+          name: perfect-weather-prediction-market
+          property: hostport
       - key: ORACLE_WORKER_INTERVAL_MS
         value: "1800000"
       - key: ORACLE_WORKER_RETRY_MS
