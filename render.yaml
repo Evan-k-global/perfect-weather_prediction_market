@@ -28,28 +28,6 @@ services:
       - key: DAILY_SETTLE_SCHEDULE_CHECK_MS
         value: "0"
   - type: worker
-    name: perfect-weather-operator-worker
-    env: docker
-    dockerfilePath: ./deploy/Dockerfile
-    dockerCommand: /app/deploy/start-operator-worker.sh
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: ZKVERIFY_POC_ROOT
-        value: /opt/zk-verify-poc
-      - key: OPERATOR_WORKER_INTERVAL_MS
-        value: "5000"
-      - key: OPERATOR_WORKER_RETRY_MS
-        value: "15000"
-      - key: OPERATOR_WORKER_START_DELAY_MS
-        value: "5000"
-      - key: OPERATOR_NODE_MAX_OLD_SPACE_MB
-        value: "12288"
-      - key: OPERATOR_WORKER_ENABLE_RESOLVE
-        value: "0"
-      - key: OPERATOR_WORKER_ENABLE_ENSURE
-        value: "0"
-  - type: worker
     name: perfect-weather-oracle-worker
     env: docker
     dockerfilePath: ./deploy/Dockerfile
@@ -60,7 +38,7 @@ services:
       - key: ZKVERIFY_POC_ROOT
         value: /opt/zk-verify-poc
       - key: ORACLE_WORKER_INTERVAL_MS
-        value: "300000"
+        value: "1800000"
       - key: ORACLE_WORKER_RETRY_MS
         value: "60000"
       - key: ORACLE_WORKER_START_DELAY_MS

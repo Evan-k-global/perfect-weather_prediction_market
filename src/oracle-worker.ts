@@ -235,7 +235,7 @@ async function main(): Promise<void> {
   if (!baseUrl) throw new Error('Missing env MARKET_BASE_URL');
   const oracleToken = process.env.ORACLE_ACTION_TOKEN || process.env.OPERATOR_ACTION_TOKEN;
   if (!oracleToken) throw new Error('Missing env ORACLE_ACTION_TOKEN');
-  const intervalMs = envInt('ORACLE_WORKER_INTERVAL_MS', 5 * 60 * 1000);
+  const intervalMs = envInt('ORACLE_WORKER_INTERVAL_MS', 30 * 60 * 1000);
   const retryMs = envInt('ORACLE_WORKER_RETRY_MS', 60 * 1000);
   const startDelayMs = envInt('ORACLE_WORKER_START_DELAY_MS', 5000);
   process.env.WEATHER_REQUIRE_TLSN = process.env.WEATHER_REQUIRE_TLSN || '1';
