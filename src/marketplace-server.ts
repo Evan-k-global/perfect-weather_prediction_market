@@ -338,6 +338,16 @@ function shouldAssertChainRootsInBetContext(): boolean {
   return true;
 }
 
+function useLeanHostedBetContext(): boolean {
+  if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
+    return true;
+  }
+  const explicit = process.env.LEAN_HOSTED_BET_CONTEXT;
+  if (explicit === undefined) return false;
+  const normalized = explicit.trim().toLowerCase();
+  return !['0', 'false', 'no', 'off'].includes(normalized);
+}
+
 function getRelayerPrivateKey(): PrivateKey | null {
   const deployer = process.env.DEPLOYER_PRIVATE_KEY;
   const relayer = process.env.RELAYER_PRIVATE_KEY;
@@ -2922,37 +2932,11 @@ async function main(): Promise<void> {
           }
         }
 
-        const built = await withFreshMarketStateRetry(projectRoot, async () => {
+        const buildBetContext = async () => {
           const currentState = await loadOperatorState(defaultStatePath);
           const selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
           if (!selectedMarket) {
-            await bootstrapFastZkapp(projectRoot);
-            await ensureDailyMarkets(projectRoot);
-            await refreshState(projectRoot);
-            const refreshedState = await loadOperatorState(defaultStatePath);
-            const refreshedMarket = findSelectedOnChainMarket(refreshedState, marketKey, marketDate);
-            if (!refreshedMarket) {
-              throw new Error(
-                `market ${marketDate} is not active on-chain yet. Automatic daily market creation was triggered, but the market is still unavailable.`
-              );
-            }
-            if (selectedThresholdF !== null && Number.isFinite(Number(refreshedMarket.thresholdF))) {
-              const onChainThresholdF = Math.round(Number(refreshedMarket.thresholdF));
-              if (onChainThresholdF !== selectedThresholdF) {
-                throw new Error(
-                  `selected threshold ${selectedThresholdF}F does not match active on-chain threshold ${onChainThresholdF}F for ${marketDate}`
-                );
-              }
-            }
-            return await buildBrowserFeePayerMarketBetContext({
-              stateFile: defaultStatePath,
-              marketKey: String(refreshedMarket.marketKey),
-              addTotalBet: Math.floor(addTotalBet),
-              addYesBet: Math.floor(addYesBet),
-              marketDate,
-              feePayerPublicKey: walletPublicKey,
-              userId
-            });
+            throw new Error(`market ${marketDate} is not active on-chain yet. Wait for oracle sync, then try again.`);
           }
           if (selectedThresholdF !== null && Number.isFinite(Number(selectedMarket.thresholdF))) {
             const onChainThresholdF = Math.round(Number(selectedMarket.thresholdF));
@@ -2968,10 +2952,13 @@ async function main(): Promise<void> {
             addTotalBet: Math.floor(addTotalBet),
             addYesBet: Math.floor(addYesBet),
             marketDate,
-            feePayerPublicKey: walletPublicKey,
-            userId
-          });
-        });
+              feePayerPublicKey: walletPublicKey,
+              userId
+            });
+        };
+        const built = useLeanHostedBetContext()
+          ? await buildBetContext()
+          : await withFreshMarketStateRetry(projectRoot, buildBetContext);
         writeJson(res, 200, {
           ok: true,
           mode: 'wallet-fee-payer-browser',
