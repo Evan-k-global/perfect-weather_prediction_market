@@ -1413,6 +1413,37 @@ async function withFreshMarketStateRetry<T>(projectRoot: string, work: () => Pro
   }
 }
 
+async function forwardToTxProver(pathname: string, body: Record<string, unknown>): Promise<any> {
+  const baseUrl = (process.env.TX_PROVER_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (!baseUrl) return null;
+  const token = (process.env.TX_PROVER_ACTION_TOKEN || process.env.OPERATOR_ACTION_TOKEN || '').trim();
+  if (!token) {
+    throw new Error('TX_PROVER_BASE_URL is set but TX_PROVER_ACTION_TOKEN is missing');
+  }
+  const res = await fetch(`${baseUrl}${pathname}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-prover-token': token
+    },
+    body: JSON.stringify(body)
+  });
+  const text = await res.text();
+  let data: any = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      const snippet = text.slice(0, 160).replace(/\s+/g, ' ').trim();
+      throw new Error(`tx prover returned non-JSON response (status ${res.status}): ${snippet}`);
+    }
+  }
+  if (!res.ok) {
+    throw new Error((data && data.error) || `tx prover request failed with status ${res.status}`);
+  }
+  return data;
+}
+
 function getOperatorActionToken(): string | null {
   const raw = process.env.OPERATOR_ACTION_TOKEN;
   if (!raw) return null;
@@ -2905,6 +2936,26 @@ async function main(): Promise<void> {
           if (marketDate > maxDate) {
             throw new Error(`market date ${marketDate} is outside rolling window (${todayIso} to ${maxDate})`);
           }
+        }
+        const forwarded = await forwardToTxProver('/api/prover/market-bet', {
+          marketKey,
+          addTotalBet: Math.floor(addTotalBet),
+          addYesBet: Math.floor(addYesBet),
+          walletPublicKey,
+          marketDate,
+          thresholdF: selectedThresholdF
+        });
+        if (forwarded) {
+          pendingTxIntents[forwarded.intentId] = forwarded.intent;
+          writeJson(res, 200, {
+            ok: true,
+            mode: forwarded.mode || 'wallet-fee-payer',
+            intentId: forwarded.intentId,
+            fee: forwarded.fee,
+            tx: forwarded.tx,
+            marketSummary: forwarded.marketSummary
+          });
+          return;
         }
         const built = await withFreshMarketStateRetry(projectRoot, async () => {
           const currentState = await loadOperatorState(defaultStatePath);
