@@ -2269,6 +2269,7 @@ async function main(): Promise<void> {
           privacyMode: getPrivacyMode(),
           zkappPublicKey,
           zkappConfigError,
+          network: getNetworkConfig(),
           dailySettle: dailySettleState,
           features: {
             manualWeatherRefreshEnabled: !(process.env.RENDER === 'true' || process.env.IS_RENDER === 'true'),
