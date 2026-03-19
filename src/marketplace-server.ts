@@ -64,6 +64,7 @@ const DAILY_SETTLE_STATE_FILE = './data/daily-settle-state.json';
 const TLSN_STATUS_FILE = './data/tlsn-output/latest/status.json';
 const STARTUP_READY_FILE = './data/startup-ready.json';
 const FRESH_ZKAPP_ARCHIVE_DIR = './data/fresh-zkapp-archives';
+const CLAIM_STATUS_CACHE_TTL_MS = 30_000;
 
 type AgentModel = {
   id: string;
@@ -277,6 +278,7 @@ const agents: AgentModel[] = [
 const orders: Record<string, EscrowOrder> = {};
 const balances: Record<string, UserBalance> = {};
 const pendingTxIntents: Record<string, PendingTxIntent> = {};
+const claimTxStatusCache = new Map<string, { status: string; fetchedAtUnixMs: number }>();
 const privateBetQueue: PrivateQueuedBet[] = [];
 const privateBatchHistory: PrivateBatchHistoryEntry[] = [];
 let privateBatchInFlight = false;
@@ -2043,10 +2045,18 @@ async function reconcileSubmittedPayoutClaims(stateFile: string) {
     return state;
   }
   const { graphql } = getNetworkConfig();
+  const now = Date.now();
   for (const [positionKey, meta] of pendingClaims) {
     if (!meta?.claimTxHash) continue;
     try {
-      const status = await fetchTransactionStatus(meta.claimTxHash, graphql);
+      const cached = claimTxStatusCache.get(meta.claimTxHash);
+      const status =
+        cached && now - cached.fetchedAtUnixMs < CLAIM_STATUS_CACHE_TTL_MS
+          ? cached.status
+          : await fetchTransactionStatus(meta.claimTxHash, graphql);
+      if (!cached || now - cached.fetchedAtUnixMs >= CLAIM_STATUS_CACHE_TTL_MS) {
+        claimTxStatusCache.set(meta.claimTxHash, { status, fetchedAtUnixMs: now });
+      }
       if (status === 'INCLUDED') {
         dirty = markPositionClaimConfirmed(state, positionKey, Date.now()) || dirty;
       }
@@ -2057,7 +2067,14 @@ async function reconcileSubmittedPayoutClaims(stateFile: string) {
   for (const [receiptKey, meta] of pendingReceiptClaims) {
     if (!meta?.claimTxHash) continue;
     try {
-      const status = await fetchTransactionStatus(meta.claimTxHash, graphql);
+      const cached = claimTxStatusCache.get(meta.claimTxHash);
+      const status =
+        cached && now - cached.fetchedAtUnixMs < CLAIM_STATUS_CACHE_TTL_MS
+          ? cached.status
+          : await fetchTransactionStatus(meta.claimTxHash, graphql);
+      if (!cached || now - cached.fetchedAtUnixMs >= CLAIM_STATUS_CACHE_TTL_MS) {
+        claimTxStatusCache.set(meta.claimTxHash, { status, fetchedAtUnixMs: now });
+      }
       if (status === 'INCLUDED') {
         dirty = markReceiptClaimConfirmed(state, receiptKey, Date.now()) || dirty;
       }
