@@ -1216,6 +1216,7 @@ async function applySuccessfulPrivateBetBatch(params: {
   state.positions[positionKey] = serializePositionLeaf(positionLeaf);
   state.positionMeta = state.positionMeta || {};
   state.positionMeta[positionKey] = {
+    zkappPublicKey: state.zkappPublicKey || getZkappPublicKey().toBase58(),
     marketKey: queuedBet.marketKey,
     marketDate: queuedBet.marketDate,
     walletPublicKey: queuedBet.walletPublicKey,
@@ -2025,6 +2026,15 @@ function sanitizeDailyMarketsForFreshZkappReset(
   return sanitized;
 }
 
+function metaMatchesCurrentZkapp(
+  meta: { zkappPublicKey?: string | null } | null | undefined,
+  currentZkappPublicKey: string | null | undefined
+): boolean {
+  if (!meta) return false;
+  if (!currentZkappPublicKey) return true;
+  return meta.zkappPublicKey === currentZkappPublicKey;
+}
+
 function positionDelta(addTotalBet: number, addYesBet: number): number {
   const noBet = addTotalBet - addYesBet;
   return addYesBet - noBet;
@@ -2049,10 +2059,12 @@ async function listResolvedWalletPositions(
   stateFile: string
 ): Promise<ResolvedWalletPosition[]> {
   const state = await reconcileSubmittedPayoutClaims(stateFile);
+  const currentZkappPublicKey = state.zkappPublicKey || null;
   const ownerCommitment = ownerCommitmentFromWalletPublicKey(walletPublicKey).toString();
   const result: ResolvedWalletPosition[] = [];
   for (const [positionKey, storedPosition] of Object.entries(state.positions || {})) {
     const meta = state.positionMeta?.[positionKey];
+    if (meta && !metaMatchesCurrentZkapp(meta, currentZkappPublicKey)) continue;
     const positionLeaf = deserializePositionLeaf(storedPosition);
     const metaMatchesWallet = Boolean(meta && meta.walletPublicKey === walletPublicKey);
     const leafMatchesWallet = positionLeaf.ownerCommitment.toString() === ownerCommitment;
@@ -2094,6 +2106,7 @@ async function listResolvedWalletPositions(
   }
   for (const [receiptKey, meta] of Object.entries(state.receiptMeta || {})) {
     if (!meta || meta.walletPublicKey !== walletPublicKey) continue;
+    if (!metaMatchesCurrentZkapp(meta, currentZkappPublicKey)) continue;
     const storedMarket = state.markets[meta.marketKey];
     if (!storedMarket) continue;
     const marketLeaf = deserializeMarketLeaf(storedMarket);
@@ -2210,6 +2223,7 @@ async function maybeBackfillReceiptMetaForWallet(
     const marketDate = marketDateFromViewTitle(state.marketMeta?.[marketKey]?.title);
     state.receiptMeta = state.receiptMeta || {};
     state.receiptMeta[receiptKey] = {
+      zkappPublicKey: state.zkappPublicKey || getZkappPublicKey().toBase58(),
       marketKey,
       marketDate,
       walletPublicKey,
@@ -2927,6 +2941,7 @@ async function main(): Promise<void> {
           state.receipts[intent.positionKey] = intent.receiptCommitment;
           state.receiptMeta = state.receiptMeta || {};
           state.receiptMeta[intent.positionKey] = {
+            zkappPublicKey: state.zkappPublicKey || getZkappPublicKey().toBase58(),
             marketKey: intent.marketKey,
             marketDate: intent.marketDate,
             walletPublicKey: intent.walletPublicKey,
@@ -3032,8 +3047,9 @@ async function main(): Promise<void> {
       if (req.method === 'GET' && url.pathname === '/api/wallet/activity') {
         const walletPublicKey = requireString(url.searchParams.get('walletPublicKey'), 'walletPublicKey');
         const state = await loadOperatorState(defaultStatePath);
+        const currentZkappPublicKey = state.zkappPublicKey || null;
         const positions = Object.entries(state.positionMeta || {})
-          .filter(([, meta]) => meta?.walletPublicKey === walletPublicKey)
+          .filter(([, meta]) => meta?.walletPublicKey === walletPublicKey && metaMatchesCurrentZkapp(meta, currentZkappPublicKey))
           .map(([positionKey, meta]) => {
             const storedPosition = state.positions[positionKey];
             const storedMarket = state.markets[meta.marketKey];
@@ -3061,7 +3077,7 @@ async function main(): Promise<void> {
           })
           .sort((a, b) => (b.createdAtUnixMs || 0) - (a.createdAtUnixMs || 0));
         const receiptPositions = Object.entries(state.receiptMeta || {})
-          .filter(([, meta]) => meta?.walletPublicKey === walletPublicKey)
+          .filter(([, meta]) => meta?.walletPublicKey === walletPublicKey && metaMatchesCurrentZkapp(meta, currentZkappPublicKey))
           .map(([receiptKey, meta]) => {
             const storedMarket = state.markets[meta.marketKey];
             const marketLeaf = storedMarket ? deserializeMarketLeaf(storedMarket) : null;

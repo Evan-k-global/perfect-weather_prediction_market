@@ -49,6 +49,7 @@ export type StoredPositionLeaf = {
 };
 
 export type StoredPositionMeta = {
+  zkappPublicKey?: string | null;
   marketKey: string;
   marketDate: string | null;
   walletPublicKey: string;
@@ -62,6 +63,7 @@ export type StoredPositionMeta = {
 };
 
 export type StoredReceiptMeta = {
+  zkappPublicKey?: string | null;
   marketKey: string;
   marketDate: string | null;
   walletPublicKey: string;
