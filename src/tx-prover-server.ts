@@ -71,6 +71,21 @@ type ClaimPayoutContext = {
 
 let compilePromise: Promise<unknown> | null = null;
 let activeNetworkKey = '';
+let proveQueue: Promise<void> = Promise.resolve();
+
+async function withProverSlot<T>(work: () => Promise<T>): Promise<T> {
+  const previous = proveQueue;
+  let release!: () => void;
+  proveQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+}
 
 function writeJson(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
@@ -269,7 +284,7 @@ async function main(): Promise<void> {
         const body = await readJsonBody(req);
         const context = body.context as BrowserMarketBetContext | undefined;
         if (!context) throw new Error('context is required');
-        const tx = await buildMarketBetTx(context);
+        const tx = await withProverSlot(() => buildMarketBetTx(context));
         writeJson(res, 200, { ok: true, tx });
         return;
       }
@@ -279,7 +294,7 @@ async function main(): Promise<void> {
         const body = await readJsonBody(req);
         const context = body.context as ClaimPayoutContext | undefined;
         if (!context) throw new Error('context is required');
-        const tx = await buildClaimPayoutTx(context);
+        const tx = await withProverSlot(() => buildClaimPayoutTx(context));
         writeJson(res, 200, { ok: true, tx });
         return;
       }
