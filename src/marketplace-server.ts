@@ -8,7 +8,7 @@ import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AccountUpdate, Bool, Field, MerkleMapWitness, Mina, Poseidon, PrivateKey, PublicKey, UInt32, UInt64, fetchAccount, fetchTransactionStatus } from 'o1js';
-import { DEFAULT_STATE_FILE, loadOperatorState } from './state-store.js';
+import { DEFAULT_STATE_FILE, loadOperatorState, type OperatorStateFile } from './state-store.js';
 import {
   NWS_94027_DIGITAL_URL,
   NWS_94027_REQUEST_PATH,
@@ -1821,6 +1821,30 @@ function requireOracleAuthorization(req: IncomingMessage, body: Record<string, u
   }
 }
 
+function normalizeOracleStateImportBody(body: Record<string, unknown>): {
+  markets: OperatorStateFile['markets'];
+  marketMeta: NonNullable<OperatorStateFile['marketMeta']>;
+  usedNonces: OperatorStateFile['usedNonces'];
+  dailyMarkets: Record<string, DemoDailyMarket>;
+} {
+  const unwrapped =
+    typeof body.body === 'string' && body.body.trim().length > 0
+      ? ((() => {
+          try {
+            return JSON.parse(body.body) as Record<string, unknown>;
+          } catch {
+            return body;
+          }
+        })())
+      : body;
+  return {
+    markets: (unwrapped.markets as OperatorStateFile['markets']) || {},
+    marketMeta: (unwrapped.marketMeta as NonNullable<OperatorStateFile['marketMeta']>) || {},
+    usedNonces: (unwrapped.usedNonces as OperatorStateFile['usedNonces']) || {},
+    dailyMarkets: (unwrapped.dailyMarkets as Record<string, DemoDailyMarket>) || {}
+  };
+}
+
 async function loadUserPositions(filePath: string): Promise<UserPositions> {
   try {
     const raw = await readFile(filePath, 'utf8');
@@ -3119,6 +3143,60 @@ async function main(): Promise<void> {
           snapshotVerified: snapshot.verified,
           verificationMode: snapshot.verificationMode,
           autoSettledDates
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/oracle/export-state') {
+        const body = await readJsonBody(req);
+        requireOracleAuthorization(req, body as Record<string, unknown>);
+        const state = await loadOperatorState(defaultStatePath);
+        const dailyMarkets = await loadDemoDailyMarkets(process.env.DEMO_DAILY_MARKETS_FILE || DEMO_DAILY_MARKETS_FILE);
+        writeJson(res, 200, {
+          ok: true,
+          state,
+          dailyMarkets
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/oracle/import-state') {
+        const body = await readJsonBody(req);
+        requireOracleAuthorization(req, body as Record<string, unknown>);
+        const imported = normalizeOracleStateImportBody(body as Record<string, unknown>);
+        const state = await loadOperatorState(defaultStatePath);
+        state.markets = {
+          ...(state.markets || {}),
+          ...(imported.markets || {})
+        };
+        state.marketMeta = {
+          ...(state.marketMeta || {}),
+          ...(imported.marketMeta || {})
+        };
+        state.usedNonces = {
+          ...(state.usedNonces || {}),
+          ...(imported.usedNonces || {})
+        };
+        await saveOperatorState(defaultStatePath, state);
+
+        const dailyMarketsPath = process.env.DEMO_DAILY_MARKETS_FILE || DEMO_DAILY_MARKETS_FILE;
+        if (Object.keys(imported.dailyMarkets || {}).length > 0) {
+          const existingDailyMarkets = await loadDemoDailyMarkets(dailyMarketsPath);
+          await saveDemoDailyMarkets(
+            {
+              ...existingDailyMarkets,
+              ...imported.dailyMarkets
+            },
+            dailyMarketsPath
+          );
+        }
+
+        writeJson(res, 200, {
+          ok: true,
+          marketsImported: Object.keys(imported.markets || {}).length,
+          marketMetaImported: Object.keys(imported.marketMeta || {}).length,
+          dailyMarketsImported: Object.keys(imported.dailyMarkets || {}).length,
+          usedNoncesImported: Object.keys(imported.usedNonces || {}).length
         });
         return;
       }

@@ -139,10 +139,7 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
     return;
   }
 
-  const exportPayload = await req(baseUrl, oracleToken, '/api/oracle/export-state', {
-    method: 'POST',
-    body: JSON.stringify({})
-  });
+  const exportPayload = await req(baseUrl, oracleToken, '/api/oracle/export-state', {});
   const state = exportPayload?.state as OperatorStateFile | null;
   const dailyMarkets = (exportPayload?.dailyMarkets || {}) as Record<string, unknown>;
   if (!state) return;
@@ -208,13 +205,10 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
     return;
   }
   const imported = await req(baseUrl, oracleToken, '/api/oracle/import-state', {
-    method: 'POST',
-    body: JSON.stringify({
-      markets,
-      marketMeta,
-      usedNonces,
-      dailyMarkets: changedDailyMarkets
-    })
+    markets,
+    marketMeta,
+    usedNonces,
+    dailyMarkets: changedDailyMarkets
   });
   console.log(
     `[oracle-worker] imported chain actions markets=${imported.marketsImported} marketMeta=${imported.marketMetaImported} dailyMarkets=${imported.dailyMarketsImported} usedNonces=${imported.usedNoncesImported}`
