@@ -436,6 +436,7 @@
       let privacyMode = "zk_strong";
       let zkappConfigError = null;
       let manualWeatherRefreshEnabled = true;
+      let hostedResolveEnabled = false;
       let localServerBetProvingEnabled = true;
       let remoteTxProverEnabled = false;
       let latestOracleRows = [];
@@ -480,6 +481,7 @@
         manualWeatherRefreshEnabled = health?.features?.manualWeatherRefreshEnabled !== false;
         localServerBetProvingEnabled = health?.features?.localServerBetProvingEnabled !== false;
         remoteTxProverEnabled = health?.features?.remoteTxProverEnabled === true;
+        hostedResolveEnabled = !manualWeatherRefreshEnabled;
         if (privacyStatusEl) {
           privacyStatusEl.textContent = localServerBetProvingEnabled
             ? "Local server proving on this machine for active on-chain markets"
@@ -488,11 +490,11 @@
               : "This site generates zk proofs on your device for active on-chain markets";
         }
         if (refreshWeatherTopBtn) {
-          refreshWeatherTopBtn.disabled = !manualWeatherRefreshEnabled;
+          refreshWeatherTopBtn.disabled = false;
           refreshWeatherTopBtn.textContent = "Oracle sync";
           refreshWeatherTopBtn.title = manualWeatherRefreshEnabled
             ? "Refresh oracle data now"
-            : "Manual refresh is disabled because the oracle sync runs separately in the background.";
+            : "After the nightly cutoff, this asks the hosted market to resolve the selected date immediately.";
         }
         if (!health.zkappPublicKey) {
           placeMarketBetBtn.disabled = true;
@@ -1174,7 +1176,7 @@
           await refreshDailyMarkets();
           await refreshMarket();
           await refreshWalletActivity();
-          setBetProgress("Bet placed successfully", false);
+          setBetProgress("Idle", false);
         } catch (e) {
           if (isNoncePreconditionError(e)) {
             setBetProgress("Wallet nonce changed - refreshed state, please retry", false);
@@ -1187,22 +1189,26 @@
       };
 
       refreshWeatherTopBtn.onclick = async () => {
-        if (!manualWeatherRefreshEnabled) {
-          out.textContent = toJson({
-            note: "Manual oracle refresh is disabled here. Oracle sync runs separately in the background."
-          });
-          return;
-        }
         try {
-          const res = await req("/api/weather/94027/refresh", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({})
-          });
+          const res = manualWeatherRefreshEnabled
+            ? await req("/api/weather/94027/refresh", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({})
+              })
+            : hostedResolveEnabled
+              ? await req("/api/public/resolve-daily-market", {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ marketDate: currentMarketDate })
+                })
+              : { note: "Oracle sync runs separately in the background." };
           out.textContent = toJson(res);
           await refreshDailyMarkets();
           await refreshWeather();
           await refreshMarket();
+          await refreshResolvedMarkets();
+          await refreshWalletActivity();
         } catch (e) {
           out.textContent = toJson({ error: String(e) });
         }
