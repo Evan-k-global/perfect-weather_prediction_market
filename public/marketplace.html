@@ -424,6 +424,7 @@
       let selectedWeatherDay = 0;
       let walletPublicKey = null;
       let resolvedFilter = "all";
+      let lastWalletActivityMarkup = null;
       let currentMarketKey = "1002";
       let currentThresholdF = 68;
       let currentMarketDate = "";
@@ -1020,14 +1021,22 @@
       async function refreshWalletActivity() {
         if (!out) return;
         if (!walletPublicKey) {
-          out.textContent = toJson({ note: "Connect wallet to view wallet activity." });
+          const next = toJson({ note: "Connect wallet to view wallet activity." });
+          if (lastWalletActivityMarkup !== next) {
+            out.textContent = next;
+            lastWalletActivityMarkup = next;
+          }
           return;
         }
         const activity = await req(`/api/wallet/activity?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
         const queued = [];
         const positions = Array.isArray(activity.positions) ? activity.positions : [];
         if (!queued.length && !positions.length) {
-          out.textContent = "No wallet activity for this wallet yet.";
+          const next = "No wallet activity for this wallet yet.";
+          if (lastWalletActivityMarkup !== next) {
+            out.textContent = next;
+            lastWalletActivityMarkup = next;
+          }
           return;
         }
         const sections = [];
@@ -1042,7 +1051,13 @@
             `).join("")}
           `);
         }
-        out.innerHTML = sections.join("");
+        const nextMarkup = sections.join("");
+        if (lastWalletActivityMarkup !== nextMarkup) {
+          const previousScrollTop = out.scrollTop;
+          out.innerHTML = nextMarkup;
+          out.scrollTop = previousScrollTop;
+          lastWalletActivityMarkup = nextMarkup;
+        }
       }
 
       async function refreshWeather() {

@@ -247,10 +247,14 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
   const updatedDailyMarketsAfterEnsure = await loadJsonFile<Record<string, unknown>>(dailyMarketsFile);
   const marketDates = collectMarketDates(updatedStateAfterEnsure, updatedDailyMarketsAfterEnsure);
   if (runResolvePass) {
+    const targetDates = new Set([
+      ...resolveDecision.pastDueUnresolvedDates,
+      ...resolveDecision.eligibleTodayDates
+    ]);
     for (const [marketKey, marketDate] of marketDates.entries()) {
       const stored = updatedStateAfterEnsure.markets[marketKey];
       if (!marketDate || !stored || stored.resolved === '1') continue;
-      const shouldResolve = marketDate < todayIso || marketDate === todayIso;
+      const shouldResolve = targetDates.has(marketDate);
       if (!shouldResolve) continue;
       const resolveArgs = [
         'resolve-daily-market:zeko',
