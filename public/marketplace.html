@@ -330,7 +330,6 @@
             </div>
             <p class="tiny">Pool and market OVER/UNDER odds are on-chain aggregate values synced from the market state.</p>
             <div class="tiny" id="marketAvailabilityNote"></div>
-            <div class="tiny hidden" id="betProgress"></div>
           </section>
 
           <section class="card">
@@ -411,7 +410,6 @@
       const resolvedMarketsPanelEl = document.getElementById("resolvedMarketsPanel");
       const resolvedFiltersEl = document.getElementById("resolvedFilters");
       const placeMarketBetBtn = document.getElementById("placeMarketBet");
-      const betProgressEl = document.getElementById("betProgress");
       const marketAvailabilityNoteEl = document.getElementById("marketAvailabilityNote");
       const betYesOptionEl = document.getElementById("betYesOption");
       const betNoOptionEl = document.getElementById("betNoOption");
@@ -507,13 +505,9 @@
       }
 
       function setBetProgress(text, busy = false) {
-        if (betProgressEl) {
-          betProgressEl.textContent = text;
-          betProgressEl.classList.toggle("hidden", !text || text === "Idle");
-        }
         if (placeMarketBetBtn) {
           placeMarketBetBtn.disabled = busy;
-          placeMarketBetBtn.textContent = "Place Bet";
+          placeMarketBetBtn.textContent = text && text !== "Idle" ? text : "Place Bet";
         }
       }
 
@@ -946,7 +940,7 @@
               walletPublicKey: walletKey
             })
           });
-          setBetProgress("Waiting for wallet signature...", true);
+          setBetProgress("Sign Wallet Tx", true);
           const txHash = await sendOnchainTx(built.tx, built.fee);
           setBetProgress("Finalizing claim...", true);
           const finalized = await req("/api/tx/finalize", {
