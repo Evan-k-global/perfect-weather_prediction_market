@@ -126,30 +126,45 @@ function shouldRunResolvePass(
   todayIso: string,
   nowHour: number,
   state: OperatorStateFile
-): { shouldRun: boolean; windowKey: string | null } {
-  let hasPastDueUnresolved = false;
-  let hasEligibleTodayUnresolved = false;
+): {
+  shouldRun: boolean;
+  windowKey: string | null;
+  pastDueUnresolvedDates: string[];
+  eligibleTodayDates: string[];
+} {
+  const pastDueUnresolvedDates: string[] = [];
+  const eligibleTodayDates: string[] = [];
   for (const [marketKey, meta] of Object.entries(state.marketMeta || {})) {
     const marketDate = marketDateFromTitle((meta as StoredMarketMeta | undefined)?.title);
     const stored = state.markets[marketKey];
     if (!marketDate || !stored || stored.resolved === '1') continue;
     if (marketDate < todayIso) {
-      hasPastDueUnresolved = true;
-      break;
+      pastDueUnresolvedDates.push(marketDate);
+      continue;
     }
     if (marketDate === todayIso && nowHour >= 21) {
-      hasEligibleTodayUnresolved = true;
+      eligibleTodayDates.push(marketDate);
     }
   }
-  if (hasPastDueUnresolved) {
+  if (pastDueUnresolvedDates.length > 0) {
     const windowKey = `${todayIso}-past-due`;
-    return { shouldRun: lastResolveWindowKey !== windowKey, windowKey };
+    return {
+      shouldRun: lastResolveWindowKey !== windowKey,
+      windowKey,
+      pastDueUnresolvedDates,
+      eligibleTodayDates
+    };
   }
-  if (hasEligibleTodayUnresolved) {
+  if (eligibleTodayDates.length > 0) {
     const windowKey = `${todayIso}-after-21`;
-    return { shouldRun: lastResolveWindowKey !== windowKey, windowKey };
+    return {
+      shouldRun: lastResolveWindowKey !== windowKey,
+      windowKey,
+      pastDueUnresolvedDates,
+      eligibleTodayDates
+    };
   }
-  return { shouldRun: false, windowKey: null };
+  return { shouldRun: false, windowKey: null, pastDueUnresolvedDates, eligibleTodayDates };
 }
 
 async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promise<void> {
@@ -163,6 +178,9 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
   if (!state) return;
   const resolveDecision = shouldRunResolvePass(todayIso, nowHour, state);
   const runResolvePass = resolveDecision.shouldRun;
+  console.log(
+    `[oracle-worker] resolve candidates today=${todayIso} hour=${nowHour} past_due=${resolveDecision.pastDueUnresolvedDates.join(',') || 'none'} today_eligible=${resolveDecision.eligibleTodayDates.join(',') || 'none'}`
+  );
   if (!runEnsurePass && !runResolvePass) {
     console.log('[oracle-worker] skipping chain actions; no daily lifecycle work due');
     return;
@@ -205,6 +223,7 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
         '--state-file',
         stateFile
       ];
+      console.log(`[oracle-worker] resolving marketDate=${marketDate}`);
       const resolved = await execFileAsync('pnpm', resolveArgs, { cwd: projectRoot, env: process.env });
       if (resolved.stdout.trim()) console.log(resolved.stdout.trim());
       if (resolved.stderr.trim()) console.error(resolved.stderr.trim());
