@@ -330,6 +330,7 @@
             </div>
             <p class="tiny">Pool and market OVER/UNDER odds are on-chain aggregate values synced from the market state.</p>
             <div class="tiny" id="marketAvailabilityNote"></div>
+            <div class="tiny" id="actionOut"></div>
           </section>
 
           <section class="card">
@@ -396,6 +397,7 @@
           ? "http://127.0.0.1:8790"
           : window.location.origin;
       const out = document.getElementById("out");
+      const actionOut = document.getElementById("actionOut");
       const weatherMetaEl = document.getElementById("weatherMeta");
       const weatherTableEl = document.getElementById("weatherTable");
       const refreshActivityBtn = document.getElementById("refreshActivityBtn");
@@ -420,6 +422,10 @@
       const privacyStatusEl = document.getElementById("privacyStatus");
       const bgVideoEl = document.getElementById("bgVideo");
       const toJson = (v) => JSON.stringify(v, null, 2);
+      function setActionOut(value) {
+        if (!actionOut) return;
+        actionOut.textContent = value || "";
+      }
       let latestWeather = null;
       let selectedWeatherDay = 0;
       let walletPublicKey = null;
@@ -498,11 +504,11 @@
         }
         if (!health.zkappPublicKey) {
           placeMarketBetBtn.disabled = true;
-          out.textContent = toJson({
+          setActionOut(toJson({
             error:
               "Missing zkApp public key. Set ZKAPP_PUBLIC_KEY (preferred) or ZKAPP_PRIVATE_KEY in .env.local, then restart marketplace server.",
             details: zkappConfigError || null
-          });
+          }));
         }
       }
 
@@ -541,7 +547,7 @@
         connectBtn.textContent = "Connected";
         connectBtn.disabled = true;
         refreshResolvedMarkets().catch((e) => {
-          out.textContent = toJson({ error: String(e) });
+          setActionOut(toJson({ error: String(e) }));
         });
         return publicKey;
       }
@@ -651,11 +657,12 @@
         marketOddsLabelEl.textContent = `OVER ${yesPct.toFixed(1)}% / UNDER ${noPct.toFixed(1)}%`;
         placeMarketBetBtn.disabled = Boolean(market.resolved);
         if (market.resolved) {
-          out.textContent = toJson({
+          setActionOut(toJson({
             error: "Active on-chain market is resolved. Create a new unresolved market, sync state, then place bet."
-          });
+          }));
           setMarketAvailabilityNote(`Market ${currentMarketDate || currentMarketKey} has already resolved.`);
         } else {
+          setActionOut("");
           setMarketAvailabilityNote(`Active on-chain market for ${currentMarketDate || "selected date"} is ready for private betting.`);
         }
       }
@@ -844,7 +851,7 @@
               try {
                 await refreshMarket();
               } catch (e) {
-                out.textContent = toJson({ error: String(e) });
+                setActionOut(toJson({ error: String(e) }));
               }
             }
             renderWeatherVisualizer();
@@ -865,7 +872,7 @@
               try {
                 await refreshMarket();
               } catch (e) {
-                out.textContent = toJson({ error: String(e) });
+                setActionOut(toJson({ error: String(e) }));
               }
             }
             renderWeatherVisualizer();
@@ -950,7 +957,7 @@
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ intentId: built.intentId, txHash })
           });
-          out.textContent = toJson({ txHash, claim: finalized, payoutSummary: built.payoutSummary });
+          setActionOut(toJson({ txHash, claim: finalized, payoutSummary: built.payoutSummary }));
           await refreshResolvedMarkets();
           await refreshWalletActivity();
           setBetProgress("Claim submitted", false);
@@ -961,7 +968,7 @@
           } else {
             setBetProgress("Claim failed", false);
           }
-          out.textContent = toJson({ error: String(e) });
+          setActionOut(toJson({ error: String(e) }));
         }
       }
 
@@ -1185,7 +1192,7 @@
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ intentId, txHash })
           });
-          out.textContent = toJson({ txHash, marketDate: currentMarketDate, thresholdF: currentThresholdF, finalized });
+          setActionOut(toJson({ txHash, marketDate: currentMarketDate, thresholdF: currentThresholdF, finalized }));
           setBetProgress("Refreshing odds...", true);
           await refreshDailyMarkets();
           await refreshMarket();
@@ -1198,7 +1205,7 @@
           } else {
             setBetProgress("Bet failed", false);
           }
-          out.textContent = toJson({ error: String(e) });
+          setActionOut(toJson({ error: String(e) }));
         }
       };
 
@@ -1217,14 +1224,14 @@
                   body: JSON.stringify({ marketDate: currentMarketDate })
                 })
               : { note: "Oracle sync runs separately in the background." };
-          out.textContent = toJson(res);
+          setActionOut(toJson(res));
           await refreshDailyMarkets();
           await refreshWeather();
           await refreshMarket();
           await refreshResolvedMarkets();
           await refreshWalletActivity();
         } catch (e) {
-          out.textContent = toJson({ error: String(e) });
+          setActionOut(toJson({ error: String(e) }));
         }
       };
 
@@ -1237,10 +1244,10 @@
       document.getElementById("connectWallet").onclick = async () => {
         try {
           const pk = await connectWallet();
-          out.textContent = toJson({ connectedWallet: pk });
+          setActionOut(toJson({ connectedWallet: pk }));
         } catch (e) {
           setWalletStatus("Wallet connection failed");
-          out.textContent = toJson({ error: String(e) });
+          setActionOut(toJson({ error: String(e) }));
         }
       };
 
