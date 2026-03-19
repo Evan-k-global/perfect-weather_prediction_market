@@ -38,6 +38,7 @@ description: Use when implementing or modifying the reusable prediction-market p
 - Do not assume more workers fix a bad state/proving model. Simplify the contract and proving path first.
 - If state cannot be reconstructed from chain events, add recovery/bootstrap paths before increasing operational complexity.
 - Preserve wallet metadata (`receiptMeta`, `positionMeta`) across sync/import cycles. On-chain roots alone are not enough for fast wallet-facing claim UX.
+- Keep market-date identity durable beyond the active betting window. Oracle resolution for rolled-off dates should not depend only on current daily-market rows.
 
 ## Architecture Lessons
 

@@ -176,6 +176,7 @@ We hit that several ways:
 - the daily market projection layer drifted from the actual on-chain market identity
 - wallet-facing metadata like `receiptMeta` could be lost if sync/import cycles overwrote fresher local state
 - a market could roll off the active window without immediately appearing in resolved history if the oracle missed its first nightly resolution window
+- a rolled-off market could also stop resolving entirely if its date identity lived only in the active daily-market window instead of durable state
 
 The fix was not “add more workers.” It was:
 

@@ -120,6 +120,7 @@ After iterating through local builds, hosted Render deploys, heavy worker splits
 - The old queued private-bet path improved privacy in one dimension, but it was too slow and operationally awkward for primary UX.
 - State trees that cannot be reconstructed from chain events become recovery hazards. Fresh zkApp rollouts and clean recovery tooling matter.
 - Hosted state sync and oracle imports must preserve wallet metadata like `receiptMeta`, or the UI loses claimability even when on-chain state is correct.
+- Oracle resolution should not depend only on active-window UI metadata; rolled-off markets still need durable date mapping so overdue resolution can continue.
 - Build-time and runtime compile caches materially reduce cold-start CPU and RAM pressure on hosted services.
 
 ### Current architectural direction

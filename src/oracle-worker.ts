@@ -92,6 +92,41 @@ function marketDateFromTitle(title: string | undefined): string | null {
   return match ? match[1] : null;
 }
 
+function collectMarketDates(
+  state: OperatorStateFile,
+  dailyMarkets: Record<string, unknown>
+): Map<string, string> {
+  const byMarketKey = new Map<string, string>();
+
+  for (const [marketKey, meta] of Object.entries(state.marketMeta || {})) {
+    const marketDate = marketDateFromTitle((meta as StoredMarketMeta | undefined)?.title);
+    if (marketDate) byMarketKey.set(marketKey, marketDate);
+  }
+
+  for (const [marketDate, value] of Object.entries(dailyMarkets || {})) {
+    const marketKey = (value as { marketKey?: unknown } | null)?.marketKey;
+    if (typeof marketKey === 'string' && marketKey.length > 0 && !byMarketKey.has(marketKey)) {
+      byMarketKey.set(marketKey, marketDate);
+    }
+  }
+
+  for (const meta of Object.values(state.positionMeta || {})) {
+    if (!meta || typeof meta.marketKey !== 'string' || typeof meta.marketDate !== 'string' || !meta.marketDate) continue;
+    if (!byMarketKey.has(meta.marketKey)) {
+      byMarketKey.set(meta.marketKey, meta.marketDate);
+    }
+  }
+
+  for (const meta of Object.values(state.receiptMeta || {})) {
+    if (!meta || typeof meta.marketKey !== 'string' || typeof meta.marketDate !== 'string' || !meta.marketDate) continue;
+    if (!byMarketKey.has(meta.marketKey)) {
+      byMarketKey.set(meta.marketKey, meta.marketDate);
+    }
+  }
+
+  return byMarketKey;
+}
+
 async function saveDailyMarketsFile(
   filePath: string,
   dailyMarkets: Record<string, unknown>
@@ -125,7 +160,8 @@ function shouldRunEnsurePass(todayIso: string): boolean {
 function shouldRunResolvePass(
   todayIso: string,
   nowHour: number,
-  state: OperatorStateFile
+  state: OperatorStateFile,
+  dailyMarkets: Record<string, unknown>
 ): {
   shouldRun: boolean;
   windowKey: string | null;
@@ -134,8 +170,8 @@ function shouldRunResolvePass(
 } {
   const pastDueUnresolvedDates: string[] = [];
   const eligibleTodayDates: string[] = [];
-  for (const [marketKey, meta] of Object.entries(state.marketMeta || {})) {
-    const marketDate = marketDateFromTitle((meta as StoredMarketMeta | undefined)?.title);
+  const marketDates = collectMarketDates(state, dailyMarkets);
+  for (const [marketKey, marketDate] of marketDates.entries()) {
     const stored = state.markets[marketKey];
     if (!marketDate || !stored || stored.resolved === '1') continue;
     if (marketDate < todayIso) {
@@ -176,7 +212,7 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
   const state = exportPayload?.state as OperatorStateFile | null;
   const dailyMarkets = (exportPayload?.dailyMarkets || {}) as Record<string, unknown>;
   if (!state) return;
-  const resolveDecision = shouldRunResolvePass(todayIso, nowHour, state);
+  const resolveDecision = shouldRunResolvePass(todayIso, nowHour, state, dailyMarkets);
   const runResolvePass = resolveDecision.shouldRun;
   console.log(
     `[oracle-worker] resolve candidates today=${todayIso} hour=${nowHour} past_due=${resolveDecision.pastDueUnresolvedDates.join(',') || 'none'} today_eligible=${resolveDecision.eligibleTodayDates.join(',') || 'none'}`
@@ -208,9 +244,10 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
   }
 
   const updatedStateAfterEnsure = await loadJsonFile<OperatorStateFile>(stateFile);
+  const updatedDailyMarketsAfterEnsure = await loadJsonFile<Record<string, unknown>>(dailyMarketsFile);
+  const marketDates = collectMarketDates(updatedStateAfterEnsure, updatedDailyMarketsAfterEnsure);
   if (runResolvePass) {
-    for (const [marketKey, meta] of Object.entries(updatedStateAfterEnsure.marketMeta || {})) {
-      const marketDate = marketDateFromTitle((meta as StoredMarketMeta | undefined)?.title);
+    for (const [marketKey, marketDate] of marketDates.entries()) {
       const stored = updatedStateAfterEnsure.markets[marketKey];
       if (!marketDate || !stored || stored.resolved === '1') continue;
       const shouldResolve = marketDate < todayIso || marketDate === todayIso;
