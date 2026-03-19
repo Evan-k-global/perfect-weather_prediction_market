@@ -52,6 +52,31 @@ function readSenderPrivateKey(): PrivateKey {
   return PrivateKey.fromBase58(raw);
 }
 
+function marketDateFromTitle(title: string | undefined): string | undefined {
+  if (!title) return undefined;
+  const match = /^Atherton, CA - (\d{4}-\d{2}-\d{2}) Over\/Under \d+F$/.exec(title);
+  return match ? match[1] : undefined;
+}
+
+function recoverMarketDateIso(state: Awaited<ReturnType<typeof loadOperatorState>>, marketKey: string): string | undefined {
+  const fromMeta = marketDateFromTitle(state.marketMeta?.[marketKey]?.title);
+  if (fromMeta) return fromMeta;
+
+  for (const meta of Object.values(state.positionMeta || {})) {
+    if (meta?.marketKey === marketKey && typeof meta.marketDate === 'string' && meta.marketDate) {
+      return meta.marketDate;
+    }
+  }
+
+  for (const meta of Object.values(state.receiptMeta || {})) {
+    if (meta?.marketKey === marketKey && typeof meta.marketDate === 'string' && meta.marketDate) {
+      return meta.marketDate;
+    }
+  }
+
+  return undefined;
+}
+
 async function readAttestation(pathname: string): Promise<TlsnWeatherAttestation> {
   const raw = await readFile(pathname, 'utf8');
   const candidate = JSON.parse(raw) as Record<string, unknown>;
@@ -146,8 +171,7 @@ async function main(): Promise<void> {
     );
   }
   const meta = state.marketMeta?.[marketKey.toString()];
-  const marketDateMatch = /^Atherton, CA - (\d{4}-\d{2}-\d{2}) Over\/Under \d+F$/.exec(meta?.title || '');
-  const marketDateIso = marketDateMatch ? marketDateMatch[1] : undefined;
+  const marketDateIso = recoverMarketDateIso(state, marketKey.toString());
   if (meta) {
     if (!meta.settlementSource.includes(allowedServerName)) {
       throw new Error('allowed server does not match market settlement source');
