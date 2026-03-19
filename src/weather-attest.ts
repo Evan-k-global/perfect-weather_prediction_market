@@ -496,6 +496,7 @@ export async function runWeatherAttestation(): Promise<void> {
 
   await copyFile(outputAttestation, localAttestation);
   await archiveAttestation(outputAttestation, archiveDir);
+  await archiveAttestationByMarketDate(outputAttestation, archiveDir);
   await writeTlsnStatus({ stage: 'done', ok: true, ts: new Date().toISOString(), serverHost, serverDomain, endpoint }, statusPath);
 
   console.log('Weather attestation generated.');
@@ -521,11 +522,33 @@ async function archiveAttestation(sourcePath: string, archiveDir: string): Promi
   await copyFile(sourcePath, archived);
 }
 
+async function archiveAttestationByMarketDate(sourcePath: string, archiveDir: string): Promise<void> {
+  const raw = await readFile(sourcePath, 'utf8');
+  const parsed = JSON.parse(raw) as { response_body?: string };
+  if (typeof parsed.response_body !== 'string') return;
+  const responseJson = JSON.parse(parsed.response_body) as {
+    properties?: { periods?: Array<{ startTime?: string }> };
+  };
+  const periods = responseJson.properties?.periods || [];
+  const marketDates = [...new Set(
+    periods
+      .map((period) => (typeof period.startTime === 'string' ? period.startTime.slice(0, 10) : null))
+      .filter((value): value is string => Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value)))
+  )];
+  if (marketDates.length === 0) return;
+  await mkdir(archiveDir, { recursive: true });
+  for (const marketDate of marketDates) {
+    await copyFile(sourcePath, path.join(archiveDir, `${marketDate}-attestation.json`));
+  }
+}
+
 export async function findArchivedAttestationForMarketDate(
   marketDateIso: string,
   archiveDir: string = path.resolve(projectRoot, 'data', 'tlsn-output', 'archive')
 ): Promise<string | null> {
   if (!(await exists(archiveDir))) return null;
+  const exactPath = path.join(archiveDir, `${marketDateIso}-attestation.json`);
+  if (await exists(exactPath)) return exactPath;
   const entries = (await readdir(archiveDir))
     .filter((name) => name.endsWith('-attestation.json'))
     .sort()
