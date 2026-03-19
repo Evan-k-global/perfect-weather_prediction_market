@@ -8,6 +8,7 @@
     "dev": "tsc -w -p tsconfig.json",
     "build": "tsc -p tsconfig.json",
     "fast-cache:build": "node --enable-source-maps dist/build-fast-browser-cache.js",
+    "fast-node-cache:build": "node --enable-source-maps dist/build-fast-node-cache.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm typecheck",
     "bootstrap-fast-zkapp:zeko": "node --enable-source-maps dist/bootstrap-fast-zkapp-zeko.js",

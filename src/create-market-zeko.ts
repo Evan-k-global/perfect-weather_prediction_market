@@ -14,6 +14,7 @@ import {
   StoredMarketMeta
 } from './state-store.js';
 import { withTxRetry } from './tx-retry.js';
+import { getFastNodeCompileCache } from './fast-compile-cache.js';
 
 function readEnv(name: string): string {
   const value = process.env[name];
@@ -103,7 +104,9 @@ async function main(): Promise<void> {
     oracleStatementHash: Field(0)
   });
 
-  await FastPredictionMarketPlatform.compile();
+  await FastPredictionMarketPlatform.compile({
+    cache: getFastNodeCompileCache()
+  });
   const zkapp = new FastPredictionMarketPlatform(zkappAddress);
 
   await withTxRetry(

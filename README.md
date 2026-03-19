@@ -4,7 +4,7 @@ A Zeko testnet prediction market demo that combines:
 
 - real on-chain daily markets
 - wallet-signed betting
-- private live bet intent via batching
+- lean remote tx proving for wallet-signed bets and claims
 - zkTLS-backed weather oracle verification
 - agent/model plug-in points for private signals and relayed execution
 
@@ -16,7 +16,7 @@ Reusable infrastructure for other markets:
 
 - zkApp market contract and state roots
 - wallet tx build/finalize flow
-- private bet batching path
+- hosted oracle lifecycle and tx-prover split
 - zkTLS / TLSNotary oracle verification path
 - Zeko deploy, sync, and per-date market ops scripts
 
@@ -35,16 +35,16 @@ A concrete weather market built on that protocol:
 This demo is trying to solve three real problems at once:
 
 - **oracle integrity**: weather data can be verified through zkTLS instead of blindly trusting a backend fetch
-- **bet privacy**: live bet intent is batched instead of being exposed as a simple direct public market-side update
+- **bet privacy**: hosted services stay out of wallet signing while keeping user transaction metadata separate from oracle lifecycle work
 - **developer extensibility**: the protocol layer can be reused for other markets, and agents can plug in as private model or signal providers
 
 ## What Is Private
 
-This repo supports **private live betting intent**, not full shielded finance.
+This repo supports **wallet-signed user transactions with a hosted oracle/prover split**, not full shielded finance.
 
 - wallet activity is still public on-chain
 - aggregate market state is public on-chain
-- live per-user bet intent is batched and not exposed as a simple direct one-wallet-one-side market update
+- user signing still happens in-wallet, while hosted services are split so market rendering, oracle lifecycle, and tx proving do not fight each other
 
 That is the deliberate tradeoff for this demo.
 
@@ -83,63 +83,44 @@ pnpm weather:daemon
 
 ## Deployment Modes
 
-### Unified demo service
+Recommended hosted split:
 
-Recommended for demos and small hosted deployments:
+- `perfect-weather-prediction-market`
+  - UI
+  - fast state rendering
+  - tx context/finalize
+- `perfect-weather-oracle-worker`
+  - weather sync
+  - daily market creation
+  - overdue market resolution
+- `perfect-weather-tx-prover`
+  - bet/claim proving only
 
-- one service runs:
-  - `marketplace:serve`
-  - `weather:daemon`
-  - private batch proving
-  - on-chain daily market ensure/resolve
-- simpler operations
-- higher RAM requirement
+Not part of the normal hosted path:
 
-This is the current recommended Render mode if you want the full product behavior in one place. Use enough memory headroom for o1js proving and daemon activity.
-
-### Split production services
-
-Recommended once you want stricter operational boundaries:
-
-- web service:
-  - UI/API
-  - oracle status and market display
-- worker/operator service:
-  - private batch proving
-  - on-chain market creation
-  - on-chain resolution
-
-The repo now includes this split mode directly for Render:
-
-- web service:
-  - `perfect-weather-prediction-market`
-- worker service:
-  - `perfect-weather-operator-worker`
-
-Why split:
-
-- isolates user traffic from proving spikes
-- reduces web-service memory pressure
-- gives better control over settlement/operator jobs
+- operator worker
+- queue-based private batching
+- browser proving as the primary UX path
 
 ## Build Recommendation
 
 After iterating through local builds, hosted Render deploys, heavy worker splits, server-side provers, and browser proving, the current recommendation is:
 
 - keep the **market web service** focused on UI, lightweight API state, and finalize/indexing
-- keep the **oracle worker** responsible for forward market creation and resolution
+- keep the **oracle worker** responsible for weather sync, rolling market creation, and overdue resolution
+- keep the **tx-prover** narrowly focused on bet/claim proving
 - keep the **operator / private queue** out of the normal user betting path
-- use **client-side proving** for active on-chain bets
-- treat any queued/deferred path as exceptional fallback only, not primary UX
+- prebuild and reuse compile caches so lower-tier hosted instances survive cold boot more reliably
 
 ### What we learned the hard way
 
-- A large all-in-one zkApp contract is too heavy for fast browser proving and too fragile for web-service proving.
+- Browser proving for this contract surface was far too slow in practice; local Node proving and a lean remote prover were dramatically better.
 - Moving heavy proving onto the hosted web service causes slow responses, 502s, and rollout instability.
 - Adding more workers and services does not fix a broken core proving/state model. It can hide the problem while increasing operational complexity.
-- The old queued private-bet path improved live intent privacy, but it was operationally slow and economically awkward without slippage controls.
+- The old queued private-bet path improved privacy in one dimension, but it was too slow and operationally awkward for primary UX.
 - State trees that cannot be reconstructed from chain events become recovery hazards. Fresh zkApp rollouts and clean recovery tooling matter.
-- Browser proving is a better fit for active bets than server proving, but only if the proving surface is intentionally small.
+- Hosted state sync and oracle imports must preserve wallet metadata like `receiptMeta`, or the UI loses claimability even when on-chain state is correct.
+- Build-time and runtime compile caches materially reduce cold-start CPU and RAM pressure on hosted services.
 
 ### Current architectural direction
 
@@ -148,19 +129,20 @@ After iterating through local builds, hosted Render deploys, heavy worker splits
   - user directional intent should not be trivially attributable at click time
 - **Fast path**
   - active market exists on-chain
-  - browser builds and proves the bet locally
+  - tx-prover builds the bet/claim transaction
   - wallet signs and sends
 - **Background path**
   - oracle worker creates the next daily markets and resolves finished ones
-- **Deferred path**
-  - claims and richer receipt-root settlement can happen after the hot betting path
+- **State path**
+  - hosted market persists wallet activity / claim metadata for fast rendering
 
 ### What to avoid
 
 - Do not put normal bet proving behind the operator queue unless you deliberately want slower micro-batch privacy.
+- Do not let startup sync or oracle imports overwrite fresh wallet metadata.
 - Do not treat extra hosted workers as a substitute for simplifying the proving surface.
 - Do not mix legacy claim/position machinery back into the hot bet path unless you accept much slower proofs.
-- Do not assume local success means hosted success; Render memory/CPU and startup behavior exposed several issues that did not show up locally.
+- Do not assume local success means hosted success; Render memory/CPU, cold compile time, and startup races exposed issues that did not show up locally.
 
 ## Developer Docs
 

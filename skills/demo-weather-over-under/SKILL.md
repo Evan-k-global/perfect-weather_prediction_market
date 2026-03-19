@@ -30,7 +30,7 @@ description: Use when working on the Atherton weather demo market UI and adapter
 4. Render:
    - clear yes/no labels with threshold value
    - odds bars (market-level and day-level)
-5. Keep all actions wallet-signed for on-chain bet updates.
+5. Keep all actions wallet-signed for on-chain bet updates and claims.
 
 ## Guardrails
 
@@ -38,8 +38,9 @@ description: Use when working on the Atherton weather demo market UI and adapter
 - If no pool/bets yet, display neutral `50/50`.
 - Keep oracle errors actionable in UI (`refresh oracle`, strict mode notes).
 - Do not warn on initial page load that a market is missing if the backend has not actually failed to create/find it yet.
-- Prefer the button label `Place Bet`; show temporary status in nearby progress text instead of renaming the primary action.
+- Prefer the button label `Place Bet`; temporary statuses can replace the button label during the in-flight action but should reset cleanly after success/failure.
 - Do not let demo daily-market projections drift away from the actual on-chain market identity.
+- Do not leave resolved/claim UI dependent on stale daily rows; once a market rolls off the active window it still needs to appear in resolved history via hosted wallet metadata.
 
 ## Build Recommendations
 
@@ -51,3 +52,9 @@ description: Use when working on the Atherton weather demo market UI and adapter
   - sync local state
   - only then let the UI claim a date is active or missing
 - If the market feed and daily-market feed disagree, trust the real on-chain market feed first and repair the projection layer second.
+- For hosted operation:
+  - market renders quickly from shared state
+  - oracle runs background lifecycle work
+  - tx-prover handles bet/claim proving
+  - browser wallet signs
+- Past-date resolution must retry on the next oracle cycle if a market missed its first nightly window; do not make users wait another full day.

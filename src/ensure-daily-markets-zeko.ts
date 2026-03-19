@@ -11,6 +11,7 @@ import { DEFAULT_STATE_FILE, buildMarketsMerkleMap, loadOperatorState, saveOpera
 import { assertLocalMarketsRootMatchesChain, isUninitializedFastZkappError } from './fast-chain-state.js';
 import { withTxRetry } from './tx-retry.js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
+import { getFastNodeCompileCache } from './fast-compile-cache.js';
 
 type DemoDailyMarketFile = Record<string, {
   marketDate: string;
@@ -120,7 +121,9 @@ async function main(): Promise<void> {
     return;
   }
   const daily = await loadDemoDailyMarkets(dailyMarketsFile);
-  await FastPredictionMarketPlatform.compile();
+  await FastPredictionMarketPlatform.compile({
+    cache: getFastNodeCompileCache()
+  });
   const zkapp = new FastPredictionMarketPlatform(zkappAddress);
 
   let created = 0;

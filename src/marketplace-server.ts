@@ -52,6 +52,7 @@ import {
 import { withTxRetry } from './tx-retry.js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
 import { getSuggestedSequencerFee } from './sequencer-fee.js';
+import { getFastNodeCompileCache } from './fast-compile-cache.js';
 
 const execFileAsync = promisify(execFile);
 const USER_POSITIONS_FILE = './data/user-positions.json';
@@ -65,6 +66,7 @@ const TLSN_STATUS_FILE = './data/tlsn-output/latest/status.json';
 const STARTUP_READY_FILE = './data/startup-ready.json';
 const FRESH_ZKAPP_ARCHIVE_DIR = './data/fresh-zkapp-archives';
 const CLAIM_STATUS_CACHE_TTL_MS = 30_000;
+const RECEIPT_BACKFILL_TTL_MS = 5 * 60_000;
 
 type AgentModel = {
   id: string;
@@ -115,6 +117,11 @@ type PendingTxIntent = {
   receiptSalt?: string | null;
   userNetPositionAfter: number;
   createdAtUnixMs: number;
+};
+
+type ReceiptBackfillCacheEntry = {
+  attemptedAtUnixMs: number;
+  recoveredCount: number;
 };
 
 type SerializedMerkleWitness = {
@@ -278,6 +285,7 @@ const agents: AgentModel[] = [
 const orders: Record<string, EscrowOrder> = {};
 const balances: Record<string, UserBalance> = {};
 const pendingTxIntents: Record<string, PendingTxIntent> = {};
+const receiptBackfillCache = new Map<string, ReceiptBackfillCacheEntry>();
 const claimTxStatusCache = new Map<string, { status: string; fetchedAtUnixMs: number }>();
 const privateBetQueue: PrivateQueuedBet[] = [];
 const privateBatchHistory: PrivateBatchHistoryEntry[] = [];
@@ -1618,7 +1626,9 @@ function deserializeMerkleWitness(serialized: SerializedMerkleWitness): MerkleMa
 
 async function ensureFastContractCompiled(): Promise<void> {
   if (!fastContractCompilePromise) {
-    fastContractCompilePromise = FastPredictionMarketPlatform.compile().then(() => undefined);
+    fastContractCompilePromise = FastPredictionMarketPlatform.compile({
+      cache: getFastNodeCompileCache()
+    }).then(() => undefined);
   }
   await fastContractCompilePromise;
 }
@@ -1998,6 +2008,112 @@ async function listResolvedWalletPositions(
     const bd = b.marketDate || '';
     return ad < bd ? 1 : ad > bd ? -1 : 0;
   });
+}
+
+async function maybeBackfillReceiptMetaForWallet(
+  walletPublicKey: string,
+  stateFile: string
+): Promise<{ attempted: boolean; recoveredCount: number }> {
+  const cached = receiptBackfillCache.get(walletPublicKey);
+  const now = Date.now();
+  if (cached && now - cached.attemptedAtUnixMs < RECEIPT_BACKFILL_TTL_MS) {
+    return { attempted: false, recoveredCount: cached.recoveredCount };
+  }
+
+  setActiveZekoNetwork();
+  const zkapp = new FastPredictionMarketPlatform(getZkappPublicKey());
+  const ownerCommitment = ownerCommitmentFromWalletPublicKey(walletPublicKey).toString();
+  const state = await loadOperatorState(stateFile);
+  const events = await zkapp.fetchEvents();
+  const marketLeaves = new Map<string, StoredMarketLeaf>();
+  const txDeltas = new Map<string, { marketKey: string; addTotalBet: number; addYesBet: number }>();
+  let recoveredCount = 0;
+
+  for (const evt of events) {
+    const txHash = evt?.event?.transactionInfo?.transactionHash;
+    if (!txHash) continue;
+    if (evt.type === 'marketCreated' || evt.type === 'marketUpdated' || evt.type === 'marketResolved') {
+      const data = evt.event.data as unknown as {
+        marketKey: Field;
+        configHash: Field;
+        closeSlot: UInt64;
+        expirySlot: UInt64;
+        thresholdValueTenthC: UInt64;
+        totalPositionBet: UInt64;
+        totalYesPositionBet: UInt64;
+        resolved: Bool;
+        outcome: Bool;
+        oracleStatementHash: Field;
+      };
+      const marketKey = data.marketKey.toString();
+      const nextLeaf = serializeMarketLeaf(
+        new MarketLeaf({
+          configHash: data.configHash,
+          closeSlot: data.closeSlot,
+          expirySlot: data.expirySlot,
+          thresholdValueTenthC: data.thresholdValueTenthC,
+          totalPositionBet: data.totalPositionBet,
+          totalYesPositionBet: data.totalYesPositionBet,
+          resolved: data.resolved,
+          outcome: data.outcome,
+          oracleStatementHash: data.oracleStatementHash
+        })
+      );
+      const previousLeaf = marketLeaves.get(marketKey);
+      if (evt.type === 'marketUpdated' && previousLeaf) {
+        const addTotalBet =
+          Number(BigInt(nextLeaf.totalPositionBet) - BigInt(previousLeaf.totalPositionBet));
+        const addYesBet =
+          Number(BigInt(nextLeaf.totalYesPositionBet) - BigInt(previousLeaf.totalYesPositionBet));
+        if (Number.isFinite(addTotalBet) && addTotalBet > 0 && Number.isFinite(addYesBet) && addYesBet >= 0) {
+          txDeltas.set(txHash, { marketKey, addTotalBet, addYesBet });
+        }
+      }
+      marketLeaves.set(marketKey, nextLeaf);
+      continue;
+    }
+    if (evt.type !== 'receiptCommitted') continue;
+    const data = evt.event.data as unknown as {
+      receiptKey: Field;
+      marketKey: Field;
+      ownerCommitment: Field;
+      receiptCommitment: Field;
+    };
+    if (data.ownerCommitment.toString() !== ownerCommitment) continue;
+    const receiptKey = data.receiptKey.toString();
+    if (state.receiptMeta?.[receiptKey]) continue;
+    const delta = txDeltas.get(txHash);
+    const marketKey = data.marketKey.toString();
+    const addTotalBet = delta?.marketKey === marketKey ? delta.addTotalBet : null;
+    const addYesBet = delta?.marketKey === marketKey ? delta.addYesBet : null;
+    if (addTotalBet === null || addYesBet === null) continue;
+    const side = addYesBet === addTotalBet ? 'over' : addYesBet === 0 ? 'under' : null;
+    if (!side) continue;
+    const marketDate = marketDateFromViewTitle(state.marketMeta?.[marketKey]?.title);
+    state.receiptMeta = state.receiptMeta || {};
+    state.receiptMeta[receiptKey] = {
+      marketKey,
+      marketDate,
+      walletPublicKey,
+      ownerCommitment,
+      createdAtUnixMs: Number(evt.blockHeight?.toString?.() || 0),
+      fundingTxHash: txHash,
+      receiptCommitment: data.receiptCommitment.toString(),
+      receiptSalt: '',
+      side,
+      stakeTmina: addTotalBet
+    };
+    recoveredCount += 1;
+  }
+
+  if (recoveredCount > 0) {
+    await saveOperatorState(stateFile, state);
+  }
+  receiptBackfillCache.set(walletPublicKey, {
+    attemptedAtUnixMs: now,
+    recoveredCount
+  });
+  return { attempted: true, recoveredCount };
 }
 
 function markPositionClaimConfirmed(state: Awaited<ReturnType<typeof loadOperatorState>>, positionKey: string, confirmedAtUnixMs: number) {
@@ -2791,12 +2907,18 @@ async function main(): Promise<void> {
 
       if (req.method === 'GET' && url.pathname === '/api/payouts/resolved-markets') {
         const walletPublicKey = requireString(url.searchParams.get('walletPublicKey'), 'walletPublicKey');
-        const positions = await listResolvedWalletPositions(walletPublicKey, defaultStatePath);
+        let positions = await listResolvedWalletPositions(walletPublicKey, defaultStatePath);
+        const repaired = await maybeBackfillReceiptMetaForWallet(walletPublicKey, defaultStatePath);
+        const recoveredCount = repaired.recoveredCount;
+        if (repaired.recoveredCount > 0) {
+          positions = await listResolvedWalletPositions(walletPublicKey, defaultStatePath);
+        }
         writeJson(res, 200, {
           ok: true,
           walletPublicKey,
           count: positions.length,
           positions,
+          recoveredCount,
           note: 'Winning resolved receipt bets can be claimed here after daily finalization. Losing resolved bets remain visible for history.'
         });
         return;
@@ -3164,6 +3286,12 @@ async function main(): Promise<void> {
         const body = await readJsonBody(req);
         requireOracleAuthorization(req, body as Record<string, unknown>);
         const imported = normalizeOracleStateImportBody(body as Record<string, unknown>);
+        const dailyMarketsPath = process.env.DEMO_DAILY_MARKETS_FILE || DEMO_DAILY_MARKETS_FILE;
+        let existingDailyMarkets: Record<string, DemoDailyMarket> | null = null;
+        if (Object.keys(imported.dailyMarkets || {}).length > 0) {
+          existingDailyMarkets = await loadDemoDailyMarkets(dailyMarketsPath);
+        }
+
         const state = await loadOperatorState(defaultStatePath);
         state.markets = {
           ...(state.markets || {}),
@@ -3179,9 +3307,7 @@ async function main(): Promise<void> {
         };
         await saveOperatorState(defaultStatePath, state);
 
-        const dailyMarketsPath = process.env.DEMO_DAILY_MARKETS_FILE || DEMO_DAILY_MARKETS_FILE;
-        if (Object.keys(imported.dailyMarkets || {}).length > 0) {
-          const existingDailyMarkets = await loadDemoDailyMarkets(dailyMarketsPath);
+        if (existingDailyMarkets) {
           await saveDemoDailyMarkets(
             {
               ...existingDailyMarkets,

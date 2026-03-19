@@ -126,6 +126,65 @@ This matters because prediction markets are not just contract design. They are o
 
 The repo now includes that operational layer, not just the headline features.
 
+## The hosted architecture changed a lot as we learned
+
+The final shape is much cleaner than the first few hosted attempts.
+
+- the **market service** is for fast rendering, lightweight transaction context, and finalize/indexing
+- the **oracle worker** is for weather sync, daily market creation, and overdue resolution
+- the **tx-prover** is a narrow proving service for bet and claim transactions only
+- the **wallet** still signs the transaction on the user side
+
+That split matters because each responsibility has a different compute and UX profile.
+
+### Why we moved away from browser proving
+
+In theory, browser proving was attractive:
+
+- user machine compute
+- no hosted prover
+- strong privacy posture
+
+In practice, for this contract surface it was far too slow. A path that took around seconds in local Node could take many minutes in the browser. That was not a wallet handoff problem. It was a compile/prove environment problem.
+
+So the practical hosted answer became:
+
+- keep signing in the wallet
+- keep the market web service lean
+- move proof generation to a very small dedicated prover service
+
+That is not as private as user-device proving, but it is vastly better UX and much more reliable than a bloated hosted market service or a browser worker that never resolves.
+
+### What we learned about compute
+
+The most important hosted lesson was that more machines do not automatically make the product better.
+
+- adding an operator did not fix a bad hot path
+- letting the market web service prove transactions created 502s and unstable startup behavior
+- the best place to spend compute is on a narrowly-scoped tx-prover, not on a multi-purpose web service
+
+We also learned that compile caching matters.
+
+Build-time and runtime o1js caches reduce cold-start pressure, which makes lower-tier hosted instances more viable. That is especially important for tx-prover and startup chain scripts.
+
+### What we learned about state and UX
+
+The chain can be perfectly correct while the UI is still wrong.
+
+We hit that several ways:
+
+- the daily market projection layer drifted from the actual on-chain market identity
+- wallet-facing metadata like `receiptMeta` could be lost if sync/import cycles overwrote fresher local state
+- a market could roll off the active window without immediately appearing in resolved history if the oracle missed its first nightly resolution window
+
+The fix was not “add more workers.” It was:
+
+- use one source of truth for market identity
+- preserve wallet metadata across sync/import cycles
+- let overdue past-date resolution retry on the next oracle cycle instead of waiting another day
+
+Those are the kinds of details that make the difference between a zk demo and a usable product.
+
 ## What we learned by actually trying to host it
 
 This project got much better once we stopped treating architecture as a whiteboard exercise and started treating it as a deployment problem.

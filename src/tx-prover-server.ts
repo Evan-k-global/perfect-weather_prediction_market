@@ -13,6 +13,7 @@ import {
   fetchAccount
 } from 'o1js';
 import { FastPredictionMarketPlatform } from './fast-contract.js';
+import { getFastNodeCompileCache } from './fast-compile-cache.js';
 import { MarketLeaf } from './market-types.js';
 import type { StoredMarketLeaf } from './state-store.js';
 
@@ -101,7 +102,9 @@ function setActiveNetwork(network: { graphql: string; networkId: string }): void
 
 async function ensureFastContractCompiled(): Promise<void> {
   if (!compilePromise) {
-    compilePromise = FastPredictionMarketPlatform.compile().then(() => undefined);
+    compilePromise = FastPredictionMarketPlatform.compile({
+      cache: getFastNodeCompileCache()
+    }).then(() => undefined);
   }
   await compilePromise;
 }

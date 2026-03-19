@@ -153,6 +153,19 @@ async function main(): Promise<void> {
     }
   }
 
+  const latestState = await loadOperatorState(stateFile);
+  nextState.marketMeta = {
+    ...(existingState.marketMeta || {}),
+    ...(latestState.marketMeta || {})
+  };
+  nextState.positionMeta = {
+    ...(existingState.positionMeta || {}),
+    ...(latestState.positionMeta || {})
+  };
+  nextState.receiptMeta = {
+    ...(existingState.receiptMeta || {}),
+    ...(latestState.receiptMeta || {})
+  };
   await saveOperatorState(stateFile, nextState);
   const localRoot = getLocalMarketsRoot(nextState);
   const localReceiptsRoot = getLocalReceiptsRoot(nextState);

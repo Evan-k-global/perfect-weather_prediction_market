@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import './env.js';
 import { AccountUpdate, Field, Mina, PrivateKey, fetchAccount } from 'o1js';
 import { FastPredictionMarketPlatform } from './fast-contract.js';
+import { getFastNodeCompileCache } from './fast-compile-cache.js';
 import { withTxRetry } from './tx-retry.js';
 
 function readEnv(name: string): string {
@@ -37,7 +38,9 @@ const zkappAlreadyDeployed = Boolean(
 );
 
 console.log('Compiling FastPredictionMarketPlatform...');
-await FastPredictionMarketPlatform.compile();
+await FastPredictionMarketPlatform.compile({
+  cache: getFastNodeCompileCache()
+});
 
 const sourceHash = Field(readEnv('ORACLE_SOURCE_HASH'));
 const requestPathHash = Field(readEnv('ORACLE_REQUEST_PATH_HASH'));
