@@ -128,6 +128,7 @@ async function main(): Promise<void> {
     markets: {},
     positions: {},
     receipts: {},
+    claimedReceipts: {},
     usedNonces: {},
     marketMeta: existingState.marketMeta || {},
     positionMeta: existingState.positionMeta || {},
@@ -147,6 +148,10 @@ async function main(): Promise<void> {
         const receiptCommitment = asField(evt.data.receiptCommitment, 'receiptCommitment').toString();
         nextState.receipts = nextState.receipts || {};
         nextState.receipts[receiptKey] = receiptCommitment;
+      } else if (evt.type === 'receiptClaimed') {
+        const receiptKey = asField(evt.data.receiptKey, 'receiptKey').toString();
+        nextState.claimedReceipts = nextState.claimedReceipts || {};
+        nextState.claimedReceipts[receiptKey] = '1';
       }
     } catch {
       // ignore incompatible historical events from older contract versions
@@ -184,6 +189,7 @@ async function main(): Promise<void> {
       markets: {},
       positions: {},
       receipts: {},
+      claimedReceipts: {},
       usedNonces: {},
       marketMeta: {},
       positionMeta: {},

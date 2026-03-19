@@ -36,6 +36,7 @@ import { FastPredictionMarketPlatform } from './fast-contract.js';
 import { MarketLeaf } from './market-types.js';
 import { assertLocalMarketsRootMatchesChain, assertLocalReceiptsRootMatchesChain } from './fast-chain-state.js';
 import {
+  buildClaimedReceiptsMerkleMap,
   buildMarketsMerkleMap,
   buildReceiptsMerkleMap,
   deserializeMarketLeaf,
@@ -151,12 +152,25 @@ type BrowserMarketBetContext = {
 };
 
 type ClaimPayoutContext = {
+  network: {
+    graphql: string;
+    networkId: string;
+  };
+  zkappPublicKey: string;
   walletPublicKey: string;
   fee: string;
-  payoutNanomina: string;
   payoutTmina: string;
   marketKey: string;
   positionKey: string;
+  receiptCommitment: string;
+  ownerCommitment: string;
+  addTotalBet: number;
+  addYesBet: number;
+  saltHash: string;
+  resolvedLeaf: StoredMarketLeaf;
+  marketWitness: SerializedMerkleWitness;
+  receiptWitness: SerializedMerkleWitness;
+  claimedReceiptWitness: SerializedMerkleWitness;
 };
 
 type DemoDailyMarket = {
@@ -260,7 +274,7 @@ type ResolvedWalletPosition = {
   resolvedOutcome: 'over' | 'under';
   won: boolean;
   claimed: boolean;
-  claimStatus: 'claimable' | 'submitted' | 'confirmed' | 'not-applicable' | 'pending-fast-claim-support';
+  claimStatus: 'claimable' | 'submitted' | 'confirmed' | 'not-applicable';
   claimTxHash: string | null;
   claimSubmittedAtUnixMs: number | null;
   claimConfirmedAtUnixMs: number | null;
@@ -1810,6 +1824,47 @@ async function buildLocalServerReceiptBetTx(context: BrowserMarketBetContext): P
   return tx.toJSON();
 }
 
+async function buildLocalServerClaimReceiptTx(context: ClaimPayoutContext): Promise<unknown> {
+  setActiveZekoNetwork();
+  await ensureFastContractCompiled();
+
+  const feePayer = PublicKey.fromBase58(context.walletPublicKey);
+  const account = await fetchAccount({ publicKey: feePayer });
+  if (account.error) {
+    throw new Error(`fee payer account not found: ${account.error.statusText || 'unknown'}`);
+  }
+
+  const zkappAddress = PublicKey.fromBase58(context.zkappPublicKey);
+  const zkapp = new FastPredictionMarketPlatform(zkappAddress);
+  const tx = await Mina.transaction({ sender: feePayer, fee: context.fee }, async () => {
+    zkapp.claimReceiptPayout(
+      Field(context.marketKey),
+      deserializeMarketLeaf(context.resolvedLeaf),
+      deserializeMerkleWitness(context.marketWitness),
+      Field(context.positionKey),
+      Field(context.receiptCommitment),
+      deserializeMerkleWitness(context.receiptWitness),
+      deserializeMerkleWitness(context.claimedReceiptWitness),
+      feePayer,
+      UInt64.from(context.addTotalBet),
+      UInt64.from(context.addYesBet),
+      Field(context.ownerCommitment),
+      Field(context.saltHash)
+    );
+  });
+
+  const feePayerUpdate = (tx as any).feePayer;
+  if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
+    feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
+  }
+  if (feePayerUpdate?.body) {
+    feePayerUpdate.body.useFullCommitment = Bool(true);
+  }
+
+  await tx.prove();
+  return tx.toJSON();
+}
+
 function getOracleActionToken(): string | null {
   const raw = process.env.ORACLE_ACTION_TOKEN || process.env.OPERATOR_ACTION_TOKEN;
   if (!raw) return null;
@@ -1997,7 +2052,7 @@ async function listResolvedWalletPositions(
       resolvedOutcome,
       won,
       claimed: meta.claimStatus === 'confirmed',
-      claimStatus: won ? (meta.claimStatus || 'pending-fast-claim-support') : 'not-applicable',
+      claimStatus: won ? (meta.claimStatus || 'claimable') : 'not-applicable',
       claimTxHash: meta.claimTxHash || null,
       claimSubmittedAtUnixMs: meta.claimSubmittedAtUnixMs || null,
       claimConfirmedAtUnixMs: meta.claimConfirmedAtUnixMs || null
@@ -2142,8 +2197,16 @@ function markPositionClaimConfirmed(state: Awaited<ReturnType<typeof loadOperato
 function finalizeReceiptClaimStatuses(state: Awaited<ReturnType<typeof loadOperatorState>>): boolean {
   let dirty = false;
   state.receiptMeta = state.receiptMeta || {};
+  state.claimedReceipts = state.claimedReceipts || {};
   for (const [receiptKey, meta] of Object.entries(state.receiptMeta)) {
     if (!meta) continue;
+    if (state.claimedReceipts[receiptKey] === '1') {
+      if (meta.claimStatus !== 'confirmed') {
+        meta.claimStatus = 'confirmed';
+        dirty = true;
+      }
+      continue;
+    }
     const storedMarket = state.markets[meta.marketKey];
     if (!storedMarket) continue;
     const marketLeaf = deserializeMarketLeaf(storedMarket);
@@ -2161,10 +2224,12 @@ function finalizeReceiptClaimStatuses(state: Awaited<ReturnType<typeof loadOpera
 
 function markReceiptClaimConfirmed(state: Awaited<ReturnType<typeof loadOperatorState>>, receiptKey: string, confirmedAtUnixMs: number) {
   state.receiptMeta = state.receiptMeta || {};
+  state.claimedReceipts = state.claimedReceipts || {};
   const meta = state.receiptMeta[receiptKey];
   if (!meta) return false;
   meta.claimStatus = 'confirmed';
   meta.claimConfirmedAtUnixMs = confirmedAtUnixMs;
+  state.claimedReceipts[receiptKey] = '1';
   return true;
 }
 
@@ -2241,71 +2306,18 @@ async function buildWalletFeePayerClaimPayoutTx(params: {
   payoutSummary: { payoutTmina: string; marketKey: string; positionKey: string };
 }> {
   const { stateFile, marketKey, positionKey, feePayerPublicKey, userId } = params;
-  setActiveZekoNetwork();
-  const { graphql } = getNetworkConfig();
-  const { feeRaw: txFee } = await getSuggestedSequencerFee(graphql);
-  const zkappPrivateKey = getOptionalZkappPrivateKey();
-  if (!zkappPrivateKey) {
-    throw new Error('Missing ZKAPP_PRIVATE_KEY for local claim payout path');
-  }
-  const feePayer = PublicKey.fromBase58(feePayerPublicKey);
-  const feePayerAccount = await fetchAccount({ publicKey: feePayer });
-  if (feePayerAccount.error) {
-    throw new Error(`fee payer account not found: ${feePayerAccount.error.statusText || 'unknown'}`);
-  }
-  const zkappAddress = zkappPrivateKey.toPublicKey();
-  const zkappAccount = await fetchAccount({ publicKey: zkappAddress });
-  if (zkappAccount.error) {
-    throw new Error(`zkApp account not found: ${zkappAccount.error.statusText || 'unknown'}`);
-  }
-
-  const state = await reconcileSubmittedPayoutClaims(stateFile);
-  const meta = state.receiptMeta?.[positionKey];
-  if (!meta) throw new Error('receipt metadata missing for payout claim');
-  if (meta.walletPublicKey !== feePayerPublicKey) {
-    throw new Error('wallet does not own this receipt position');
-  }
-  if (meta.marketKey !== marketKey) {
-    throw new Error('receipt metadata market mismatch');
-  }
-  const storedMarket = state.markets[marketKey];
-  if (!storedMarket) throw new Error('market missing for payout claim');
-  const marketLeaf = deserializeMarketLeaf(storedMarket);
-  if (!marketLeaf.resolved.toBoolean()) throw new Error('market is not resolved yet');
-  const won = meta.side === (marketLeaf.outcome.toBoolean() ? 'over' : 'under');
-  if (!won) throw new Error('receipt is not on the winning side');
-  if (meta.claimStatus === 'submitted') throw new Error('claim already submitted');
-  if (meta.claimStatus === 'confirmed') throw new Error('claim already confirmed');
-  const payoutTmina = payoutNanominaForStake(
-    BigInt(marketLeaf.totalPositionBet.toString()),
-    BigInt(marketLeaf.totalYesPositionBet.toString()),
-    marketLeaf.outcome.toBoolean(),
-    BigInt(meta.stakeTmina)
-  );
-  if (payoutTmina <= 0n) throw new Error('no payout available for this receipt');
-  const payoutNanomina = tminaToNanomina(payoutTmina);
-
-  const tx = await Mina.transaction({ sender: feePayer, fee: txFee }, async () => {
-    const payoutUpdate = AccountUpdate.createSigned(zkappAddress);
-    payoutUpdate.send({
-      to: feePayer,
-      amount: UInt64.from(payoutNanomina.toString())
-    });
+  const built = await buildClaimPayoutContext({
+    stateFile,
+    marketKey,
+    positionKey,
+    feePayerPublicKey
   });
-  tx.sign([zkappPrivateKey]);
-  const feePayerUpdate = (tx as any).feePayer;
-  if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
-    feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
-  }
-  if (feePayerUpdate?.body) {
-    feePayerUpdate.body.useFullCommitment = Bool(true);
-  }
-
+  const tx = await buildLocalServerClaimReceiptTx(built.buildContext);
   const intent: PendingTxIntent = {
     id: randomUUID(),
     type: 'payout-claim',
     marketKey,
-    marketDate: meta.marketDate,
+    marketDate: null,
     walletPublicKey: feePayerPublicKey,
     positionKey,
     addTotalBet: 0,
@@ -2318,14 +2330,10 @@ async function buildWalletFeePayerClaimPayoutTx(params: {
   pendingTxIntents[intent.id] = intent;
 
   return {
-    tx: tx.toJSON(),
-    fee: txFee,
+    tx,
+    fee: built.fee,
     intent,
-    payoutSummary: {
-      payoutTmina: payoutTmina.toString(),
-      marketKey,
-      positionKey
-    }
+    payoutSummary: built.payoutSummary
   };
 }
 
@@ -2341,8 +2349,9 @@ async function buildClaimPayoutContext(params: {
 }> {
   const { stateFile, marketKey, positionKey, feePayerPublicKey } = params;
   setActiveZekoNetwork();
-  const { graphql } = getNetworkConfig();
+  const { graphql, networkId } = getNetworkConfig();
   const { feeRaw: txFee } = await getSuggestedSequencerFee(graphql);
+  const zkappAddress = getZkappPublicKey();
 
   const state = await reconcileSubmittedPayoutClaims(stateFile);
   const meta = state.receiptMeta?.[positionKey];
@@ -2361,6 +2370,7 @@ async function buildClaimPayoutContext(params: {
   if (!won) throw new Error('receipt is not on the winning side');
   if (meta.claimStatus === 'submitted') throw new Error('claim already submitted');
   if (meta.claimStatus === 'confirmed') throw new Error('claim already confirmed');
+  if (!meta.receiptSalt) throw new Error('receipt salt missing for payout claim');
   const payoutTmina = payoutNanominaForStake(
     BigInt(marketLeaf.totalPositionBet.toString()),
     BigInt(marketLeaf.totalYesPositionBet.toString()),
@@ -2368,7 +2378,26 @@ async function buildClaimPayoutContext(params: {
     BigInt(meta.stakeTmina)
   );
   if (payoutTmina <= 0n) throw new Error('no payout available for this receipt');
-  const payoutNanomina = tminaToNanomina(payoutTmina);
+  const addTotalBet = Number(meta.stakeTmina);
+  const addYesBet = meta.side === 'over' ? addTotalBet : 0;
+  const receiptCommitment = receiptCommitmentFromBet({
+    marketKey,
+    addTotalBet,
+    addYesBet,
+    ownerCommitment: Field(meta.ownerCommitment),
+    salt: meta.receiptSalt
+  });
+  if (receiptCommitment.toString() !== meta.receiptCommitment) {
+    throw new Error('receipt commitment mismatch for payout claim');
+  }
+  const marketFieldKey = Field(marketKey);
+  const receiptFieldKey = Field(positionKey);
+  const marketsMap = buildMarketsMerkleMap(state);
+  const receiptsMap = buildReceiptsMerkleMap(state);
+  const claimedReceiptsMap = buildClaimedReceiptsMerkleMap(state);
+  if ((state.claimedReceipts || {})[positionKey] === '1') {
+    throw new Error('claim already confirmed');
+  }
 
   return {
     fee: txFee,
@@ -2378,12 +2407,23 @@ async function buildClaimPayoutContext(params: {
       positionKey
     },
     buildContext: {
+      network: { graphql, networkId },
+      zkappPublicKey: zkappAddress.toBase58(),
       walletPublicKey: feePayerPublicKey,
       fee: txFee,
-      payoutNanomina: payoutNanomina.toString(),
       payoutTmina: payoutTmina.toString(),
       marketKey,
       positionKey
+      ,
+      receiptCommitment: meta.receiptCommitment,
+      ownerCommitment: meta.ownerCommitment,
+      addTotalBet,
+      addYesBet,
+      saltHash: fieldFromHexDigest(sha256Hex(`receipt-salt:${meta.receiptSalt}`)).toString(),
+      resolvedLeaf: serializeMarketLeaf(marketLeaf),
+      marketWitness: serializeMerkleWitness(marketsMap.getWitness(marketFieldKey)),
+      receiptWitness: serializeMerkleWitness(receiptsMap.getWitness(receiptFieldKey)),
+      claimedReceiptWitness: serializeMerkleWitness(claimedReceiptsMap.getWitness(receiptFieldKey))
     }
   };
 }
@@ -2732,7 +2772,6 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/claim-payout') {
-        throw new Error('Fast-path receipt claims are not live on the current zkApp yet. Resolved winners remain visible, but claim execution is disabled until the payout method is deployed.');
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const positionKey = requireString(body.positionKey, 'positionKey');

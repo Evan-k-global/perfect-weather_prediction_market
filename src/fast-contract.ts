@@ -6,6 +6,8 @@ import {
   MerkleMapWitness,
   Permissions,
   Poseidon,
+  Provable,
+  PublicKey,
   SmartContract,
   State,
   Struct,
@@ -51,9 +53,17 @@ export class ReceiptCommittedEvent extends Struct({
   receiptCommitment: Field
 }) {}
 
+export class ReceiptClaimedEvent extends Struct({
+  receiptKey: Field,
+  marketKey: Field,
+  ownerCommitment: Field,
+  amount: UInt64
+}) {}
+
 export class FastPredictionMarketPlatform extends SmartContract {
   @state(Field) marketsRoot = State<Field>();
   @state(Field) receiptsRoot = State<Field>();
+  @state(Field) claimedReceiptsRoot = State<Field>();
   @state(Field) usedOracleNonceRoot = State<Field>();
   @state(Field) oracleSourceHash = State<Field>();
   @state(Field) oracleRequestPathHash = State<Field>();
@@ -63,13 +73,15 @@ export class FastPredictionMarketPlatform extends SmartContract {
     marketCreated: MarketSnapshotEvent,
     marketUpdated: MarketSnapshotEvent,
     marketResolved: MarketResolvedEvent,
-    receiptCommitted: ReceiptCommittedEvent
+    receiptCommitted: ReceiptCommittedEvent,
+    receiptClaimed: ReceiptClaimedEvent
   };
 
   init() {
     super.init();
     this.marketsRoot.set(EMPTY_MAP_ROOT);
     this.receiptsRoot.set(EMPTY_MAP_ROOT);
+    this.claimedReceiptsRoot.set(EMPTY_MAP_ROOT);
     this.usedOracleNonceRoot.set(EMPTY_MAP_ROOT);
     this.oracleSourceHash.set(Field(0));
     this.oracleRequestPathHash.set(Field(0));
@@ -261,6 +273,80 @@ export class FastPredictionMarketPlatform extends SmartContract {
         oracleStatementHash: resolvedMarket.oracleStatementHash,
         resolved: resolvedMarket.resolved,
         oracleNonce: oracle.nonce
+      })
+    );
+  }
+
+  @method async claimReceiptPayout(
+    marketKey: Field,
+    resolvedMarket: MarketLeaf,
+    marketWitness: MerkleMapWitness,
+    receiptKey: Field,
+    receiptCommitment: Field,
+    receiptWitness: MerkleMapWitness,
+    claimedReceiptWitness: MerkleMapWitness,
+    claimant: PublicKey,
+    addTotalBet: UInt64,
+    addYesBet: UInt64,
+    ownerCommitment: Field,
+    saltHash: Field
+  ) {
+    const marketsRoot = this.marketsRoot.getAndRequireEquals();
+    const [marketRootBefore, marketWitnessKey] = marketWitness.computeRootAndKey(resolvedMarket.hash());
+    marketRootBefore.assertEquals(marketsRoot);
+    marketWitnessKey.assertEquals(marketKey);
+    resolvedMarket.resolved.assertTrue();
+
+    const receiptsRoot = this.receiptsRoot.getAndRequireEquals();
+    const [receiptRootBefore, receiptWitnessKey] = receiptWitness.computeRootAndKey(receiptCommitment);
+    receiptRootBefore.assertEquals(receiptsRoot);
+    receiptWitnessKey.assertEquals(receiptKey);
+
+    const claimedReceiptsRoot = this.claimedReceiptsRoot.getAndRequireEquals();
+    const [claimedBefore, claimedWitnessKey] = claimedReceiptWitness.computeRootAndKey(Field(0));
+    claimedBefore.assertEquals(claimedReceiptsRoot);
+    claimedWitnessKey.assertEquals(receiptKey);
+
+    ownerCommitment.assertEquals(Poseidon.hash(claimant.toFields()));
+    addYesBet.lessThanOrEqual(addTotalBet).assertTrue();
+    const sideOver = addYesBet.equals(addTotalBet);
+    const sideUnder = addYesBet.equals(UInt64.from(0));
+    sideOver.or(sideUnder).assertTrue();
+
+    const expectedReceiptCommitment = Poseidon.hash([
+      marketKey,
+      addTotalBet.value,
+      addYesBet.value,
+      ownerCommitment,
+      saltHash
+    ]);
+    expectedReceiptCommitment.assertEquals(receiptCommitment);
+
+    sideOver.assertEquals(resolvedMarket.outcome);
+
+    resolvedMarket.totalPositionBet.greaterThan(UInt64.from(0)).assertTrue();
+    const winningPool = Provable.if(
+      sideOver,
+      UInt64,
+      resolvedMarket.totalYesPositionBet,
+      resolvedMarket.totalPositionBet.sub(resolvedMarket.totalYesPositionBet)
+    );
+    winningPool.greaterThan(UInt64.from(0)).assertTrue();
+
+    const payout = resolvedMarket.totalPositionBet.mul(addTotalBet).div(winningPool);
+    payout.greaterThan(UInt64.from(0)).assertTrue();
+
+    const [claimedAfter] = claimedReceiptWitness.computeRootAndKey(Field(1));
+    this.claimedReceiptsRoot.set(claimedAfter);
+    this.send({ to: claimant, amount: payout });
+
+    this.emitEvent(
+      'receiptClaimed',
+      new ReceiptClaimedEvent({
+        receiptKey,
+        marketKey,
+        ownerCommitment,
+        amount: payout
       })
     );
   }

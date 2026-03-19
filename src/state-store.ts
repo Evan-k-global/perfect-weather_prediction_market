@@ -20,6 +20,7 @@ export type OperatorStateFile = {
   markets: Record<string, StoredMarketLeaf>;
   positions: Record<string, StoredPositionLeaf>;
   receipts?: Record<string, string>;
+  claimedReceipts?: Record<string, string>;
   usedNonces: Record<string, string>;
   marketMeta?: Record<string, StoredMarketMeta>;
   positionMeta?: Record<string, StoredPositionMeta>;
@@ -137,13 +138,14 @@ export async function loadOperatorState(statePath: string): Promise<OperatorStat
       markets: parsed.markets || {},
       positions: parsed.positions || {},
       receipts: parsed.receipts || {},
+      claimedReceipts: parsed.claimedReceipts || {},
       usedNonces: parsed.usedNonces || {},
       marketMeta: parsed.marketMeta || {},
       positionMeta: parsed.positionMeta || {},
       receiptMeta: parsed.receiptMeta || {}
     };
   } catch {
-    return { markets: {}, positions: {}, receipts: {}, usedNonces: {}, marketMeta: {}, positionMeta: {}, receiptMeta: {} };
+    return { markets: {}, positions: {}, receipts: {}, claimedReceipts: {}, usedNonces: {}, marketMeta: {}, positionMeta: {}, receiptMeta: {} };
   }
 }
 
@@ -184,6 +186,14 @@ export function buildReceiptsMerkleMap(state: OperatorStateFile): MerkleMap {
   const map = new MerkleMap();
   for (const [key, commitment] of Object.entries(state.receipts || {})) {
     map.set(Field(key), Field(commitment));
+  }
+  return map;
+}
+
+export function buildClaimedReceiptsMerkleMap(state: OperatorStateFile): MerkleMap {
+  const map = new MerkleMap();
+  for (const [key, claimed] of Object.entries(state.claimedReceipts || {})) {
+    map.set(Field(key), Field(claimed));
   }
   return map;
 }

@@ -48,12 +48,25 @@ type BrowserMarketBetContext = {
 };
 
 type ClaimPayoutContext = {
+  network: {
+    graphql: string;
+    networkId: string;
+  };
+  zkappPublicKey: string;
   walletPublicKey: string;
   fee: string;
-  payoutNanomina: string;
   payoutTmina: string;
   marketKey: string;
   positionKey: string;
+  receiptCommitment: string;
+  ownerCommitment: string;
+  addTotalBet: number;
+  addYesBet: number;
+  saltHash: string;
+  resolvedLeaf: StoredMarketLeaf;
+  marketWitness: SerializedMerkleWitness;
+  receiptWitness: SerializedMerkleWitness;
+  claimedReceiptWitness: SerializedMerkleWitness;
 };
 
 let compilePromise: Promise<unknown> | null = null;
@@ -151,12 +164,6 @@ function deserializeMerkleWitness(serialized: SerializedMerkleWitness): MerkleMa
   );
 }
 
-function getZkappPrivateKey(): PrivateKey {
-  const raw = process.env.ZKAPP_PRIVATE_KEY;
-  if (!raw) throw new Error('Missing env ZKAPP_PRIVATE_KEY');
-  return PrivateKey.fromBase58(raw);
-}
-
 async function buildMarketBetTx(context: BrowserMarketBetContext): Promise<unknown> {
   setActiveNetwork(context.network);
   await ensureFastContractCompiled();
@@ -210,22 +217,31 @@ async function buildMarketBetTx(context: BrowserMarketBetContext): Promise<unkno
 }
 
 async function buildClaimPayoutTx(context: ClaimPayoutContext): Promise<unknown> {
-  const zkappPrivateKey = getZkappPrivateKey();
+  setActiveNetwork(context.network);
+  await ensureFastContractCompiled();
   const feePayer = PublicKey.fromBase58(context.walletPublicKey);
   const feePayerAccount = await fetchAccount({ publicKey: feePayer });
   if (feePayerAccount.error) {
     throw new Error(`fee payer account not found: ${feePayerAccount.error.statusText || 'unknown'}`);
   }
-
-  const zkappAddress = zkappPrivateKey.toPublicKey();
+  const zkappAddress = PublicKey.fromBase58(context.zkappPublicKey);
+  const zkapp = new FastPredictionMarketPlatform(zkappAddress);
   const tx = await Mina.transaction({ sender: feePayer, fee: context.fee }, async () => {
-    const payoutUpdate = AccountUpdate.createSigned(zkappAddress);
-    payoutUpdate.send({
-      to: feePayer,
-      amount: UInt64.from(context.payoutNanomina)
-    });
+    zkapp.claimReceiptPayout(
+      Field(context.marketKey),
+      deserializeMarketLeaf(context.resolvedLeaf),
+      deserializeMerkleWitness(context.marketWitness),
+      Field(context.positionKey),
+      Field(context.receiptCommitment),
+      deserializeMerkleWitness(context.receiptWitness),
+      deserializeMerkleWitness(context.claimedReceiptWitness),
+      feePayer,
+      UInt64.from(context.addTotalBet),
+      UInt64.from(context.addYesBet),
+      Field(context.ownerCommitment),
+      Field(context.saltHash)
+    );
   });
-  tx.sign([zkappPrivateKey]);
   const feePayerUpdate = (tx as any).feePayer;
   if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
     feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
@@ -233,6 +249,7 @@ async function buildClaimPayoutTx(context: ClaimPayoutContext): Promise<unknown>
   if (feePayerUpdate?.body) {
     feePayerUpdate.body.useFullCommitment = Bool(true);
   }
+  await tx.prove();
   return tx.toJSON();
 }
 
