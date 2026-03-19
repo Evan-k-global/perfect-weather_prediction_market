@@ -989,14 +989,16 @@
         resolvedMarketsPanelEl.innerHTML = filtered.map((p, idx) => {
           const claimed = Boolean(p.claimed);
           const won = Boolean(p.won);
-          const claimsLive = true;
+          const claimsLive = p.claimStatus !== "pending-fast-claim-support";
           const canClaim = claimsLive && won && !claimed && p.claimStatus !== "submitted";
           const buttonLabel = won
             ? claimed
               ? "Claimed"
               : p.claimStatus === "submitted"
                 ? "Claim Submitted"
-                : "Claim Payout"
+                : p.claimStatus === "pending-fast-claim-support"
+                  ? "Claim Coming Soon"
+                  : "Claim Payout"
             : "No Payout";
           return `
             <div class="market" style="margin-bottom:${idx === positions.length - 1 ? "0" : "8px"};">

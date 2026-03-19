@@ -260,7 +260,7 @@ type ResolvedWalletPosition = {
   resolvedOutcome: 'over' | 'under';
   won: boolean;
   claimed: boolean;
-  claimStatus: 'claimable' | 'submitted' | 'confirmed' | 'not-applicable';
+  claimStatus: 'claimable' | 'submitted' | 'confirmed' | 'not-applicable' | 'pending-fast-claim-support';
   claimTxHash: string | null;
   claimSubmittedAtUnixMs: number | null;
   claimConfirmedAtUnixMs: number | null;
@@ -1997,7 +1997,7 @@ async function listResolvedWalletPositions(
       resolvedOutcome,
       won,
       claimed: meta.claimStatus === 'confirmed',
-      claimStatus: won ? (meta.claimStatus || 'claimable') : 'not-applicable',
+      claimStatus: won ? (meta.claimStatus || 'pending-fast-claim-support') : 'not-applicable',
       claimTxHash: meta.claimTxHash || null,
       claimSubmittedAtUnixMs: meta.claimSubmittedAtUnixMs || null,
       claimConfirmedAtUnixMs: meta.claimConfirmedAtUnixMs || null
@@ -2732,6 +2732,7 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/claim-payout') {
+        throw new Error('Fast-path receipt claims are not live on the current zkApp yet. Resolved winners remain visible, but claim execution is disabled until the payout method is deployed.');
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const positionKey = requireString(body.positionKey, 'positionKey');
