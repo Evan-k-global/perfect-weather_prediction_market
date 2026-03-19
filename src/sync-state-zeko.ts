@@ -125,6 +125,7 @@ async function main(): Promise<void> {
   const rawEvents = await zkapp.fetchEvents();
   const parsed = extractParsedEvents(rawEvents as unknown[]);
   const nextState: OperatorStateFile = {
+    zkappPublicKey: zkappAddress.toBase58(),
     markets: {},
     positions: {},
     receipts: {},
@@ -186,6 +187,7 @@ async function main(): Promise<void> {
     }
 
     const emptyState: OperatorStateFile = {
+      zkappPublicKey: zkappAddress.toBase58(),
       markets: {},
       positions: {},
       receipts: {},

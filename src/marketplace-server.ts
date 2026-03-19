@@ -7,7 +7,7 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AccountUpdate, Bool, Field, MerkleMapWitness, Mina, Poseidon, PrivateKey, PublicKey, UInt32, UInt64, fetchAccount, fetchTransactionStatus } from 'o1js';
+import { AccountUpdate, Bool, Field, MerkleMap, MerkleMapWitness, Mina, Poseidon, PrivateKey, PublicKey, UInt32, UInt64, fetchAccount, fetchTransactionStatus } from 'o1js';
 import { DEFAULT_STATE_FILE, loadOperatorState, type OperatorStateFile } from './state-store.js';
 import {
   NWS_94027_DIGITAL_URL,
@@ -34,7 +34,12 @@ import { verifyTlsnAttestationFile } from './tlsn-verifier.js';
 import { PositionLeaf } from './contract.js';
 import { FastPredictionMarketPlatform } from './fast-contract.js';
 import { MarketLeaf } from './market-types.js';
-import { assertLocalMarketsRootMatchesChain, assertLocalReceiptsRootMatchesChain } from './fast-chain-state.js';
+import {
+  assertLocalMarketsRootMatchesChain,
+  assertLocalReceiptsRootMatchesChain,
+  getOnChainMarketsRoot,
+  getOnChainReceiptsRoot
+} from './fast-chain-state.js';
 import {
   buildClaimedReceiptsMerkleMap,
   buildMarketsMerkleMap,
@@ -1940,6 +1945,64 @@ async function archiveJsonFileForFreshZkappReset(
   }
 }
 
+async function maybeResetFreshZkappLocalState(
+  stateFilePath: string,
+  dailyMarketsFilePath: string
+): Promise<void> {
+  const currentZkappPublicKey = getZkappPublicKey().toBase58();
+  const state = await loadOperatorState(stateFilePath);
+  const storedZkappPublicKey = state.zkappPublicKey || null;
+  const hasLegacyState =
+    Object.keys(state.markets || {}).length > 0 ||
+    Object.keys(state.receipts || {}).length > 0 ||
+    Object.keys(state.claimedReceipts || {}).length > 0 ||
+    Object.keys(state.marketMeta || {}).length > 0 ||
+    Object.keys(state.positionMeta || {}).length > 0 ||
+    Object.keys(state.receiptMeta || {}).length > 0;
+
+  let shouldReset = false;
+  if (storedZkappPublicKey && storedZkappPublicKey !== currentZkappPublicKey) {
+    shouldReset = true;
+  } else if (!storedZkappPublicKey && hasLegacyState) {
+    try {
+      const emptyRoot = new MerkleMap().getRoot().toString();
+      const chainMarketsRoot = await getOnChainMarketsRoot(getZkappPublicKey());
+      const chainReceiptsRoot = await getOnChainReceiptsRoot(getZkappPublicKey());
+      shouldReset = chainMarketsRoot === emptyRoot && chainReceiptsRoot === emptyRoot;
+    } catch {
+      shouldReset = false;
+    }
+  }
+
+  if (!shouldReset) return;
+
+  const archiveDir = path.join(
+    FRESH_ZKAPP_ARCHIVE_DIR,
+    `${Date.now()}-${storedZkappPublicKey || 'legacy-unkeyed'}`
+  );
+  await archiveJsonFileForFreshZkappReset(stateFilePath, archiveDir);
+  await archiveJsonFileForFreshZkappReset(dailyMarketsFilePath, archiveDir);
+
+  const emptyState: OperatorStateFile = {
+    zkappPublicKey: currentZkappPublicKey,
+    markets: {},
+    positions: {},
+    receipts: {},
+    claimedReceipts: {},
+    usedNonces: {},
+    marketMeta: {},
+    positionMeta: {},
+    receiptMeta: {}
+  };
+  await saveOperatorState(stateFilePath, emptyState);
+
+  const existingDailyMarkets = await loadDemoDailyMarkets(dailyMarketsFilePath);
+  await saveDemoDailyMarkets(sanitizeDailyMarketsForFreshZkappReset(existingDailyMarkets), dailyMarketsFilePath);
+  console.log(
+    `[fresh-zkapp-reset] archived legacy state and sanitized daily markets for new zkApp ${currentZkappPublicKey}`
+  );
+}
+
 function sanitizeDailyMarketsForFreshZkappReset(
   markets: Record<string, DemoDailyMarket>
 ): Record<string, DemoDailyMarket> {
@@ -2486,6 +2549,8 @@ async function main(): Promise<void> {
   const port = Number.parseInt(process.env.MARKETPLACE_PORT || process.env.PORT || '8790', 10);
   const host = process.env.MARKETPLACE_HOST || (isHosted ? '0.0.0.0' : '127.0.0.1');
   const defaultStatePath = process.env.STATE_FILE || DEFAULT_STATE_FILE;
+  const dailyMarketsPath = process.env.DEMO_DAILY_MARKETS_FILE || DEMO_DAILY_MARKETS_FILE;
+  await maybeResetFreshZkappLocalState(defaultStatePath, dailyMarketsPath);
   // Durable startup state for private batching.
   const restoredQueue = await loadPrivateBetQueue();
   privateBetQueue.splice(0, privateBetQueue.length, ...restoredQueue);

@@ -938,7 +938,7 @@
 
       async function claimResolvedPosition(position) {
         try {
-          setBetProgress("Generating claim tx...", true);
+          setActionOut("Generating claim tx...");
           const walletKey = await ensureWalletConnected();
           const built = await req("/api/tx/claim-payout", {
             method: "POST",
@@ -949,9 +949,9 @@
               walletPublicKey: walletKey
             })
           });
-          setBetProgress("Sign Wallet Tx", true);
+          setActionOut("Sign Wallet Tx");
           const txHash = await sendOnchainTx(built.tx, built.fee);
-          setBetProgress("Finalizing claim...", true);
+          setActionOut("Finalizing claim...");
           const finalized = await req("/api/tx/finalize", {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -960,15 +960,13 @@
           setActionOut(toJson({ txHash, claim: finalized, payoutSummary: built.payoutSummary }));
           await refreshResolvedMarkets();
           await refreshWalletActivity();
-          setBetProgress("Claim submitted", false);
         } catch (e) {
           if (isNoncePreconditionError(e)) {
-            setBetProgress("Wallet nonce changed - refreshed state, please retry", false);
             await realignUiAfterTxFailure();
+            setActionOut("Wallet nonce changed - refreshed state, please retry");
           } else {
-            setBetProgress("Claim failed", false);
+            setActionOut(toJson({ error: String(e) }));
           }
-          setActionOut(toJson({ error: String(e) }));
         }
       }
 
@@ -1200,12 +1198,12 @@
           setBetProgress("Idle", false);
         } catch (e) {
           if (isNoncePreconditionError(e)) {
-            setBetProgress("Wallet nonce changed - refreshed state, please retry", false);
             await realignUiAfterTxFailure();
+            setActionOut("Wallet nonce changed - refreshed state, please retry");
           } else {
-            setBetProgress("Bet failed", false);
+            setActionOut(toJson({ error: String(e) }));
           }
-          setActionOut(toJson({ error: String(e) }));
+          setBetProgress("Idle", false);
         }
       };
 

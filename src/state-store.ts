@@ -17,6 +17,7 @@ export type StoredMarketLeaf = {
 };
 
 export type OperatorStateFile = {
+  zkappPublicKey?: string;
   markets: Record<string, StoredMarketLeaf>;
   positions: Record<string, StoredPositionLeaf>;
   receipts?: Record<string, string>;
@@ -136,6 +137,7 @@ export async function loadOperatorState(statePath: string): Promise<OperatorStat
     const parsed = JSON.parse(raw) as OperatorStateFile;
     return {
       markets: parsed.markets || {},
+      zkappPublicKey: typeof parsed.zkappPublicKey === 'string' ? parsed.zkappPublicKey : undefined,
       positions: parsed.positions || {},
       receipts: parsed.receipts || {},
       claimedReceipts: parsed.claimedReceipts || {},
