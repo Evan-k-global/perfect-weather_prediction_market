@@ -785,7 +785,7 @@ async function autoSettleDailyContestsFromSnapshot(
   const nowUnixMs = Date.now();
   for (const marketDate of Object.keys(daily).sort()) {
     // Resolve passed dates, and resolve today's market after close-hour.
-    const shouldSettle = marketDate < todayIso || (marketDate === todayIso && nowHour >= 19);
+    const shouldSettle = marketDate < todayIso || (marketDate === todayIso && nowHour >= 21);
     if (!shouldSettle) continue;
     const fp = contestStateFileForDate(marketDate);
     let contest = await loadContestState(marketDate, 15, fp);
@@ -1786,6 +1786,14 @@ async function buildLocalServerReceiptBetTx(context: BrowserMarketBetContext): P
     );
   });
 
+  const feePayerUpdate = (tx as any).feePayer;
+  if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
+    feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
+  }
+  if (feePayerUpdate?.body) {
+    feePayerUpdate.body.useFullCommitment = Bool(true);
+  }
+
   await tx.prove();
   return tx.toJSON();
 }
@@ -2128,6 +2136,13 @@ async function buildWalletFeePayerClaimPayoutTx(params: {
     });
   });
   tx.sign([zkappPrivateKey]);
+  const feePayerUpdate = (tx as any).feePayer;
+  if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
+    feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
+  }
+  if (feePayerUpdate?.body) {
+    feePayerUpdate.body.useFullCommitment = Bool(true);
+  }
 
   const intent: PendingTxIntent = {
     id: randomUUID(),
@@ -3155,7 +3170,7 @@ async function main(): Promise<void> {
           return;
         }
         const todayIso = currentLocalDate();
-        const eligible = marketDate < todayIso || (marketDate === todayIso && nowLocalHour() >= 19);
+        const eligible = marketDate < todayIso || (marketDate === todayIso && nowLocalHour() >= 21);
         if (!eligible) {
           writeJson(res, 200, {
             ok: true,

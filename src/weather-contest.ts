@@ -134,7 +134,7 @@ export function maybeAutoSettleContest(
 ): WeatherContestState {
   if (state.settled) return state;
   // End-of-day auto-settlement for demo using latest next-24h projected high.
-  if (nowLocalHour < 19) return state;
+  if (nowLocalHour < 21) return state;
   if (snapshot.next24hHighF === null) return state;
   return settleContest(state, snapshot.next24hHighF, nowUnixMs);
 }

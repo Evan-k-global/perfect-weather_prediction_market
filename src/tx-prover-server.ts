@@ -8,6 +8,7 @@ import {
   Mina,
   PrivateKey,
   PublicKey,
+  UInt32,
   UInt64,
   fetchAccount
 } from 'o1js';
@@ -193,6 +194,14 @@ async function buildMarketBetTx(context: BrowserMarketBetContext): Promise<unkno
     );
   });
 
+  const feePayerUpdate = (tx as any).feePayer;
+  if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
+    feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
+  }
+  if (feePayerUpdate?.body) {
+    feePayerUpdate.body.useFullCommitment = Bool(true);
+  }
+
   await tx.prove();
   return tx.toJSON();
 }
@@ -214,6 +223,13 @@ async function buildClaimPayoutTx(context: ClaimPayoutContext): Promise<unknown>
     });
   });
   tx.sign([zkappPrivateKey]);
+  const feePayerUpdate = (tx as any).feePayer;
+  if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
+    feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
+  }
+  if (feePayerUpdate?.body) {
+    feePayerUpdate.body.useFullCommitment = Bool(true);
+  }
   return tx.toJSON();
 }
 

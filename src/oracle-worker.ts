@@ -123,8 +123,8 @@ function shouldRunEnsurePass(todayIso: string): boolean {
 }
 
 function shouldRunResolvePass(todayIso: string, nowHour: number): boolean {
-  if (nowHour < 19) return false;
-  const windowKey = `${todayIso}-after-19`;
+  if (nowHour < 21) return false;
+  const windowKey = `${todayIso}-after-21`;
   return lastResolveWindowKey !== windowKey;
 }
 
@@ -190,7 +190,7 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
       if (resolved.stdout.trim()) console.log(resolved.stdout.trim());
       if (resolved.stderr.trim()) console.error(resolved.stderr.trim());
     }
-    lastResolveWindowKey = `${todayIso}-after-19`;
+    lastResolveWindowKey = `${todayIso}-after-21`;
   }
 
   const finalState = await loadJsonFile<OperatorStateFile>(stateFile);
