@@ -178,8 +178,6 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
         '--',
         '--market-date',
         marketDate,
-        '--attestation',
-        process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json',
         '--state-file',
         stateFile
       ];

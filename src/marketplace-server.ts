@@ -2797,7 +2797,7 @@ async function main(): Promise<void> {
           walletPublicKey,
           count: positions.length,
           positions,
-          note: 'Winning resolved receipt bets can be claimed locally after daily finalization. Losing resolved bets remain visible for history.'
+          note: 'Winning resolved receipt bets can be claimed here after daily finalization. Losing resolved bets remain visible for history.'
         });
         return;
       }
@@ -3210,8 +3210,6 @@ async function main(): Promise<void> {
           '--',
           '--market-date',
           marketDate,
-          '--attestation',
-          process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json',
           '--state-file',
           './data/operator-state.json'
         ]);
@@ -3280,8 +3278,6 @@ async function main(): Promise<void> {
           '--',
           '--market-date',
           marketDate,
-          '--attestation',
-          process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json',
           '--state-file',
           './data/operator-state.json'
         ]);
