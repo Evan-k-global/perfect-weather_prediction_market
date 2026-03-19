@@ -582,6 +582,25 @@
         return txHash;
       }
 
+      function isNoncePreconditionError(error) {
+        const message = String(error || "").toLowerCase();
+        return (
+          message.includes("nonce") &&
+          (message.includes("precondition") || message.includes("invalid_nonce") || message.includes("account nonce"))
+        );
+      }
+
+      async function realignUiAfterTxFailure() {
+        try {
+          await refreshDailyMarkets();
+          await refreshMarket();
+          await refreshWalletActivity();
+          await refreshResolvedMarkets();
+        } catch (refreshError) {
+          console.warn("post-failure refresh failed", refreshError);
+        }
+      }
+
       function setOraclePill(oracle) {
         if (!oraclePill || !oracle) return;
         const dotClass = oracle.state === "fresh" ? "dot" : oracle.state === "stale" ? "dot warn" : "dot bad";
@@ -940,7 +959,12 @@
           await refreshWalletActivity();
           setBetProgress("Claim submitted", false);
         } catch (e) {
-          setBetProgress("Claim failed", false);
+          if (isNoncePreconditionError(e)) {
+            setBetProgress("Wallet nonce changed - refreshed state, please retry", false);
+            await realignUiAfterTxFailure();
+          } else {
+            setBetProgress("Claim failed", false);
+          }
           out.textContent = toJson({ error: String(e) });
         }
       }
@@ -1158,7 +1182,12 @@
           await refreshWalletActivity();
           setBetProgress("Bet placed successfully", false);
         } catch (e) {
-          setBetProgress("Bet failed", false);
+          if (isNoncePreconditionError(e)) {
+            setBetProgress("Wallet nonce changed - refreshed state, please retry", false);
+            await realignUiAfterTxFailure();
+          } else {
+            setBetProgress("Bet failed", false);
+          }
           out.textContent = toJson({ error: String(e) });
         }
       };
