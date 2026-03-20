@@ -69,6 +69,71 @@ async function req(baseUrl: string, operatorToken: string, endpoint: string, bod
   return data;
 }
 
+function currentPacificDateIso(): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date());
+  const year = parts.find((p) => p.type === 'year')?.value || '0000';
+  const month = parts.find((p) => p.type === 'month')?.value || '00';
+  const day = parts.find((p) => p.type === 'day')?.value || '00';
+  return `${year}-${month}-${day}`;
+}
+
+function currentPacificHour(): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    hour: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
+  return Number(parts.find((p) => p.type === 'hour')?.value || '0');
+}
+
+function marketDateFromTitle(title: string | undefined): string | null {
+  if (!title) return null;
+  const match = /^Atherton, CA - (\d{4}-\d{2}-\d{2}) Over\/Under \d+F$/.exec(title);
+  return match ? match[1] : null;
+}
+
+async function maybeEnsureDailyMarkets(baseUrl: string, operatorToken: string): Promise<void> {
+  const result = await req(baseUrl, operatorToken, '/api/operator/ensure-daily-markets', {});
+  if (result?.output) {
+    console.log(result.output);
+  }
+}
+
+async function maybeResolveDueMarkets(baseUrl: string, operatorToken: string): Promise<void> {
+  const data = await fetch(`${baseUrl}/api/markets`, { method: 'GET' });
+  const marketsResponse = await data.json();
+  const markets = Array.isArray(marketsResponse?.markets) ? marketsResponse.markets : [];
+  const todayIso = currentPacificDateIso();
+  const hour = currentPacificHour();
+  const pastDue: string[] = [];
+  const todayEligible: string[] = [];
+  for (const market of markets) {
+    if (market?.resolved) continue;
+    const marketDate = marketDateFromTitle(typeof market?.title === 'string' ? market.title : undefined);
+    if (!marketDate) continue;
+    if (marketDate < todayIso) pastDue.push(marketDate);
+    else if (marketDate === todayIso && hour >= 21) todayEligible.push(marketDate);
+  }
+  const dueDates = [...new Set([...pastDue.sort(), ...todayEligible.sort()])];
+  console.log(
+    `[oracle-worker] resolve candidates today=${todayIso} hour=${hour} past_due=${pastDue.length ? pastDue.join(',') : 'none'} today_eligible=${todayEligible.length ? todayEligible.join(',') : 'none'}`
+  );
+  for (const marketDate of dueDates) {
+    console.log(`[oracle-worker] resolving marketDate=${marketDate}`);
+    const result = await req(baseUrl, operatorToken, '/api/operator/resolve-daily-market', {
+      marketDate
+    });
+    if (result?.output) {
+      console.log(result.output);
+    }
+  }
+}
+
 async function runCycle(baseUrl: string, operatorToken: string): Promise<void> {
   await runWeatherAttestation();
   const attestationPath = process.env.WEATHER_TLSN_ATTESTATION_FILE || './data/tlsn-output/latest/attestation.json';
@@ -97,6 +162,10 @@ async function runCycle(baseUrl: string, operatorToken: string): Promise<void> {
   console.log(
     `[oracle-worker] synced snapshot verified=${result.snapshotVerified ? 'yes' : 'no'} mode=${result.verificationMode}`
   );
+  if (process.env.ORACLE_WORKER_ENABLE_CHAIN_ACTIONS !== '0') {
+    await maybeEnsureDailyMarkets(baseUrl, operatorToken);
+    await maybeResolveDueMarkets(baseUrl, operatorToken);
+  }
 }
 
 async function main(): Promise<void> {
