@@ -47,12 +47,16 @@ async function main(): Promise<void> {
   const stateFile = parseOptionalArgValue(args, 'state-file') || './data/operator-state.json';
   const observedAtSlot = parseOptionalArgValue(args, 'observed-at-slot');
   const projectRoot = process.cwd();
+  const archivedAttestation = explicitAttestation ? null : await findArchivedAttestationForMarketDate(marketDate);
   const attestation =
     explicitAttestation ||
-    (await findArchivedAttestationForMarketDate(marketDate)) ||
+    archivedAttestation ||
     './data/tlsn-output/latest/attestation.json';
   await readFile(attestation, 'utf8');
   const marketKey = deriveMarketKey(marketDate);
+  const liveMaxAgeMs = process.env.WEATHER_TLSN_MAX_AGE_MS || '3600000';
+  const historicalMaxAgeMs = process.env.WEATHER_TLSN_HISTORICAL_MAX_AGE_MS || String(365 * 24 * 60 * 60 * 1000);
+  const maxAgeMs = archivedAttestation ? historicalMaxAgeMs : liveMaxAgeMs;
   const commandArgs = [
     'resolve-weather:zeko',
     '--',
@@ -60,7 +64,7 @@ async function main(): Promise<void> {
     '--attestation', attestation,
     '--allowed-server', 'api.weather.gov',
     '--allowed-path', '/gridpoints/MTR/86,107/forecast',
-    '--max-age-ms', process.env.WEATHER_TLSN_MAX_AGE_MS || '3600000',
+    '--max-age-ms', maxAgeMs,
     '--state-file', stateFile
   ];
   if (observedAtSlot) {
