@@ -1024,8 +1024,8 @@
             <div class="market" style="margin-bottom:${idx === positions.length - 1 ? "0" : "8px"};">
               <div class="small"><b>${p.marketDate || "Resolved market"}</b> | You picked ${String(p.side || "").toUpperCase()} | Result ${String(p.resolvedOutcome || "").toUpperCase()} ${won ? "won" : "lost"}</div>
               <div class="tiny">Stake ${p.stakeTmina} tMINA | Pot ${p.totalPotTmina} tMINA | ${won ? `Payout ${p.payoutTmina} tMINA` : "No payout on losing side"}</div>
-              <div class="tiny">Market ${p.marketKey} | Position ${p.positionKey}</div>
-              <div class="row" style="grid-template-columns: 1fr;">
+              <div class="tiny">Position ${p.positionKey}</div>
+              <div class="row" style="grid-template-columns: auto; justify-content: start;">
                 <button class="${canClaim ? "buy" : "ghost"}" data-claim-idx="${idx}" ${canClaim ? "" : "disabled"}>${buttonLabel}</button>
               </div>
             </div>`;

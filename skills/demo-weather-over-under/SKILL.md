@@ -58,3 +58,7 @@ description: Use when working on the Atherton weather demo market UI and adapter
   - tx-prover handles bet/claim proving
   - browser wallet signs
 - Past-date resolution must retry on the next oracle cycle if a market missed its first nightly window; do not make users wait another full day.
+- In the resolved-markets card:
+  - keep progress on the claim button itself (`Generating tx proof`, `Sign Wallet Tx`, `Finalizing claim...`)
+  - avoid long raw market identifiers unless they are needed for debugging
+  - do not stretch the claim button full-width when a compact action affordance reads better

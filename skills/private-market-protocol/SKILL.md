@@ -58,3 +58,7 @@ description: Use when implementing or modifying the reusable prediction-market p
 - Compute:
   - compile caches should be built into hosted images and reused at runtime
   - lower-tier hosted instances benefit more from reused compile artifacts than from adding more mixed-responsibility services
+- Claim flow reliability:
+  - a wallet tx hash is not enough; the hosted market still needs `/api/tx/finalize` to persist `submitted` / `confirmed`
+  - payout-claim finalize should tolerate lost in-memory intents and recover from `{ marketKey, positionKey, walletPublicKey, txHash }`
+  - transient finalize failures are more common than proof failures once the wallet send succeeds, so retry and recovery should stay lean and explicit

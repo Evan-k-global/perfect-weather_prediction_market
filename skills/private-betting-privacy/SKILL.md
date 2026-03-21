@@ -45,3 +45,7 @@ Not provided by default:
    - `batched market updates`
    - `public aggregate market state`
 - If a feature introduces post-market reveal, document that explicitly.
+- Keep claim wording honest:
+   - claim proving and wallet signing can succeed while hosted finalize still fails
+   - until finalize persists status, the UI should not imply that payout metadata is settled
+   - local wallet signing remains a key privacy boundary even when proving/finalize are hosted
