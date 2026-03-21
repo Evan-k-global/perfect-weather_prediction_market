@@ -446,6 +446,7 @@
       let localServerBetProvingEnabled = true;
       let remoteTxProverEnabled = false;
       let latestOracleRows = [];
+      const claimButtonState = new Map();
 
       function syncSelectedWeatherDayToCurrentMarketDate() {
         if (!currentMarketDate) return;
@@ -937,8 +938,19 @@
       }
 
       async function claimResolvedPosition(position) {
+        const positionKey = String(position.positionKey || "");
+        const setClaimProgress = async (label) => {
+          if (!positionKey) return;
+          claimButtonState.set(positionKey, label);
+          await refreshResolvedMarkets();
+        };
+        const clearClaimProgress = async () => {
+          if (!positionKey) return;
+          claimButtonState.delete(positionKey);
+          await refreshResolvedMarkets();
+        };
         try {
-          setActionOut("Generating claim tx...");
+          await setClaimProgress("Generating tx proof");
           const walletKey = await ensureWalletConnected();
           const built = await req("/api/tx/claim-payout", {
             method: "POST",
@@ -949,18 +961,22 @@
               walletPublicKey: walletKey
             })
           });
-          setActionOut("Sign Wallet Tx");
+          await setClaimProgress("Sign Wallet Tx");
           const txHash = await sendOnchainTx(built.tx, built.fee);
-          setActionOut("Finalizing claim...");
-          const finalized = await req("/api/tx/finalize", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ intentId: built.intentId, txHash })
+          await setClaimProgress("Finalizing claim...");
+          await finalizeTxWithRetry({
+            intentId: built.intentId,
+            txHash,
+            type: "payout-claim",
+            marketKey: position.marketKey,
+            positionKey: position.positionKey,
+            walletPublicKey: walletKey
           });
-          setActionOut(toJson({ txHash, claim: finalized, payoutSummary: built.payoutSummary }));
+          claimButtonState.delete(positionKey);
           await refreshResolvedMarkets();
           await refreshWalletActivity();
         } catch (e) {
+          await clearClaimProgress();
           if (isNoncePreconditionError(e)) {
             await realignUiAfterTxFailure();
             setActionOut("Wallet nonce changed - refreshed state, please retry");
@@ -995,14 +1011,15 @@
           const claimed = Boolean(p.claimed);
           const won = Boolean(p.won);
           const claimsLive = true;
-          const canClaim = claimsLive && won && !claimed && p.claimStatus !== "submitted";
-          const buttonLabel = won
+          const transientClaimLabel = claimButtonState.get(String(p.positionKey));
+          const canClaim = claimsLive && won && !claimed && p.claimStatus !== "submitted" && !transientClaimLabel;
+          const buttonLabel = transientClaimLabel || (won
             ? claimed
               ? "Claimed"
               : p.claimStatus === "submitted"
                 ? "Claim Submitted"
                 : "Claim Payout"
-            : "No Payout";
+            : "No Payout");
           return `
             <div class="market" style="margin-bottom:${idx === positions.length - 1 ? "0" : "8px"};">
               <div class="small"><b>${p.marketDate || "Resolved market"}</b> | You picked ${String(p.side || "").toUpperCase()} | Result ${String(p.resolvedOutcome || "").toUpperCase()} ${won ? "won" : "lost"}</div>
@@ -1021,6 +1038,26 @@
             claimResolvedPosition(filtered[idx]);
           };
         });
+      }
+
+      async function finalizeTxWithRetry(payload) {
+        let lastError = null;
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          try {
+            return await req("/api/tx/finalize", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(payload)
+            });
+          } catch (e) {
+            lastError = e;
+            if (attempt < 2) {
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+              continue;
+            }
+          }
+        }
+        throw lastError;
       }
 
       async function refreshWalletActivity() {
@@ -1185,11 +1222,7 @@
           setBetProgress("Waiting for wallet signature...", true);
           const txHash = await sendOnchainTx(txPayload, txFee);
           setBetProgress("Finalizing market state...", true);
-          const finalized = await req("/api/tx/finalize", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ intentId, txHash })
-          });
+          const finalized = await finalizeTxWithRetry({ intentId, txHash });
           setActionOut(toJson({ txHash, marketDate: currentMarketDate, thresholdF: currentThresholdF, finalized }));
           setBetProgress("Refreshing odds...", true);
           await refreshDailyMarkets();

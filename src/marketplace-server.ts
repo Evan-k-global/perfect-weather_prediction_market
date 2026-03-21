@@ -2310,6 +2310,53 @@ function markReceiptClaimConfirmed(state: Awaited<ReturnType<typeof loadOperator
   return true;
 }
 
+async function recoverAndRecordReceiptClaimFinalize(params: {
+  state: Awaited<ReturnType<typeof loadOperatorState>>;
+  positionKey: string;
+  marketKey: string;
+  walletPublicKey: string;
+  txHash: string;
+  recordedAtUnixMs: number;
+}): Promise<'submitted' | 'confirmed'> {
+  const { state, positionKey, marketKey, walletPublicKey, txHash, recordedAtUnixMs } = params;
+  state.positionMeta = state.positionMeta || {};
+  state.receiptMeta = state.receiptMeta || {};
+
+  const receiptMeta = state.receiptMeta[positionKey];
+  const positionMeta = state.positionMeta[positionKey];
+  const currentZkappPublicKey = state.zkappPublicKey || null;
+  const targetMeta = positionMeta || receiptMeta;
+  if (!targetMeta) throw new Error('claim metadata missing for payout claim');
+  if (targetMeta.marketKey !== marketKey) throw new Error('claim market mismatch during finalize');
+  if (targetMeta.walletPublicKey !== walletPublicKey) throw new Error('claim wallet mismatch during finalize');
+  if (!metaMatchesCurrentZkapp(targetMeta, currentZkappPublicKey)) {
+    throw new Error('claim metadata belongs to a different zkapp epoch');
+  }
+
+  targetMeta.claimStatus = 'submitted';
+  targetMeta.claimTxHash = txHash;
+  targetMeta.claimSubmittedAtUnixMs = recordedAtUnixMs;
+  targetMeta.claimConfirmedAtUnixMs = null;
+
+  try {
+    setActiveZekoNetwork();
+    const { graphql } = getNetworkConfig();
+    const claimTxStatus = await fetchTransactionStatus(txHash, graphql);
+    if (claimTxStatus === 'INCLUDED') {
+      if (positionMeta) {
+        markPositionClaimConfirmed(state, positionKey, Date.now());
+      } else {
+        markReceiptClaimConfirmed(state, positionKey, Date.now());
+      }
+      return 'confirmed';
+    }
+  } catch {
+    // Leave claim in submitted state until a later refresh confirms inclusion.
+  }
+
+  return 'submitted';
+}
+
 async function reconcileSubmittedPayoutClaims(stateFile: string) {
   setActiveZekoNetwork();
   const state = await loadOperatorState(stateFile);
@@ -2943,12 +2990,37 @@ async function main(): Promise<void> {
         const intentId = requireString(body.intentId, 'intentId');
         const txHash = requireString(body.txHash, 'txHash');
         const intent = pendingTxIntents[intentId];
-        if (!intent) throw new Error('intent not found or expired');
+        const state = await loadOperatorState(defaultStatePath);
+        if (!intent) {
+          const fallbackType = typeof body.type === 'string' ? body.type : '';
+          if (fallbackType !== 'payout-claim') throw new Error('intent not found or expired');
+          const marketKey = requireString(body.marketKey, 'marketKey');
+          const positionKey = requireString(body.positionKey, 'positionKey');
+          const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
+          const claimStatus = await recoverAndRecordReceiptClaimFinalize({
+            state,
+            positionKey,
+            marketKey,
+            walletPublicKey,
+            txHash,
+            recordedAtUnixMs: Date.now()
+          });
+          await saveOperatorState(defaultStatePath, state);
+          writeJson(res, 200, {
+            ok: true,
+            recovered: true,
+            txHash,
+            type: 'payout-claim',
+            marketKey,
+            userId: walletPublicKey,
+            claimStatus
+          });
+          return;
+        }
         if (Date.now() - intent.createdAtUnixMs > 15 * 60 * 1000) {
           delete pendingTxIntents[intentId];
           throw new Error('intent expired; rebuild transaction');
         }
-        const state = await loadOperatorState(defaultStatePath);
         if (intent.type === 'market-bet' && intent.newLeaf) {
           state.markets[intent.marketKey] = intent.newLeaf;
           state.receipts = state.receipts || {};
@@ -2971,38 +3043,14 @@ async function main(): Promise<void> {
             stakeTmina: intent.addTotalBet
           };
         } else if (intent.type === 'payout-claim') {
-          const claimRecordedAt = Date.now();
-          state.positionMeta = state.positionMeta || {};
-          state.receiptMeta = state.receiptMeta || {};
-          const existingPositionMeta = state.positionMeta[intent.positionKey];
-          const existingReceiptMeta = state.receiptMeta[intent.positionKey];
-          if (existingPositionMeta) {
-            existingPositionMeta.claimStatus = 'submitted';
-            existingPositionMeta.claimTxHash = txHash;
-            existingPositionMeta.claimSubmittedAtUnixMs = claimRecordedAt;
-            existingPositionMeta.claimConfirmedAtUnixMs = null;
-          } else if (existingReceiptMeta) {
-            existingReceiptMeta.claimStatus = 'submitted';
-            existingReceiptMeta.claimTxHash = txHash;
-            existingReceiptMeta.claimSubmittedAtUnixMs = claimRecordedAt;
-            existingReceiptMeta.claimConfirmedAtUnixMs = null;
-          } else {
-            throw new Error('claim metadata missing for payout claim');
-          }
-          try {
-            setActiveZekoNetwork();
-            const { graphql } = getNetworkConfig();
-            const claimTxStatus = await fetchTransactionStatus(txHash, graphql);
-            if (claimTxStatus === 'INCLUDED') {
-              if (existingPositionMeta) {
-                markPositionClaimConfirmed(state, intent.positionKey, Date.now());
-              } else {
-                markReceiptClaimConfirmed(state, intent.positionKey, Date.now());
-              }
-            }
-          } catch {
-            // Leave claim in submitted state until a later refresh confirms inclusion.
-          }
+          await recoverAndRecordReceiptClaimFinalize({
+            state,
+            positionKey: intent.positionKey,
+            marketKey: intent.marketKey,
+            walletPublicKey: intent.walletPublicKey,
+            txHash,
+            recordedAtUnixMs: Date.now()
+          });
         }
         await saveOperatorState(defaultStatePath, state);
 
