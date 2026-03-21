@@ -1620,6 +1620,16 @@ function isFreshStateMismatchError(error: unknown): boolean {
   return message.includes('marketsRoot mismatch') || message.includes('receiptsRoot mismatch');
 }
 
+function isRemoteProverStateDriftError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /Field\.assertEquals\(\):\s+\d+\s+!=\s+\d+/.test(message) ||
+    message.includes('marketsRoot mismatch') ||
+    message.includes('receiptsRoot mismatch') ||
+    message.includes('claimedReceiptsRoot')
+  );
+}
+
 async function withFreshMarketStateRetry<T>(projectRoot: string, work: () => Promise<T>): Promise<T> {
   try {
     return await work();
@@ -1627,6 +1637,19 @@ async function withFreshMarketStateRetry<T>(projectRoot: string, work: () => Pro
     if (!isFreshStateMismatchError(error)) throw error;
     await refreshState(projectRoot);
     return await work();
+  }
+}
+
+async function withRemoteProverStateRetry<T>(
+  projectRoot: string,
+  buildAndProve: () => Promise<T>
+): Promise<T> {
+  try {
+    return await buildAndProve();
+  } catch (error) {
+    if (!isRemoteProverStateDriftError(error)) throw error;
+    await refreshState(projectRoot);
+    return await buildAndProve();
   }
 }
 
@@ -2878,26 +2901,47 @@ async function main(): Promise<void> {
           }
         }
 
-        const built = await withFreshMarketStateRetry(projectRoot, async () =>
-          buildBrowserFeePayerMarketBetContext({
-            stateFile: defaultStatePath,
-            marketKey: String(selectedMarket.marketKey),
-            addTotalBet: Math.floor(addTotalBet),
-            addYesBet: Math.floor(addYesBet),
-            marketDate,
-            feePayerPublicKey: walletPublicKey,
-            userId
-          })
-        );
-        const tx = useRemoteTxProver()
-          ? (await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/market-bet', {
-              context: built.buildContext
-            })).tx
-          : useLocalServerBetProving()
-            ? await buildLocalServerReceiptBetTx(built.buildContext)
+        const txResult = useRemoteTxProver()
+          ? await withRemoteProverStateRetry(projectRoot, async () => {
+              const built = await withFreshMarketStateRetry(projectRoot, async () =>
+                buildBrowserFeePayerMarketBetContext({
+                  stateFile: defaultStatePath,
+                  marketKey: String(selectedMarket.marketKey),
+                  addTotalBet: Math.floor(addTotalBet),
+                  addYesBet: Math.floor(addYesBet),
+                  marketDate,
+                  feePayerPublicKey: walletPublicKey,
+                  userId
+                })
+              );
+              const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/market-bet', {
+                context: built.buildContext
+              });
+              return { built, tx: proved.tx };
+            })
+            : useLocalServerBetProving()
+            ? await (async () => {
+                const built = await withFreshMarketStateRetry(projectRoot, async () =>
+                  buildBrowserFeePayerMarketBetContext({
+                    stateFile: defaultStatePath,
+                    marketKey: String(selectedMarket.marketKey),
+                    addTotalBet: Math.floor(addTotalBet),
+                    addYesBet: Math.floor(addYesBet),
+                    marketDate,
+                    feePayerPublicKey: walletPublicKey,
+                    userId
+                  })
+                );
+                return {
+                  built,
+                  tx: await buildLocalServerReceiptBetTx(built.buildContext)
+                };
+              })()
             : (() => {
                 throw new Error('no transaction proving path configured');
               })();
+        const built = txResult.built;
+        const tx = txResult.tx;
         writeJson(res, 200, {
           ok: true,
           mode: useRemoteTxProver() ? 'wallet-fee-payer-remote-prover' : 'wallet-fee-payer-local',
@@ -2926,17 +2970,22 @@ async function main(): Promise<void> {
         let mode: string;
 
         if (useRemoteTxProver()) {
-          const built = await withFreshMarketStateRetry(projectRoot, async () =>
-            buildClaimPayoutContext({
-              stateFile: defaultStatePath,
-              marketKey,
-              positionKey,
-              feePayerPublicKey: walletPublicKey
-            })
-          );
-          tx = (await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/claim-payout', {
-            context: built.buildContext
-          })).tx;
+          const builtAndTx = await withRemoteProverStateRetry(projectRoot, async () => {
+            const built = await withFreshMarketStateRetry(projectRoot, async () =>
+              buildClaimPayoutContext({
+                stateFile: defaultStatePath,
+                marketKey,
+                positionKey,
+                feePayerPublicKey: walletPublicKey
+              })
+            );
+            const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/claim-payout', {
+              context: built.buildContext
+            });
+            return { built, tx: proved.tx };
+          });
+          tx = builtAndTx.tx;
+          const built = builtAndTx.built;
           fee = built.fee;
           payoutSummary = built.payoutSummary;
           const intent: PendingTxIntent = {
