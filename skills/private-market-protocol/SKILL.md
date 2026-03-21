@@ -70,3 +70,33 @@ description: Use when implementing or modifying the reusable prediction-market p
   - event-based sync can be temporarily incomplete on hosted/archive infrastructure
   - do not let sync regress monotonic state like `resolved` markets, claimed receipts, or used oracle nonces
   - if a market resolved once locally, never overwrite it back to unresolved from a thinner event snapshot
+
+## Receipt-Commitment Extension Guide
+
+If an agent is extending this protocol toward stronger betting privacy with the smallest proving surface, use a receipt-commitment design rather than a full private-state rewrite.
+
+Code-level changes:
+
+- [`/tmp/private-prediction-market-main/src/fast-contract.ts`](/tmp/private-prediction-market-main/src/fast-contract.ts)
+  - keep market totals public
+  - insert committed receipts into `receiptsRoot`
+  - consume them through `claimedReceiptsRoot`
+  - avoid adding a large public per-user position model
+- [`/tmp/private-prediction-market-main/src/state-store.ts`](/tmp/private-prediction-market-main/src/state-store.ts)
+  - persist `receipts`, `claimedReceipts`, and wallet-scoped `receiptMeta`
+- [`/tmp/private-prediction-market-main/src/sync-state-zeko.ts`](/tmp/private-prediction-market-main/src/sync-state-zeko.ts)
+  - sync `receiptCommitted` and `receiptClaimed`
+  - preserve monotonic resolved/claimed state
+- [`/tmp/private-prediction-market-main/src/marketplace-server.ts`](/tmp/private-prediction-market-main/src/marketplace-server.ts)
+  - build bet context around receipt commitments and witnesses
+  - build claim context around receipt ownership and claim witnesses
+  - finalize wallet metadata separately from the public state roots
+- [`/tmp/private-prediction-market-main/src/tx-prover-server.ts`](/tmp/private-prediction-market-main/src/tx-prover-server.ts)
+  - prove the bet and claim methods using receipt-root witnesses
+
+Design guidance:
+
+- keep public outputs limited to aggregate market movement and final outcomes
+- treat wallet metadata as UX state, not public protocol state
+- do not call this “fully private” unless wallet funding, betting, and claiming are also hidden from public observers
+- prefer this step before attempting a full sovereign-rollup private state tree, because it is the smallest useful privacy upgrade

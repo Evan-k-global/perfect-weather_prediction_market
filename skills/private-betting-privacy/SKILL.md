@@ -49,3 +49,27 @@ Not provided by default:
    - claim proving and wallet signing can succeed while hosted finalize still fails
    - until finalize persists status, the UI should not imply that payout metadata is settled
    - local wallet signing remains a key privacy boundary even when proving/finalize are hosted
+
+## Next Privacy Step
+
+The smallest meaningful privacy upgrade beyond the current design is a receipt-commitment model. Instead of exposing a plainly inferable per-user bet record, the market stores a commitment to the user bet and proves in zk that the committed bet is valid and that public aggregate market totals were updated correctly. Observers can still see that a wallet transaction happened and that market state changed, but they no longer get a simple public record that directly spells out the user’s bet details.
+
+## Agent Implementation Outline
+
+If extending this market for stronger privacy with the smallest rewrite:
+
+1. Keep public aggregate market totals and public market resolution.
+2. Replace any user-explicit position representation with:
+   - `receiptCommitment`
+   - `receiptsRoot`
+   - `claimedReceiptsRoot`
+3. Bet proving should only show publicly:
+   - the market root update
+   - the receipts root update
+   - a valid committed receipt insertion
+4. Claim proving should verify:
+   - receipt inclusion
+   - claimant ownership
+   - winning-side eligibility
+   - not-already-claimed status
+5. Keep UX metadata (`receiptMeta`, claim status, market date mapping) off-chain and wallet-scoped.
