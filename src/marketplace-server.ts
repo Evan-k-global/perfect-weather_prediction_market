@@ -2081,7 +2081,7 @@ async function listResolvedWalletPositions(
   walletPublicKey: string,
   stateFile: string
 ): Promise<ResolvedWalletPosition[]> {
-  const state = await reconcileSubmittedPayoutClaims(stateFile);
+  const { state, derivedResolvedOutcomes } = await reconcileSubmittedPayoutClaims(stateFile);
   const currentZkappPublicKey = state.zkappPublicKey || null;
   const ownerCommitment = ownerCommitmentFromWalletPublicKey(walletPublicKey).toString();
   const result: ResolvedWalletPosition[] = [];
@@ -2096,8 +2096,8 @@ async function listResolvedWalletPositions(
     const storedMarket = state.markets[marketKey];
     if (!storedMarket) continue;
     const marketLeaf = deserializeMarketLeaf(storedMarket);
-    if (!marketLeaf.resolved.toBoolean()) continue;
-    const resolvedOutcome = marketLeaf.outcome.toBoolean() ? 'over' : 'under';
+    const { resolved, resolvedOutcome } = getEffectiveResolvedMarketState(marketLeaf, marketKey, derivedResolvedOutcomes);
+    if (!resolved || !resolvedOutcome) continue;
     const side = positionLeaf.sideOver.toBoolean() ? 'over' : 'under';
     const totalPot = BigInt(marketLeaf.totalPositionBet.toString());
     const totalYes = BigInt(marketLeaf.totalYesPositionBet.toString());
@@ -2133,8 +2133,8 @@ async function listResolvedWalletPositions(
     const storedMarket = state.markets[meta.marketKey];
     if (!storedMarket) continue;
     const marketLeaf = deserializeMarketLeaf(storedMarket);
-    if (!marketLeaf.resolved.toBoolean()) continue;
-    const resolvedOutcome = marketLeaf.outcome.toBoolean() ? 'over' : 'under';
+    const { resolved, resolvedOutcome } = getEffectiveResolvedMarketState(marketLeaf, meta.marketKey, derivedResolvedOutcomes);
+    if (!resolved || !resolvedOutcome) continue;
     const totalPot = BigInt(marketLeaf.totalPositionBet.toString());
     const totalYes = BigInt(marketLeaf.totalYesPositionBet.toString());
     const stake = BigInt(meta.stakeTmina);
@@ -2333,6 +2333,26 @@ function markReceiptClaimConfirmed(state: Awaited<ReturnType<typeof loadOperator
   return true;
 }
 
+type DerivedResolvedOutcomeMap = Map<string, 'over' | 'under'>;
+
+function getEffectiveResolvedMarketState(
+  marketLeaf: MarketLeaf | null,
+  marketKey: string,
+  derivedResolvedOutcomes: DerivedResolvedOutcomeMap
+): { resolved: boolean; resolvedOutcome: 'over' | 'under' | null } {
+  if (marketLeaf?.resolved.toBoolean()) {
+    return {
+      resolved: true,
+      resolvedOutcome: marketLeaf.outcome.toBoolean() ? 'over' : 'under'
+    };
+  }
+  const derived = derivedResolvedOutcomes.get(marketKey) || null;
+  return {
+    resolved: Boolean(derived),
+    resolvedOutcome: derived
+  };
+}
+
 async function recoverAndRecordReceiptClaimFinalize(params: {
   state: Awaited<ReturnType<typeof loadOperatorState>>;
   positionKey: string;
@@ -2384,17 +2404,18 @@ async function reconcileSubmittedPayoutClaims(stateFile: string) {
   setActiveZekoNetwork();
   const state = await loadOperatorState(stateFile);
   let dirty = finalizeReceiptClaimStatuses(state);
+  const derivedResolvedOutcomes: DerivedResolvedOutcomeMap = new Map();
   const pendingClaims = Object.entries(state.positionMeta || {}).filter(([, meta]) => {
     return Boolean(meta?.claimStatus === 'submitted' && meta?.claimTxHash);
   });
   const pendingReceiptClaims = Object.entries(state.receiptMeta || {}).filter(([, meta]) => {
-    return Boolean(meta?.claimStatus === 'submitted' && meta?.claimTxHash);
+    return Boolean(meta?.claimTxHash);
   });
   if (!pendingClaims.length && !pendingReceiptClaims.length) {
     if (dirty) {
       await saveOperatorState(stateFile, state);
     }
-    return state;
+    return { state, derivedResolvedOutcomes };
   }
   const { graphql } = getNetworkConfig();
   const now = Date.now();
@@ -2428,6 +2449,7 @@ async function reconcileSubmittedPayoutClaims(stateFile: string) {
         claimTxStatusCache.set(meta.claimTxHash, { status, fetchedAtUnixMs: now });
       }
       if (status === 'INCLUDED') {
+        derivedResolvedOutcomes.set(meta.marketKey, meta.side);
         dirty = markReceiptClaimConfirmed(state, receiptKey, Date.now()) || dirty;
       }
     } catch {
@@ -2437,7 +2459,7 @@ async function reconcileSubmittedPayoutClaims(stateFile: string) {
   if (dirty) {
     await saveOperatorState(stateFile, state);
   }
-  return state;
+  return { state, derivedResolvedOutcomes };
 }
 
 async function buildWalletFeePayerClaimPayoutTx(params: {
@@ -2500,7 +2522,7 @@ async function buildClaimPayoutContext(params: {
   const { feeRaw: txFee } = await getSuggestedSequencerFee(graphql);
   const zkappAddress = getZkappPublicKey();
 
-  const state = await reconcileSubmittedPayoutClaims(stateFile);
+  const { state, derivedResolvedOutcomes } = await reconcileSubmittedPayoutClaims(stateFile);
   const meta = state.receiptMeta?.[positionKey];
   if (!meta) throw new Error('receipt metadata missing for payout claim');
   if (meta.walletPublicKey !== feePayerPublicKey) {
@@ -2512,8 +2534,9 @@ async function buildClaimPayoutContext(params: {
   const storedMarket = state.markets[marketKey];
   if (!storedMarket) throw new Error('market missing for payout claim');
   const marketLeaf = deserializeMarketLeaf(storedMarket);
-  if (!marketLeaf.resolved.toBoolean()) throw new Error('market is not resolved yet');
-  const won = meta.side === (marketLeaf.outcome.toBoolean() ? 'over' : 'under');
+  const { resolved, resolvedOutcome } = getEffectiveResolvedMarketState(marketLeaf, marketKey, derivedResolvedOutcomes);
+  if (!resolved || !resolvedOutcome) throw new Error('market is not resolved yet');
+  const won = meta.side === resolvedOutcome;
   if (!won) throw new Error('receipt is not on the winning side');
   if (meta.claimStatus === 'submitted') throw new Error('claim already submitted');
   if (meta.claimStatus === 'confirmed') throw new Error('claim already confirmed');
@@ -3160,7 +3183,7 @@ async function main(): Promise<void> {
 
       if (req.method === 'GET' && url.pathname === '/api/wallet/activity') {
         const walletPublicKey = requireString(url.searchParams.get('walletPublicKey'), 'walletPublicKey');
-        const state = await loadOperatorState(defaultStatePath);
+        const { state, derivedResolvedOutcomes } = await reconcileSubmittedPayoutClaims(defaultStatePath);
         const currentZkappPublicKey = state.zkappPublicKey || null;
         const positions = Object.entries(state.positionMeta || {})
           .filter(([, meta]) => meta?.walletPublicKey === walletPublicKey && metaMatchesCurrentZkapp(meta, currentZkappPublicKey))
@@ -3170,8 +3193,11 @@ async function main(): Promise<void> {
             const positionLeaf = storedPosition ? deserializePositionLeaf(storedPosition) : null;
             const marketLeaf = storedMarket ? deserializeMarketLeaf(storedMarket) : null;
             const side = positionLeaf?.sideOver.toBoolean() ? 'over' : 'under';
-            const resolved = marketLeaf?.resolved.toBoolean() || false;
-            const resolvedOutcome = resolved ? (marketLeaf?.outcome.toBoolean() ? 'over' : 'under') : null;
+            const { resolved, resolvedOutcome } = getEffectiveResolvedMarketState(
+              marketLeaf,
+              meta.marketKey,
+              derivedResolvedOutcomes
+            );
             return {
               type: 'position' as const,
               positionKey,
@@ -3195,12 +3221,14 @@ async function main(): Promise<void> {
           .map(([receiptKey, meta]) => {
             const storedMarket = state.markets[meta.marketKey];
             const marketLeaf = storedMarket ? deserializeMarketLeaf(storedMarket) : null;
-            const won =
-              marketLeaf?.resolved.toBoolean()
-                ? meta.side === (marketLeaf.outcome.toBoolean() ? 'over' : 'under')
-                : null;
+            const { resolved, resolvedOutcome } = getEffectiveResolvedMarketState(
+              marketLeaf,
+              meta.marketKey,
+              derivedResolvedOutcomes
+            );
+            const won = resolved && resolvedOutcome ? meta.side === resolvedOutcome : null;
             const claimStatus =
-              marketLeaf?.resolved.toBoolean()
+              resolved
                 ? won
                   ? meta.claimStatus || 'claimable'
                   : 'not-applicable'
@@ -3214,8 +3242,8 @@ async function main(): Promise<void> {
               stakeTmina: meta.stakeTmina,
               createdAtUnixMs: meta.createdAtUnixMs,
               fundingTxHash: meta.fundingTxHash,
-              resolved: marketLeaf?.resolved.toBoolean() || false,
-              resolvedOutcome: marketLeaf?.resolved.toBoolean() ? (marketLeaf.outcome.toBoolean() ? 'over' : 'under') : null,
+              resolved,
+              resolvedOutcome,
               won,
               claimed: meta.claimStatus === 'confirmed',
               claimStatus,
