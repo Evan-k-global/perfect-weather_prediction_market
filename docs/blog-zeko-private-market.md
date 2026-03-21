@@ -175,6 +175,7 @@ We hit that several ways:
 
 - the daily market projection layer drifted from the actual on-chain market identity
 - wallet-facing metadata like `receiptMeta` could be lost if sync/import cycles overwrote fresher local state
+- event-driven hosted sync could briefly see an incomplete snapshot and accidentally regress a market from resolved back to unresolved unless we treated resolved/claimed state as monotonic
 - a market could roll off the active window without immediately appearing in resolved history if the oracle missed its first nightly resolution window
 - a rolled-off market could also stop resolving entirely if its date identity lived only in the active daily-market window instead of durable state
 
@@ -182,6 +183,7 @@ The fix was not “add more workers.” It was:
 
 - use one source of truth for market identity
 - preserve wallet metadata across sync/import cycles
+- preserve monotonic facts during sync, especially resolved markets and claimed receipts
 - let overdue past-date resolution retry on the next oracle cycle instead of waiting another day
 
 Those are the kinds of details that make the difference between a zk demo and a usable product.

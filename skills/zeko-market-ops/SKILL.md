@@ -42,7 +42,9 @@ description: Use when deploying, syncing, repairing, or operating the Zeko testn
 - `Invalid_signature`: wrong network id or wrong signer key in `.env.local`.
 - `Invalid proof`: upgraded code pointed at an old verification key / legacy zkApp address.
 - `marketsRoot mismatch`: local operator state is stale.
+- `Field.assertEquals(): ... != ...` during hosted bet/claim proving: the tx-prover was given a stale market/receipt/claimed witness after another tx updated the root; refresh state and rebuild once.
 - `Update_not_permitted_app_state`: trying to deploy over an existing account incorrectly.
+- `resolved` market disappears after it was already settled/claimed: event sync likely rebuilt from an incomplete snapshot; preserve monotonic state and rerun sync instead of trusting the regression.
 
 ## Guardrails
 

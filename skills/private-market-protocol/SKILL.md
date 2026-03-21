@@ -62,3 +62,11 @@ description: Use when implementing or modifying the reusable prediction-market p
   - a wallet tx hash is not enough; the hosted market still needs `/api/tx/finalize` to persist `submitted` / `confirmed`
   - payout-claim finalize should tolerate lost in-memory intents and recover from `{ marketKey, positionKey, walletPublicKey, txHash }`
   - transient finalize failures are more common than proof failures once the wallet send succeeds, so retry and recovery should stay lean and explicit
+- Prover state drift:
+  - `Field.assertEquals(): <a> != <b>` in the tx-prover usually means the witness was built against an older root and the live zkApp state changed before proving
+  - retry by refreshing state, rebuilding context, and proving again once before surfacing the error
+  - treat this as a state-coordination problem first, not as proof corruption
+- Sync monotonicity:
+  - event-based sync can be temporarily incomplete on hosted/archive infrastructure
+  - do not let sync regress monotonic state like `resolved` markets, claimed receipts, or used oracle nonces
+  - if a market resolved once locally, never overwrite it back to unresolved from a thinner event snapshot

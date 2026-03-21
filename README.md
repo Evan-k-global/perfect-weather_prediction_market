@@ -163,3 +163,8 @@ After iterating through local builds, hosted Render deploys, heavy worker splits
 - `skills/zeko-market-ops/SKILL.md`
 - `skills/private-betting-privacy/SKILL.md`
 - `skills/demo-weather-over-under/SKILL.md`
+
+Recent hosted learnings worth preserving:
+- retry tx-prover work once after refreshing state if proving hits a root assertion mismatch
+- keep `/api/tx/finalize` resilient because wallet send success and hosted status persistence can fail independently
+- treat market resolution and receipt claims as monotonic during sync; incomplete event snapshots should not erase already-resolved or already-claimed state

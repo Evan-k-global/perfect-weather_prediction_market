@@ -57,7 +57,9 @@ description: Use when working on the Atherton weather demo market UI and adapter
   - oracle runs background lifecycle work
   - tx-prover handles bet/claim proving
   - browser wallet signs
+- If the tx-prover throws a raw `Field.assertEquals(): ... != ...` after a few bets/claims, suspect stale witnesses from a root update rather than a broken wallet flow; refresh state, rebuild context, and retry once.
 - Past-date resolution must retry on the next oracle cycle if a market missed its first nightly window; do not make users wait another full day.
+- If `Resolved Markets` empties after a real resolve/claim, suspect sync regression before blaming the UI. The demo should preserve monotonic resolved/claimed state rather than allowing an incomplete event snapshot to erase it.
 - In the resolved-markets card:
   - keep progress on the claim button itself (`Generating tx proof`, `Sign Wallet Tx`, `Finalizing claim...`)
   - avoid long raw market identifiers unless they are needed for debugging
