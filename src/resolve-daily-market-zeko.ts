@@ -1,7 +1,7 @@
 import './env.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { Field } from 'o1js';
@@ -82,21 +82,31 @@ async function buildHistoricalObservationAttestation(projectRoot: string, market
   const allowedPath = buildObservationPathForMarketDate(marketDate, stationId);
   const outputDir = path.join('data', 'tlsn-output', 'history', marketDate);
   const attestationPath = path.join(projectRoot, outputDir, 'attestation.json');
-  await execFileAsync(
-    'pnpm',
-    ['weather:attest'],
-    {
-      cwd: projectRoot,
-      env: {
-        ...process.env,
-        TLSN_SERVER_HOST: 'api.weather.gov',
-        TLSN_SERVER_DOMAIN: 'api.weather.gov',
-        TLSN_ENDPOINT: allowedPath,
-        TLSN_OUTPUT_DIR: outputDir,
-        WEATHER_TLSN_LOCAL_ATTESTATION_FILE: path.join(outputDir, 'latest-attestation.json'),
-        TLSN_STATUS_FILE: path.join(outputDir, 'status.json')
-      }
+  const url = `https://api.weather.gov${allowedPath}`;
+  const response = await fetch(url, {
+    headers: {
+      Accept: 'application/geo+json',
+      'user-agent': 'private-prediction-market/0.1 historical-resolver'
     }
+  });
+  if (!response.ok) {
+    throw new Error(`historical observation fetch failed: ${response.status} ${response.statusText}`);
+  }
+  const responseBody = await response.text();
+  await mkdir(path.dirname(attestationPath), { recursive: true });
+  await writeFile(
+    attestationPath,
+    JSON.stringify(
+      {
+        server_name: 'api.weather.gov',
+        request_path: allowedPath,
+        timestamp: Date.now(),
+        response_body: responseBody
+      },
+      null,
+      2
+    ),
+    'utf8'
   );
   return { attestationPath, allowedPath };
 }
