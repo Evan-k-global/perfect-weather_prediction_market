@@ -3,40 +3,47 @@ services:
     image: ${PREDICTION_MARKET_IMAGE:-private-prediction-market:local}
     build:
       context: .
-      dockerfile: deploy/Dockerfile
+      dockerfile: deploy/Dockerfile.market
     env_file:
       - ./deploy/env.production
-    command: ["pnpm", "marketplace:serve"]
+    command: ["/app/deploy/start-render.sh"]
     ports:
       - "8790:8790"
     volumes:
       - ./data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8790/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8790/api/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 5
       start_period: 20s
 
-  weather-daemon:
-    image: ${PREDICTION_MARKET_IMAGE:-private-prediction-market:local}
+  oracle-worker:
+    image: ${PREDICTION_ORACLE_IMAGE:-private-prediction-oracle:local}
     build:
       context: .
-      dockerfile: deploy/Dockerfile
+      dockerfile: deploy/Dockerfile.oracle
     env_file:
       - ./deploy/env.production
-    command: ["pnpm", "weather:daemon"]
+    command: ["/app/deploy/start-oracle-worker.sh"]
     volumes:
       - ./data:/app/data
-      - ${ZKVERIFY_POC_HOST_PATH:-/opt/zk-verify-poc}:/opt/zk-verify-poc
     restart: unless-stopped
     depends_on:
       marketplace:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "pnpm", "weather:daemon:health"]
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
+
+  tx-prover:
+    image: ${PREDICTION_TX_PROVER_IMAGE:-private-prediction-tx-prover:local}
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.tx-prover
+    env_file:
+      - ./deploy/env.production
+    command: ["/app/deploy/start-tx-prover.sh"]
+    ports:
+      - "8789:8789"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

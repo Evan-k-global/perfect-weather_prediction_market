@@ -32,9 +32,9 @@ The app now supports strict zkTLS verification for weather sync and settlement:
 
 Relevant files:
 
-- [tlsn-verifier.ts](/Users/evankereiakes/Documents/Codex/private-prediction-market/src/tlsn-verifier.ts)
-- [marketplace-server.ts](/Users/evankereiakes/Documents/Codex/private-prediction-market/src/marketplace-server.ts)
-- [weather-hourly-sync.ts](/Users/evankereiakes/Documents/Codex/private-prediction-market/src/weather-hourly-sync.ts)
+- [tlsn-verifier.ts](/tmp/private-prediction-market-main/src/tlsn-verifier.ts)
+- [marketplace-server.ts](/tmp/private-prediction-market-main/src/marketplace-server.ts)
+- [weather-hourly-sync.ts](/tmp/private-prediction-market-main/src/weather-hourly-sync.ts)
 
 ### 2. One-command attestation generation
 
@@ -54,7 +54,7 @@ The attestation command now:
 
 Relevant file:
 
-- [weather-attest.ts](/Users/evankereiakes/Documents/Codex/private-prediction-market/src/weather-attest.ts)
+- [weather-attest.ts](/tmp/private-prediction-market-main/src/weather-attest.ts)
 
 ### 3. TLSNotary stability fixes for the NOAA/NWS source
 
@@ -82,7 +82,7 @@ To reduce user confusion and shell-specific failures:
 
 Relevant file:
 
-- [env.ts](/Users/evankereiakes/Documents/Codex/private-prediction-market/src/env.ts)
+- [env.ts](/tmp/private-prediction-market-main/src/env.ts)
 
 ### 5. Safer sync behavior
 
@@ -114,14 +114,14 @@ pnpm weather:sync
 3. Persistent hosted-style loop:
 
 ```bash
-pnpm weather:daemon
+pnpm oracle:worker
 ```
 
 ### Recommended server-side mode
 
 For any hosted environment, use:
 
-- `pnpm weather:daemon`
+- `pnpm oracle:worker`
 
 This provides:
 
@@ -132,7 +132,7 @@ This provides:
 Health check:
 
 ```bash
-pnpm weather:daemon:health
+curl -s http://127.0.0.1:8790/api/health
 ```
 
 ## Current Limits

@@ -1,0 +1,24 @@
+FROM node:20-bookworm AS deps
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+FROM deps AS build
+COPY tsconfig.json ./
+COPY src ./src
+COPY public ./public
+RUN pnpm build
+
+FROM node:20-bookworm
+WORKDIR /app
+RUN corepack enable
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json ./
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/public ./public
+COPY deploy/start-render.sh /app/deploy/start-render.sh
+COPY deploy/demo-daily-threshold-markets.seed.json /app/deploy/demo-daily-threshold-markets.seed.json
+RUN chmod +x /app/deploy/start-render.sh
+ENV NODE_ENV=production
+CMD ["/app/deploy/start-render.sh"]

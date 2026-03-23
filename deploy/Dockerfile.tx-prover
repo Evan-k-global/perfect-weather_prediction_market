@@ -1,0 +1,23 @@
+FROM node:20-bookworm AS deps
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+FROM deps AS build
+COPY tsconfig.json ./
+COPY src ./src
+RUN pnpm build
+RUN pnpm fast-node-cache:build
+
+FROM node:20-bookworm
+WORKDIR /app
+RUN corepack enable
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json ./
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/data ./data
+COPY deploy/start-tx-prover.sh /app/deploy/start-tx-prover.sh
+RUN chmod +x /app/deploy/start-tx-prover.sh
+ENV NODE_ENV=production
+CMD ["/app/deploy/start-tx-prover.sh"]

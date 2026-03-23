@@ -78,7 +78,7 @@ Open:
 If you want the weather oracle loop running too:
 
 ```bash
-pnpm weather:daemon
+pnpm oracle:worker
 ```
 
 ## Deployment Modes

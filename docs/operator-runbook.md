@@ -28,15 +28,15 @@ Payout-enabled path on upgraded deployment:
 Terminal 1:
 
 ```bash
-cd /Users/evankereiakes/Documents/Codex/private-prediction-market
+cd /tmp/private-prediction-market-main
 pnpm marketplace:serve
 ```
 
 Terminal 2:
 
 ```bash
-cd /Users/evankereiakes/Documents/Codex/private-prediction-market
-pnpm weather:daemon
+cd /tmp/private-prediction-market-main
+pnpm oracle:worker
 ```
 
 ## UI
@@ -104,7 +104,7 @@ pnpm weather:sync
 Check daemon heartbeat:
 
 ```bash
-pnpm weather:daemon:health
+curl -s http://127.0.0.1:8790/api/health
 ```
 
 ## Operational Truth

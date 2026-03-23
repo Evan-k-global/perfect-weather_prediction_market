@@ -65,7 +65,7 @@ This is not cosmetic zero-knowledge branding. It materially changes the oracle t
 
 We also had to do real integration work to make it usable in practice. NOAA/NWS responses were not a clean, one-shot happy path for the demo. We had to stabilize the prover/notary flow, make request behavior more deterministic, trim payload assumptions, bind the policy carefully, and add better readiness and timeout behavior.
 
-That work is documented in [zktls-hardening-notes.md](/Users/evankereiakes/Documents/Codex/private-prediction-market/docs/zktls-hardening-notes.md), and it is one of the strongest technical pieces in the repo. It turns “our server says the weather was X” into something much more defensible.
+That work is documented in [zktls-hardening-notes.md](/tmp/private-prediction-market-main/docs/zktls-hardening-notes.md), and it is one of the strongest technical pieces in the repo. It turns “our server says the weather was X” into something much more defensible.
 
 ## What is private, and what is not
 

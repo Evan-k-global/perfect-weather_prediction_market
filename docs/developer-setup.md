@@ -39,7 +39,7 @@ pnpm marketplace:serve
 Terminal 2:
 
 ```bash
-pnpm weather:daemon
+pnpm oracle:worker
 ```
 
 ## Useful zkTLS / Weather Commands
@@ -65,7 +65,7 @@ pnpm weather:sync
 Health check the daemon:
 
 ```bash
-pnpm weather:daemon:health
+curl -s http://127.0.0.1:8790/api/health
 ```
 
 Clean stale local/runtime disk artifacts:
@@ -122,68 +122,44 @@ pnpm resolve-daily-market:zeko -- --market-date 2026-03-11 --state-file ./data/o
 - Strict zkTLS on Render requires the Docker path so the vendored `external/zk-verify-poc/tlsnotary` source and compiled Rust binaries exist in the container.
 - This app currently relies on shared local disk state under `./data`.
 
-### Unified hosted service
-
-Recommended for demo use:
-
-- one Render web service runs both:
-  - `marketplace:serve`
-  - `weather:daemon`
-- the same service also handles:
-  - private batch processing
-  - forward daily market creation
-  - on-chain resolution
-
-Tradeoff:
-
-- simplest operations
-- highest memory usage
-
-For this mode, use the repo-root `render.yaml`, attach a persistent disk at `/app/data`, and provision enough RAM for o1js proving.
-
 ### Split hosted services
 
 Recommended for production-hardening:
 
 - web service:
   - `marketplace:serve`
-  - optional oracle read APIs
-- worker/operator service:
-  - hosted operator worker
-  - private batch proving
-  - ensure/resolve scripts
+  - fast state sync and UI APIs
+- oracle worker:
+  - `oracle:worker`
+  - weather sync
+  - daily market creation
+  - overdue market resolution
+- tx prover:
+  - `tx-prover:serve`
+  - bet and claim proving only
 
 Tradeoff:
 
 - more moving parts
 - cleaner failure isolation
 - lower risk of web-instance OOM during proving
+- leaner service-specific images
 
 Current repo support:
 
 - `render.yaml` now includes:
   - web service: `perfect-weather-prediction-market`
-  - worker service: `perfect-weather-operator-worker`
-- worker entrypoint:
-  - `pnpm operator:worker`
-
-Required worker env:
-
-```bash
-OPERATOR_BASE_URL=https://perfect-weather-prediction-market-w6k6.onrender.com
-OPERATOR_ACTION_TOKEN=<same token configured on web service>
-OPERATOR_WORKER_INTERVAL_MS=30000
-OPERATOR_WORKER_RETRY_MS=120000
-```
+  - worker service: `perfect-weather-oracle-worker`
+  - prover service: `perfect-weather-tx-prover`
 
 Recommended split settings:
 
 - web service:
-  - `PRIVATE_BATCH_INTERVAL_MS=0`
-  - `WEATHER_DAEMON_CHAIN_ACTIONS=0`
-- worker service:
-  - use `OPERATOR_BASE_URL`
-  - use the same `OPERATOR_ACTION_TOKEN`
+  - `SYNC_STATE_ON_START=1`
+  - `SYNC_STATE_BLOCKING=0`
+- oracle worker:
+  - use `MARKET_BASE_URL`
+  - use the same `ORACLE_ACTION_TOKEN`
 
 Recommended Render env vars:
 
@@ -201,9 +177,6 @@ ORACLE_REQUEST_PATH_HASH=1495752810893170593265344950033904204730312537503089070
 
 PRIVACY_MODE=zk_strong
 RELAYER_REIMBURSE_DISABLED=1
-PRIVATE_BATCH_INTERVAL_MS=30000
-PRIVATE_BATCH_MAX_ITEMS=64
-
 WEATHER_REQUIRE_TLSN=1
 WEATHER_TLSN_ATTESTATION_FILE=./data/tlsn-output/latest/attestation.json
 WEATHER_TLSN_MAX_AGE_MS=3600000

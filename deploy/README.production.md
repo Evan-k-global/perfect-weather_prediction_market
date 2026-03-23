@@ -3,14 +3,15 @@
 This bundle runs:
 
 - `marketplace` (API/UI server)
-- `weather-daemon` (persistent TLSN attestation + sync loop)
+- `oracle-worker` (weather sync + market lifecycle)
+- `tx-prover` (bet/claim proving)
 
-For Render, use the single-service Docker path in `render.yaml`. It runs both processes in one container so they can share `/app/data`.
+For Render, use the split-service Docker paths in `render.yaml`.
 
 ## 1) Prepare env
 
 ```bash
-cd /Users/evankereiakes/Documents/Codex/private-prediction-market/deploy
+cd /tmp/private-prediction-market-main/deploy
 cp env.production.example env.production
 ```
 
@@ -30,7 +31,7 @@ docker compose -f docker-compose.production.yml up -d --build
 
 ```bash
 docker compose -f docker-compose.production.yml ps
-docker compose -f docker-compose.production.yml logs -f weather-daemon
+docker compose -f docker-compose.production.yml logs -f oracle-worker
 curl -s http://127.0.0.1:8790/api/health
 ```
 
@@ -43,36 +44,5 @@ curl -s http://127.0.0.1:8790/api/health
 
 ## Notes
 
-- The daemon writes heartbeat to `./data/weather-daemon-heartbeat.json`.
-- Docker healthcheck validates heartbeat freshness via `pnpm weather:daemon:health`.
 - Keep `WEATHER_TLSN_MAX_AGE_MS` tight for production (for example 15m or 60m).
 - Render should use a persistent disk mounted at `/app/data`.
-
-## Fresh zkApp Rollout
-
-Use this only when you intentionally cut over to a brand-new zkApp address and want to leave the broken local state behind.
-
-1. Deploy the new zkApp and capture the new `ZKAPP_PUBLIC_KEY`.
-2. Update Render env on all services with the new zkApp key material.
-3. Redeploy `perfect-weather-prediction-market`.
-4. Run the one-shot hosted reset from a Render shell on any service that has `OPERATOR_BASE_URL` and `OPERATOR_ACTION_TOKEN`:
-
-```bash
-pnpm run fresh-zkapp:reset-hosted-state -- --reason "fresh zkApp rollout"
-```
-
-What that reset does:
-
-- archives the old persisted files under `/app/data/fresh-zkapp-archives/<timestamp>/`
-- clears `operator-state.json`
-- clears `private-bet-queue.json`
-- clears `private-batch-history.json`
-- clears `user-positions.json`
-- resets `daily-settle-state.json`
-- preserves the daily threshold rows but zeroes out their pot totals
-
-5. Redeploy `perfect-weather-operator-worker`.
-6. Redeploy `perfect-weather-oracle-worker`.
-7. Let oracle upkeep create the new forward markets, then test one fresh bet.
-
-This is the intended emergency path for a clean-slate contract migration without reusing poisoned local state.

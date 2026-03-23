@@ -2,7 +2,7 @@ services:
   - type: web
     name: perfect-weather-prediction-market
     env: docker
-    dockerfilePath: ./deploy/Dockerfile
+    dockerfilePath: ./deploy/Dockerfile.market
     healthCheckPath: /api/ready
     disk:
       name: perfect-weather-data
@@ -18,28 +18,14 @@ services:
           type: web
           name: perfect-weather-tx-prover
           property: hostport
-      - key: BOOTSTRAP_FAST_ZKAPP_ON_START
-        value: "1"
-      - key: BOOTSTRAP_DAILY_MARKETS_ON_START
-        value: "1"
-      - key: WEATHER_DAEMON_ENABLED
-        value: "0"
       - key: SYNC_STATE_ON_START
         value: "1"
       - key: SYNC_STATE_BLOCKING
         value: "0"
-      - key: PRIVATE_BATCH_INTERVAL_MS
-        value: "0"
-      - key: BET_CONTEXT_ASSERT_CHAIN_ROOTS
-        value: "0"
-      - key: DAILY_AUTO_SETTLE_INTERVAL_MS
-        value: "0"
-      - key: DAILY_SETTLE_SCHEDULE_CHECK_MS
-        value: "0"
   - type: worker
     name: perfect-weather-oracle-worker
     env: docker
-    dockerfilePath: ./deploy/Dockerfile
+    dockerfilePath: ./deploy/Dockerfile.oracle
     dockerCommand: /app/deploy/start-oracle-worker.sh
     envVars:
       - key: NODE_ENV
@@ -62,7 +48,7 @@ services:
   - type: web
     name: perfect-weather-tx-prover
     env: docker
-    dockerfilePath: ./deploy/Dockerfile
+    dockerfilePath: ./deploy/Dockerfile.tx-prover
     dockerCommand: /app/deploy/start-tx-prover.sh
     envVars:
       - key: NODE_ENV
