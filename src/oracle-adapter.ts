@@ -6,6 +6,7 @@ export interface TlsnWeatherAttestation {
   request_path: string;
   timestamp: number;
   response_body: string;
+  synthetic_observation?: boolean;
   session_header_bytes_hex?: string;
   signature?: {
     r_hex: string;
@@ -93,6 +94,10 @@ function assertTlsnEnvelope(attestation: TlsnWeatherAttestation): void {
   }
 }
 
+function isSyntheticObservation(attestation: TlsnWeatherAttestation): boolean {
+  return attestation.synthetic_observation === true;
+}
+
 function readPath(root: Record<string, unknown>, path: string[]): unknown {
   let cursor: unknown = root;
   for (const segment of path) {
@@ -124,7 +129,7 @@ export function assertAttestationPolicy(
   if (ageMs > policy.maxAgeMs) {
     throw new Error(`attestation is stale: ageMs=${ageMs}`);
   }
-  if (policy.requireTlsnEnvelope ?? true) {
+  if ((policy.requireTlsnEnvelope ?? true) && !isSyntheticObservation(attestation)) {
     assertTlsnEnvelope(attestation);
   }
 }

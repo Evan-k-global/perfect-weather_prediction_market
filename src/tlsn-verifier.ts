@@ -10,6 +10,7 @@ export type TlsnAttestationEnvelope = {
   request_path: string;
   timestamp: number;
   response_body: string;
+  synthetic_observation?: boolean;
   session_header_bytes_hex?: string;
   signature?: {
     r_hex: string;
@@ -144,6 +145,7 @@ export async function readTlsnAttestationFile(pathname: string): Promise<TlsnAtt
     request_path: String(parsed.request_path || ''),
     timestamp,
     response_body: String(parsed.response_body || ''),
+    synthetic_observation: parsed.synthetic_observation === true,
     session_header_bytes_hex:
       typeof parsed.session_header_bytes_hex === 'string' ? parsed.session_header_bytes_hex : undefined,
     signature:

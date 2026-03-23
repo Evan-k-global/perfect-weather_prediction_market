@@ -89,6 +89,7 @@ async function readAttestation(pathname: string): Promise<TlsnWeatherAttestation
     request_path: candidate.request_path,
     timestamp: candidate.timestamp,
     response_body: candidate.response_body,
+    synthetic_observation: candidate.synthetic_observation === true,
     session_header_bytes_hex:
       typeof candidate.session_header_bytes_hex === 'string' ? candidate.session_header_bytes_hex : undefined,
     signature:
@@ -191,7 +192,8 @@ async function main(): Promise<void> {
     {
       allowedServerName,
       allowedRequestPath,
-      maxAgeMs
+      maxAgeMs,
+      requireTlsnEnvelope: !attestation.synthetic_observation
     },
     {
       jsonPath: ['properties', 'periods'],

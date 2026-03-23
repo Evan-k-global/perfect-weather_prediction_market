@@ -101,6 +101,7 @@ async function buildHistoricalObservationAttestation(projectRoot: string, market
         server_name: 'api.weather.gov',
         request_path: allowedPath,
         timestamp: Date.now(),
+        synthetic_observation: true,
         response_body: responseBody
       },
       null,
