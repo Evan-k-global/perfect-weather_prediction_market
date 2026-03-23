@@ -1219,7 +1219,7 @@
           const txPayload = built.tx;
           const txFee = built.fee;
           const intentId = built.intentId;
-          setBetProgress("Waiting for wallet signature...", true);
+          setBetProgress("Sign Tx in Wallet", true);
           const txHash = await sendOnchainTx(txPayload, txFee);
           setBetProgress("Finalizing market state...", true);
           const finalized = await finalizeTxWithRetry({ intentId, txHash });

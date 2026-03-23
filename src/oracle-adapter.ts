@@ -33,6 +33,8 @@ export interface WeatherObservationSelection {
   marketDateIso?: string;
 }
 
+const WEATHER_MARKET_TIME_ZONE = 'America/Los_Angeles';
+
 export function hashUtf8StringPoseidon(value: string): Field {
   const bytes = Buffer.from(value, 'utf8');
   const fields = [...bytes].map((byte) => Field(byte));
@@ -51,6 +53,22 @@ function toObject(value: unknown, fieldName: string): Record<string, unknown> {
     throw new Error(`${fieldName} must be an object`);
   }
   return value as Record<string, unknown>;
+}
+
+function localDateInMarketTz(isoTimestamp: string): string | null {
+  const dt = new Date(isoTimestamp);
+  if (Number.isNaN(dt.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: WEATHER_MARKET_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(dt);
+  const year = parts.find((part) => part.type === 'year')?.value;
+  const month = parts.find((part) => part.type === 'month')?.value;
+  const day = parts.find((part) => part.type === 'day')?.value;
+  if (!year || !month || !day) return null;
+  return `${year}-${month}-${day}`;
 }
 
 function isEvenHex(value: string): boolean {
@@ -120,26 +138,53 @@ export function extractObservedTempTenthC(
   let tempF: number | null = null;
 
   if (marketDateIso) {
-    const properties = toObject(responseJson.properties, 'response_body.properties');
-    const periods = properties.periods;
-    if (!Array.isArray(periods)) {
-      throw new Error('response_body.properties.periods must be an array');
+    const properties = responseJson.properties;
+    const periods = typeof properties === 'object' && properties !== null ? (properties as Record<string, unknown>).periods : undefined;
+    if (Array.isArray(periods)) {
+      const matches = periods.filter((value) => {
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+        const period = value as Record<string, unknown>;
+        const startTime = typeof period.startTime === 'string' ? period.startTime : '';
+        const temperature = period.temperature;
+        const isDaytime = period.isDaytime;
+        if (!startTime || typeof temperature !== 'number' || !Number.isFinite(temperature)) return false;
+        if (typeof isDaytime === 'boolean' && !isDaytime) return false;
+        const day = startTime.slice(0, 10);
+        return day === marketDateIso;
+      }) as Array<Record<string, unknown>>;
+      if (matches.length === 0) {
+        throw new Error(`forecast period for market date ${marketDateIso} not found`);
+      }
+      tempF = Math.max(...matches.map((period) => Number(period.temperature)));
+    } else if (Array.isArray((responseJson as Record<string, unknown>).features)) {
+      const features = (responseJson as Record<string, unknown>).features as unknown[];
+      const observedTempsTenthC = features
+        .map((value) => {
+          if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+          const properties = (value as Record<string, unknown>).properties;
+          if (typeof properties !== 'object' || properties === null || Array.isArray(properties)) return null;
+          const props = properties as Record<string, unknown>;
+          const timestamp = typeof props.timestamp === 'string' ? props.timestamp : '';
+          if (!timestamp || localDateInMarketTz(timestamp) !== marketDateIso) return null;
+          const temperature = props.temperature;
+          if (typeof temperature !== 'object' || temperature === null || Array.isArray(temperature)) return null;
+          const tempValue = (temperature as Record<string, unknown>).value;
+          return typeof tempValue === 'number' && Number.isFinite(tempValue)
+            ? Math.round(tempValue * 10)
+            : null;
+        })
+        .filter((value): value is number => value !== null);
+      if (observedTempsTenthC.length === 0) {
+        throw new Error(`station observation for market date ${marketDateIso} not found`);
+      }
+      const maxObservedTenthC = Math.max(...observedTempsTenthC);
+      if (maxObservedTenthC < 0 || maxObservedTenthC > 800) {
+        throw new Error('observed temperature must be in [0, 80.0C] for this v1 weather template');
+      }
+      return UInt64.from(maxObservedTenthC);
+    } else {
+      throw new Error('response_body must contain forecast periods or station observations');
     }
-    const matches = periods.filter((value) => {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-      const period = value as Record<string, unknown>;
-      const startTime = typeof period.startTime === 'string' ? period.startTime : '';
-      const temperature = period.temperature;
-      const isDaytime = period.isDaytime;
-      if (!startTime || typeof temperature !== 'number' || !Number.isFinite(temperature)) return false;
-      if (typeof isDaytime === 'boolean' && !isDaytime) return false;
-      const day = startTime.slice(0, 10);
-      return day === marketDateIso;
-    }) as Array<Record<string, unknown>>;
-    if (matches.length === 0) {
-      throw new Error(`forecast period for market date ${marketDateIso} not found`);
-    }
-    tempF = Math.max(...matches.map((period) => Number(period.temperature)));
   } else {
     const raw = readPath(responseJson, jsonPath);
     tempF = toFiniteNumber(raw, `response_body.${jsonPath.join('.')}`);

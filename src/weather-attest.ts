@@ -302,10 +302,13 @@ export async function runWeatherAttestation(): Promise<void> {
     serverHost = configuredServerHost;
   }
 
-  const outputDir = path.resolve(projectRoot, 'data', 'tlsn-output', 'latest');
-  const outputAttestation = path.resolve(outputDir, 'attestation.json');
-  const archiveDir = path.resolve(projectRoot, 'data', 'tlsn-output', 'archive');
-  const localAttestation = path.resolve(projectRoot, 'data', 'weather-attestation.json');
+  const outputDir = path.resolve(projectRoot, process.env.TLSN_OUTPUT_DIR || 'data/tlsn-output/latest');
+  const outputAttestation = path.resolve(outputDir, process.env.TLSN_OUTPUT_ATTESTATION_FILE || 'attestation.json');
+  const archiveDir = path.resolve(projectRoot, process.env.TLSN_ARCHIVE_DIR || 'data/tlsn-output/archive');
+  const localAttestation = path.resolve(
+    projectRoot,
+    process.env.WEATHER_TLSN_LOCAL_ATTESTATION_FILE || 'data/weather-attestation.json'
+  );
   const certPath = path.resolve(projectRoot, 'data', 'tlsn-certs', `${serverDomain}.pem`);
 
   const signingKeyHex = process.env.TLSNOTARY_SIGNING_KEY_HEX || randomBytes(32).toString('hex');
@@ -528,14 +531,30 @@ async function archiveAttestationByMarketDate(sourcePath: string, archiveDir: st
   if (typeof parsed.response_body !== 'string') return;
   const responseJson = JSON.parse(parsed.response_body) as {
     properties?: { periods?: Array<{ startTime?: string }> };
+    features?: Array<{ properties?: { timestamp?: string } }>;
   };
   const periods = responseJson.properties?.periods || [];
-  const marketDates = [...new Set(
+  const marketDates = new Set<string>(
     periods
       .map((period) => (typeof period.startTime === 'string' ? period.startTime.slice(0, 10) : null))
       .filter((value): value is string => Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value)))
-  )];
-  if (marketDates.length === 0) return;
+  );
+  const observationDates = (responseJson.features || [])
+    .map((feature) =>
+      typeof feature?.properties?.timestamp === 'string'
+        ? new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'America/Los_Angeles',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+          }).format(new Date(feature.properties.timestamp))
+        : null
+    )
+    .filter((value): value is string => Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value)));
+  for (const marketDate of observationDates) {
+    marketDates.add(marketDate);
+  }
+  if (marketDates.size === 0) return;
   await mkdir(archiveDir, { recursive: true });
   for (const marketDate of marketDates) {
     await copyFile(sourcePath, path.join(archiveDir, `${marketDate}-attestation.json`));
@@ -561,9 +580,26 @@ export async function findArchivedAttestationForMarketDate(
       if (typeof parsed.response_body !== 'string') continue;
       const responseJson = JSON.parse(parsed.response_body) as {
         properties?: { periods?: Array<{ startTime?: string }> };
+        features?: Array<{ properties?: { timestamp?: string } }>;
       };
       const periods = responseJson.properties?.periods || [];
       if (periods.some((period) => typeof period.startTime === 'string' && period.startTime.slice(0, 10) === marketDateIso)) {
+        return fullPath;
+      }
+      const features = responseJson.features || [];
+      if (
+        features.some((feature) => {
+          const timestamp = feature?.properties?.timestamp;
+          if (typeof timestamp !== 'string') return false;
+          const localDate = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'America/Los_Angeles',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+          }).format(new Date(timestamp));
+          return localDate === marketDateIso;
+        })
+      ) {
         return fullPath;
       }
     } catch {
