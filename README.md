@@ -163,6 +163,7 @@ After iterating through local builds, hosted Render deploys, heavy worker splits
 - `skills/zeko-market-ops/SKILL.md`
 - `skills/private-betting-privacy/SKILL.md`
 - `skills/demo-weather-over-under/SKILL.md`
+- `skills/agent-market-integration/SKILL.md`
 
 Recent hosted learnings worth preserving:
 - retry tx-prover work once after refreshing state if proving hits a root assertion mismatch
