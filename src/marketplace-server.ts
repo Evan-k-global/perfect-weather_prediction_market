@@ -311,6 +311,7 @@ const privateBatchHistory: PrivateBatchHistoryEntry[] = [];
 let privateBatchInFlight = false;
 let privateBatchLeaseStartedAtUnixMs: number | null = null;
 let fastContractCompilePromise: Promise<void> | null = null;
+let lastStateRefreshAtUnixMs = 0;
 
 function getPrivacyMode(): PrivacyMode {
   const mode = (process.env.PRIVACY_MODE || 'zk_strong').trim().toLowerCase();
@@ -1582,6 +1583,12 @@ async function runProjectCommand(projectRoot: string, args: string[]): Promise<s
 
 async function refreshState(projectRoot: string): Promise<void> {
   await runProjectCommand(projectRoot, ['sync-state:zeko', '--', '--state-file', './data/operator-state.json']);
+  lastStateRefreshAtUnixMs = Date.now();
+}
+
+async function ensureRecentlySyncedState(projectRoot: string, maxAgeMs = 5 * 60 * 1000): Promise<void> {
+  if (lastStateRefreshAtUnixMs > 0 && Date.now() - lastStateRefreshAtUnixMs <= maxAgeMs) return;
+  await refreshState(projectRoot);
 }
 
 async function ensureDailyMarkets(projectRoot: string): Promise<void> {
@@ -2897,6 +2904,7 @@ async function main(): Promise<void> {
           typeof body.thresholdF === 'number' && Number.isFinite(body.thresholdF) ? Math.round(body.thresholdF) : null;
         const userId = walletPublicKey;
         if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
+        await ensureRecentlySyncedState(projectRoot);
 
         const ensureLocalBettableMarket = async () => {
           let currentState = await loadOperatorState(defaultStatePath);
@@ -2986,6 +2994,7 @@ async function main(): Promise<void> {
         const marketKey = requireString(body.marketKey, 'marketKey');
         const positionKey = requireString(body.positionKey, 'positionKey');
         const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
+        await ensureRecentlySyncedState(projectRoot);
         let fee: string;
         let payoutSummary: { payoutTmina: string; marketKey: string; positionKey: string };
         let tx: unknown;

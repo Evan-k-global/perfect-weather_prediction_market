@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { Field } from 'o1js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
 import { findArchivedAttestationForMarketDate } from './weather-attest.js';
+import { currentLocalDate } from './weather-service.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -56,7 +57,8 @@ async function main(): Promise<void> {
   const marketKey = deriveMarketKey(marketDate);
   const liveMaxAgeMs = process.env.WEATHER_TLSN_MAX_AGE_MS || '3600000';
   const historicalMaxAgeMs = process.env.WEATHER_TLSN_HISTORICAL_MAX_AGE_MS || String(365 * 24 * 60 * 60 * 1000);
-  const maxAgeMs = archivedAttestation ? historicalMaxAgeMs : liveMaxAgeMs;
+  const useHistoricalWindow = Boolean(archivedAttestation) || marketDate < currentLocalDate();
+  const maxAgeMs = useHistoricalWindow ? historicalMaxAgeMs : liveMaxAgeMs;
   const commandArgs = [
     'resolve-weather:zeko',
     '--',
