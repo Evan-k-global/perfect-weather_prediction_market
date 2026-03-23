@@ -101,6 +101,11 @@
         overflow-y: auto;
         padding-right: 4px;
       }
+      #resolvedMarketsPanel {
+        max-height: 320px;
+        overflow-y: auto;
+        padding-right: 4px;
+      }
       .mini-filter-row { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; gap: 6px !important; margin-bottom: 6px !important; }
       .mini-filter-row button { padding: 6px 8px; font-size: 12px; line-height: 1.1; min-height: 32px; }
       .hidden { display: none; }
@@ -568,18 +573,12 @@
       async function sendOnchainTx(txPayload, fee) {
         if (!window.mina) throw new Error("Auro/Pallad wallet not detected");
         const feeMina = nanominaToMinaString(fee);
-        let sent = null;
-        try {
-          sent = await window.mina.sendTransaction({
-            transaction: txPayload,
-            feePayer: { fee: feeMina }
-          });
-        } catch {
-          sent = await window.mina.sendTransaction({
-            transaction: JSON.stringify(txPayload),
-            feePayer: { fee: feeMina }
-          });
-        }
+        const serialized =
+          typeof txPayload === "string" ? txPayload : JSON.stringify(txPayload);
+        const sent = await window.mina.sendTransaction({
+          transaction: serialized,
+          feePayer: { fee: feeMina }
+        });
         const txHash = sent?.hash || null;
         if (!txHash) throw new Error("wallet did not return tx hash");
         return txHash;
