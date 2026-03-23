@@ -32,6 +32,8 @@ export interface WeatherObservationSelection {
   observedAtSlot: bigint;
   nonce: Field;
   marketDateIso?: string;
+  statementSourceHashOverride?: Field;
+  statementRequestPathHashOverride?: Field;
 }
 
 const WEATHER_MARKET_TIME_ZONE = 'America/Los_Angeles';
@@ -224,8 +226,9 @@ export function buildWeatherOracleStatementFromAttestation(
   const thresholdValueTenthC = UInt64.from(selection.thresholdTenthC);
   const outcome = observedValueTenthC.greaterThan(thresholdValueTenthC);
 
-  const sourceHash = hashUtf8StringPoseidon(attestation.server_name);
-  const requestPathHash = hashUtf8StringPoseidon(attestation.request_path);
+  const sourceHash = selection.statementSourceHashOverride || hashUtf8StringPoseidon(attestation.server_name);
+  const requestPathHash =
+    selection.statementRequestPathHashOverride || hashUtf8StringPoseidon(attestation.request_path);
   const observedAtSlot = UInt64.from(selection.observedAtSlot);
 
   const statementDigest = Poseidon.hash([

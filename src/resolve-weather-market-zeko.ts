@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import './env.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Bool, Field, Mina, Poseidon, PrivateKey, fetchAccount } from 'o1js';
+import { Bool, Field, Mina, Poseidon, PrivateKey, PublicKey, fetchAccount } from 'o1js';
 import { readFile } from 'node:fs/promises';
 import { FastPredictionMarketPlatform } from './fast-contract.js';
 import { MarketLeaf } from './market-types.js';
@@ -72,6 +72,24 @@ async function syncAuthoritativeState(stateFile: string): Promise<void> {
     cwd: process.cwd(),
     env: process.env
   });
+}
+
+async function getConfiguredOracleHashes(zkappAddress: PublicKey): Promise<{
+  sourceHash: Field;
+  requestPathHash: Field;
+}> {
+  const account = await fetchAccount({ publicKey: zkappAddress });
+  if (account.error) {
+    throw new Error(`zkApp account fetch failed: ${account.error.statusText || 'unknown error'}`);
+  }
+  const appState = (account.account as unknown as { zkapp?: { appState?: unknown[] } })?.zkapp?.appState;
+  if (!appState || appState.length < 6) {
+    throw new Error('zkApp appState missing oracle policy');
+  }
+  return {
+    sourceHash: Field((appState[4] as { toString(): string }).toString()),
+    requestPathHash: Field((appState[5] as { toString(): string }).toString())
+  };
 }
 
 function recoverMarketDateIso(state: Awaited<ReturnType<typeof loadOperatorState>>, marketKey: string): string | undefined {
@@ -170,6 +188,7 @@ async function main(): Promise<void> {
 
   const zkappAccount = await fetchAccount({ publicKey: zkappAddress });
   if (zkappAccount.error) throw new Error('zkApp account not found. Deploy first.');
+  const configuredOracleHashes = await getConfiguredOracleHashes(zkappAddress);
 
   await FastPredictionMarketPlatform.compile({
     cache: getFastNodeCompileCache()
@@ -230,7 +249,13 @@ async function main(): Promise<void> {
           thresholdTenthC: BigInt(oldLeaf.thresholdValueTenthC.toString()),
           observedAtSlot,
           nonce,
-          marketDateIso
+          marketDateIso,
+          statementSourceHashOverride: attestation.synthetic_observation
+            ? configuredOracleHashes.sourceHash
+            : undefined,
+          statementRequestPathHashOverride: attestation.synthetic_observation
+            ? configuredOracleHashes.requestPathHash
+            : undefined
         },
         Date.now()
       );
