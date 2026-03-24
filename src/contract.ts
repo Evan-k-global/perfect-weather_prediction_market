@@ -20,6 +20,7 @@ import { MarketLeaf, WeatherOracleStatement } from './market-types.js';
 export { MarketLeaf, WeatherOracleStatement };
 
 const EMPTY_MAP_ROOT = new MerkleMap().getRoot();
+const NANOMINA_PER_TMINA = UInt64.from(1_000_000_000);
 
 export class PositionLeaf extends Struct({
   marketKey: Field,
@@ -499,8 +500,9 @@ export class PredictionMarketPlatform extends SmartContract {
     );
     winningPool.greaterThan(UInt64.from(0)).assertTrue();
 
-    const payout = resolvedMarket.totalPositionBet.mul(positionLeaf.stake).div(winningPool);
-    payout.greaterThan(UInt64.from(0)).assertTrue();
+    const payoutTmina = resolvedMarket.totalPositionBet.mul(positionLeaf.stake).div(winningPool);
+    payoutTmina.greaterThan(UInt64.from(0)).assertTrue();
+    const payoutNanomina = payoutTmina.mul(NANOMINA_PER_TMINA);
 
     const claimedLeaf = new PositionLeaf({
       marketKey: positionLeaf.marketKey,
@@ -512,7 +514,7 @@ export class PredictionMarketPlatform extends SmartContract {
     const [positionsRootAfter] = positionWitness.computeRootAndKey(claimedLeaf.hash());
     this.positionsRoot.set(positionsRootAfter);
 
-    this.send({ to: claimant, amount: payout });
+    this.send({ to: claimant, amount: payoutNanomina });
 
     this.emitEvent(
       'payoutClaimed',
@@ -520,7 +522,7 @@ export class PredictionMarketPlatform extends SmartContract {
         marketKey,
         positionKey,
         ownerCommitment: positionLeaf.ownerCommitment,
-        amount: payout
+        amount: payoutNanomina
       })
     );
     this.emitEvent(

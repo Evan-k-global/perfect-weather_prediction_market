@@ -18,6 +18,7 @@ import {
 import { MarketLeaf, WeatherOracleStatement } from './market-types.js';
 
 const EMPTY_MAP_ROOT = new MerkleMap().getRoot();
+const NANOMINA_PER_TMINA = UInt64.from(1_000_000_000);
 
 export class MarketSnapshotEvent extends Struct({
   marketKey: Field,
@@ -333,12 +334,14 @@ export class FastPredictionMarketPlatform extends SmartContract {
     );
     winningPool.greaterThan(UInt64.from(0)).assertTrue();
 
-    const payout = resolvedMarket.totalPositionBet.mul(addTotalBet).div(winningPool);
-    payout.greaterThan(UInt64.from(0)).assertTrue();
+    // Market leaves track stake/pot in whole tMINA units; sends must use nanomina.
+    const payoutTmina = resolvedMarket.totalPositionBet.mul(addTotalBet).div(winningPool);
+    payoutTmina.greaterThan(UInt64.from(0)).assertTrue();
+    const payoutNanomina = payoutTmina.mul(NANOMINA_PER_TMINA);
 
     const [claimedAfter] = claimedReceiptWitness.computeRootAndKey(Field(1));
     this.claimedReceiptsRoot.set(claimedAfter);
-    this.send({ to: claimant, amount: payout });
+    this.send({ to: claimant, amount: payoutNanomina });
 
     this.emitEvent(
       'receiptClaimed',
@@ -346,7 +349,7 @@ export class FastPredictionMarketPlatform extends SmartContract {
         receiptKey,
         marketKey,
         ownerCommitment,
-        amount: payout
+        amount: payoutNanomina
       })
     );
   }
