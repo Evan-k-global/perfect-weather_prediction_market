@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { runWeatherAttestation } from './weather-attest.js';
 import { DEFAULT_STATE_FILE, saveOperatorState, type OperatorStateFile, type StoredMarketMeta } from './state-store.js';
 import {
+  currentActiveMarketDate,
   NWS_94027_REQUEST_PATH,
   NWS_94027_SERVER_NAME,
   NWS_94027_STRICT_URL,
@@ -206,8 +207,9 @@ function shouldRunResolvePass(
 async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promise<void> {
   if (!envEnabled('ORACLE_WORKER_ENABLE_CHAIN_ACTIONS', true)) return;
   const todayIso = currentLocalDate();
+  const activeMarketDate = currentActiveMarketDate();
   const nowHour = nowLocalHour();
-  const runEnsurePass = shouldRunEnsurePass(todayIso);
+  const runEnsurePass = shouldRunEnsurePass(activeMarketDate);
   const exportPayload = await req(baseUrl, oracleToken, '/api/oracle/export-state', {});
   const state = exportPayload?.state as OperatorStateFile | null;
   const dailyMarkets = (exportPayload?.dailyMarkets || {}) as Record<string, unknown>;
@@ -240,7 +242,7 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
     const ensured = await execFileAsync('pnpm', ensureArgs, { cwd: projectRoot, env: process.env });
     if (ensured.stdout.trim()) console.log(ensured.stdout.trim());
     if (ensured.stderr.trim()) console.error(ensured.stderr.trim());
-    lastEnsureDate = todayIso;
+    lastEnsureDate = activeMarketDate;
   }
 
   const updatedStateAfterEnsure = await loadJsonFile<OperatorStateFile>(stateFile);

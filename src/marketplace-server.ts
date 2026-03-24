@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { AccountUpdate, Bool, Field, MerkleMap, MerkleMapWitness, Mina, Poseidon, PrivateKey, PublicKey, UInt32, UInt64, fetchAccount, fetchTransactionStatus } from 'o1js';
 import { DEFAULT_STATE_FILE, loadOperatorState, type OperatorStateFile } from './state-store.js';
 import {
+  MARKET_CUTOFF_HOUR_LOCAL,
+  currentActiveMarketDate,
   NWS_94027_DIGITAL_URL,
   NWS_94027_REQUEST_PATH,
   NWS_94027_SERVER_NAME,
@@ -900,7 +902,7 @@ async function loadDemoDailyMarkets(filePath: string = DEMO_DAILY_MARKETS_FILE):
 function seedFallbackRollingDailyMarkets(
   markets: Record<string, DemoDailyMarket>
 ): { markets: Record<string, DemoDailyMarket>; changed: boolean } {
-  const todayIso = currentLocalDate();
+  const todayIso = currentActiveMarketDate();
   const maxWindowDate = isoDateOffset(todayIso, 5);
   const currentEntries = Object.entries(markets).filter(([marketDate]) => marketDate >= todayIso && marketDate <= maxWindowDate);
   if (currentEntries.length > 0) {
@@ -1278,7 +1280,7 @@ async function ensureDemoDailyMarketsFromSnapshot(
   filePath: string = DEMO_DAILY_MARKETS_FILE
 ): Promise<DemoDailyMarket[]> {
   const existing = await loadDemoDailyMarkets(filePath);
-  const todayIso = currentLocalDate();
+  const todayIso = currentActiveMarketDate();
   const maxWindowDate = isoDateOffset(todayIso, 5);
   const trimmed: Record<string, DemoDailyMarket> = {};
   for (const [marketDate, market] of Object.entries(existing)) {
@@ -1322,7 +1324,7 @@ async function readProjectedDemoDailyMarketsFromSnapshot(
   filePath: string = DEMO_DAILY_MARKETS_FILE
 ): Promise<DemoDailyMarket[]> {
   const existing = await loadDemoDailyMarkets(filePath);
-  const todayIso = currentLocalDate();
+  const todayIso = currentActiveMarketDate();
   const maxWindowDate = isoDateOffset(todayIso, 5);
   const trimmed: Record<string, DemoDailyMarket> = {};
   for (const [marketDate, market] of Object.entries(existing)) {
@@ -2845,7 +2847,7 @@ async function main(): Promise<void> {
         const userId = walletPublicKey;
         if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
         {
-          const todayIso = currentLocalDate();
+          const todayIso = currentActiveMarketDate();
           if (marketDate < todayIso) {
             throw new Error(`market date ${marketDate} is closed (past date). Today is ${todayIso}`);
           }
@@ -3661,7 +3663,7 @@ async function main(): Promise<void> {
           return;
         }
         const todayIso = currentLocalDate();
-        const eligible = marketDate < todayIso || (marketDate === todayIso && nowLocalHour() >= 21);
+        const eligible = marketDate < todayIso || (marketDate === todayIso && nowLocalHour() >= MARKET_CUTOFF_HOUR_LOCAL);
         if (!eligible) {
           writeJson(res, 200, {
             ok: true,

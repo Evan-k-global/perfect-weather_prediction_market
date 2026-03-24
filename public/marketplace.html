@@ -711,7 +711,7 @@
 
       async function refreshDailyMarkets() {
         const res = await req("/api/demo/daily-markets");
-        const todayIso = currentPacificDateIso();
+        const todayIso = currentActivePacificMarketDateIso();
         dailyMarkets = (Array.isArray(res.dailyMarkets) ? res.dailyMarkets : [])
           .filter((m) => typeof m.marketDate === "string" && m.marketDate >= todayIso)
           .slice(0, 6);
@@ -771,6 +771,19 @@
         const month = parts.find((p) => p.type === "month")?.value || "00";
         const day = parts.find((p) => p.type === "day")?.value || "00";
         return `${year}-${month}-${day}`;
+      }
+
+      function currentActivePacificMarketDateIso() {
+        const now = new Date();
+        const hour = Number(
+          new Intl.DateTimeFormat("en-US", {
+            timeZone: "America/Los_Angeles",
+            hour: "2-digit",
+            hour12: false
+          }).format(now)
+        );
+        const base = currentPacificDateIso();
+        return hour >= 21 ? isoDateOffset(base, 1) : base;
       }
 
       function renderIntradaySvg(curve) {

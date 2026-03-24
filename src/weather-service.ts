@@ -13,6 +13,7 @@ export const NWS_94027_REQUEST_PATH = '/gridpoints/MTR/86,107/forecast';
 
 const WEATHER_TZ = 'America/Los_Angeles';
 const DEFAULT_WEATHER_FILE = './data/weather-94027.json';
+export const MARKET_CUTOFF_HOUR_LOCAL = 21;
 
 export type WeatherSnapshot = {
   sourceUrl: string;
@@ -259,4 +260,15 @@ export function nowLocalHour(): number {
 
 export function currentLocalDate(): string {
   return formatLocalDate(Date.now(), WEATHER_TZ);
+}
+
+export function isoDateOffset(dateIso: string, dayOffset: number): string {
+  const date = new Date(`${dateIso}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + dayOffset);
+  return date.toISOString().slice(0, 10);
+}
+
+export function currentActiveMarketDate(): string {
+  const todayIso = currentLocalDate();
+  return nowLocalHour() >= MARKET_CUTOFF_HOUR_LOCAL ? isoDateOffset(todayIso, 1) : todayIso;
 }
