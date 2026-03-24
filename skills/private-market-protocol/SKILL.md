@@ -39,6 +39,9 @@ description: Use when implementing or modifying the reusable prediction-market p
 - If state cannot be reconstructed from chain events, add recovery/bootstrap paths before increasing operational complexity.
 - Preserve wallet metadata (`receiptMeta`, `positionMeta`) across sync/import cycles. On-chain roots alone are not enough for fast wallet-facing claim UX.
 - Keep market-date identity durable beyond the active betting window. Oracle resolution for rolled-off dates should not depend only on current daily-market rows.
+- Keep time-boundary rules enforced in more than one place when they matter operationally:
+  - service-level guards for user/admin entrypoints
+  - on-chain slot semantics for newly created markets
 
 ## Architecture Lessons
 
@@ -64,12 +67,20 @@ description: Use when implementing or modifying the reusable prediction-market p
   - transient finalize failures are more common than proof failures once the wallet send succeeds, so retry and recovery should stay lean and explicit
 - Prover state drift:
   - `Field.assertEquals(): <a> != <b>` in the tx-prover usually means the witness was built against an older root and the live zkApp state changed before proving
-  - retry by refreshing state, rebuilding context, and proving again once before surfacing the error
+  - retry by refreshing state, rebuilding context, and proving again before surfacing the error
   - treat this as a state-coordination problem first, not as proof corruption
+  - add root preflight checks before `tx.prove()` so stale contexts fail as normal request errors instead of crashing the prover instance
 - Sync monotonicity:
   - event-based sync can be temporarily incomplete on hosted/archive infrastructure
-  - do not let sync regress monotonic state like `resolved` markets, claimed receipts, or used oracle nonces
-  - if a market resolved once locally, never overwrite it back to unresolved from a thinner event snapshot
+- do not let sync regress monotonic state like `resolved` markets, claimed receipts, or used oracle nonces
+- if a market resolved once locally, never overwrite it back to unresolved from a thinner event snapshot
+
+## Current market timing semantics
+
+- daily market close: `9pm Pacific`
+- same-day resolution eligible: `9pm Pacific` or later
+- active market window advances at that same `9pm Pacific` cutoff
+- a fresh zkApp epoch is required if existing on-chain markets were created with older close-slot semantics
 
 ## Receipt-Commitment Extension Guide
 

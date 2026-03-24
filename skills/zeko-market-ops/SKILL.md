@@ -36,6 +36,11 @@ description: Use when deploying, syncing, repairing, or operating the Zeko testn
 - `sync-state:zeko` is the standard recovery command after uncertain tx status.
 - If local and on-chain `marketsRoot` differ, stop and sync before sending more market txs.
 - Older ad hoc trade/claim scripts were retired and archived locally during the fast-contract cleanup; prefer the live market/oracle flows in `src/marketplace-server.ts` and browser proving instead.
+- Fresh zkApp epochs should be treated as clean market universes:
+  - update all 3 hosted services to the new keys
+  - let oracle recreate the rolling markets
+  - do not expect old receipts or pools to appear on the new address
+- Current daily market semantics use a `9pm Pacific` cutoff for close, resolution eligibility, and active-window rollover.
 
 ## Common Failure Causes
 
@@ -43,6 +48,7 @@ description: Use when deploying, syncing, repairing, or operating the Zeko testn
 - `Invalid proof`: upgraded code pointed at an old verification key / legacy zkApp address.
 - `marketsRoot mismatch`: local operator state is stale.
 - `Field.assertEquals(): ... != ...` during hosted bet/claim proving: the tx-prover was given a stale market/receipt/claimed witness after another tx updated the root; refresh state and rebuild once.
+- tx-prover instance exits with native `Field.assertEquals(): ... != ...`: stale context reached the native prover path; verify root preflight guards, refresh state, and redeploy `tx-prover` + `market`.
 - `Update_not_permitted_app_state`: trying to deploy over an existing account incorrectly.
 - `resolved` market disappears after it was already settled/claimed: event sync likely rebuilt from an incomplete snapshot; preserve monotonic state and rerun sync instead of trusting the regression.
 

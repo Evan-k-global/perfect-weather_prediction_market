@@ -116,6 +116,27 @@ Resolve one daily market:
 pnpm resolve-daily-market:zeko -- --market-date 2026-03-11 --state-file ./data/operator-state.json
 ```
 
+## Current timing semantics
+
+- daily weather markets use a `9pm Pacific` cutoff
+- before `9pm`, the current market date is the active date
+- at or after `9pm`, the active market date advances to the next calendar date
+- same-day manual resolution is blocked before `9pm` unless `ALLOW_EARLY_SAME_DAY_RESOLUTION=1` is set intentionally for debugging
+
+## Fresh zkApp epoch notes
+
+Use a fresh zkApp deployment when you change:
+
+- payout math in the contract
+- market close-slot semantics
+- receipt-claim roots or verification key layout
+
+Treat a new zkApp as a new epoch:
+
+- old markets and receipts do not carry forward automatically
+- oracle should recreate the rolling daily markets on the new address
+- hosted services should be redeployed together after env key updates
+
 ## Docker / Render Notes
 
 - Docker and compose files are in `deploy/` and repo root.
@@ -195,6 +216,13 @@ ZKVERIFY_POC_ROOT=/opt/zk-verify-poc
 ```
 
 If you intentionally split services later, move the heavy operator jobs out of the web service instead of just lowering these intervals.
+
+## Hosted proving reliability notes
+
+- a raw `Field.assertEquals(): <a> != <b>` during hosted proving almost always means stale market or receipt witnesses, not bad user signatures
+- the market service now retries stale proving multiple times after state refresh
+- the tx-prover now preflights current on-chain roots before entering `tx.prove()` so stale contexts can fail cleanly instead of crashing the instance
+- if wallet activity shows a recent bet but on-chain pool totals stay at zero, treat the hosted entry as optimistic metadata until inclusion is confirmed
 
 ## More Detail
 

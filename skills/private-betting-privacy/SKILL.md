@@ -17,7 +17,9 @@ description: Use when changing privacy claims, batching behavior, relayer flow, 
 Live default:
 - wallet activity is public on-chain
 - aggregate market state is public on-chain
-- live per-user market intent is batched and not exposed as a simple direct market-side update
+- wallet signing stays local
+- market, oracle, and tx-prover are split so no single hosted service owns the entire user flow
+- a sophisticated observer can still correlate wallet tx timing and market state changes
 
 Not provided by default:
 - fully shielded balances
@@ -49,6 +51,7 @@ Not provided by default:
    - claim proving and wallet signing can succeed while hosted finalize still fails
    - until finalize persists status, the UI should not imply that payout metadata is settled
    - local wallet signing remains a key privacy boundary even when proving/finalize are hosted
+   - hosted wallet activity can be optimistic before chain inclusion; do not imply that a wallet hash means the bet already changed public market state
 
 ## Next Privacy Step
 

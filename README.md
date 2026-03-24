@@ -25,7 +25,7 @@ Reusable infrastructure for other markets:
 A concrete weather market built on that protocol:
 
 - Atherton, CA daily high temperature over/under markets
-- rolling 6-day market window including today
+- rolling 6-day active market window with a `9pm PT` daily cutoff
 - one locked threshold per date
 - weather oracle widget and visualizer
 - resolved markets panel
@@ -137,6 +137,13 @@ After iterating through local builds, hosted Render deploys, heavy worker splits
 - **State path**
   - hosted market persists wallet activity / claim metadata for fast rendering
 
+### Daily market cutoff
+
+- betting stays open until `9:00 PM Pacific`
+- same-day resolution is only eligible after `9:00 PM Pacific`
+- after `9:00 PM Pacific`, the active rolling market window advances to the next date
+- new zkApp epochs should always create markets with that cutoff encoded on-chain
+
 ### What to avoid
 
 - Do not put normal bet proving behind the operator queue unless you deliberately want slower micro-batch privacy.
@@ -169,3 +176,5 @@ Recent hosted learnings worth preserving:
 - retry tx-prover work once after refreshing state if proving hits a root assertion mismatch
 - keep `/api/tx/finalize` resilient because wallet send success and hosted status persistence can fail independently
 - treat market resolution and receipt claims as monotonic during sync; incomplete event snapshots should not erase already-resolved or already-claimed state
+- do not let stale proof contexts reach the native tx-prover path; preflight current on-chain roots before `tx.prove()` where possible
+- wallet activity can be optimistic before inclusion; if a wallet hash exists but the on-chain market stays unchanged, trust on-chain pools over hosted activity rows
