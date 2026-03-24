@@ -59,12 +59,14 @@ function thresholdFToTenthC(thresholdF: number): bigint {
   return BigInt(Math.round(((thresholdF - 32) * 5 * 10) / 9));
 }
 
-function localDateStart(dateIso: string): Date {
-  return new Date(`${dateIso}T00:00:00`);
+function localDateAtHour(dateIso: string, hourLocal: number): Date {
+  const date = new Date(`${dateIso}T00:00:00`);
+  date.setHours(hourLocal, 0, 0, 0);
+  return date;
 }
 
-function minuteSlotForDateBoundary(dateIso: string): bigint {
-  return BigInt(Math.floor(localDateStart(dateIso).getTime() / 60000));
+function minuteSlotForDateHour(dateIso: string, hourLocal: number): bigint {
+  return BigInt(Math.floor(localDateAtHour(dateIso, hourLocal).getTime() / 60000));
 }
 
 async function loadDemoDailyMarkets(filePath: string): Promise<DemoDailyMarketFile> {
@@ -132,8 +134,8 @@ async function main(): Promise<void> {
     item.marketKey = marketKey.toString();
     if (state.markets[marketKey.toString()]) continue;
 
-    const closeSlot = UInt64.from(minuteSlotForDateBoundary(marketDate).toString());
-    const expirySlot = UInt64.from((minuteSlotForDateBoundary(marketDate) + 24n * 60n).toString());
+    const closeSlot = UInt64.from(minuteSlotForDateHour(marketDate, 21).toString());
+    const expirySlot = UInt64.from(minuteSlotForDateHour(marketDate, 24).toString());
     const thresholdValueTenthC = UInt64.from(thresholdFToTenthC(item.thresholdF).toString());
     const newLeaf = new MarketLeaf({
       configHash: demoBaseConfigHash(),

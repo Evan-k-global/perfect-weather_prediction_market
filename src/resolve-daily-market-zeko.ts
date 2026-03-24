@@ -7,7 +7,7 @@ import path from 'node:path';
 import { Field } from 'o1js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
 import { findArchivedAttestationForMarketDate } from './weather-attest.js';
-import { currentLocalDate } from './weather-service.js';
+import { currentLocalDate, nowLocalHour } from './weather-service.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -118,9 +118,17 @@ async function main(): Promise<void> {
   const explicitAttestation = parseOptionalArgValue(args, 'attestation');
   const stateFile = parseOptionalArgValue(args, 'state-file') || './data/operator-state.json';
   const observedAtSlot = parseOptionalArgValue(args, 'observed-at-slot');
+  const allowEarlySameDay = process.env.ALLOW_EARLY_SAME_DAY_RESOLUTION === '1';
+  const todayIso = currentLocalDate();
+  const nowHour = nowLocalHour();
+  if (!allowEarlySameDay && marketDate === todayIso && nowHour < 21) {
+    throw new Error(
+      `market ${marketDate} is not yet eligible for resolution; local hour is ${nowHour}, cutoff is 21`
+    );
+  }
   const projectRoot = process.cwd();
   const archivedAttestation = explicitAttestation ? null : await findArchivedAttestationForMarketDate(marketDate);
-  const useHistoricalWindow = Boolean(archivedAttestation) || marketDate < currentLocalDate();
+  const useHistoricalWindow = Boolean(archivedAttestation) || marketDate < todayIso;
   let attestation =
     explicitAttestation ||
     archivedAttestation ||
