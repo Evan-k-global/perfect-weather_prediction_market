@@ -13,6 +13,8 @@ description: Use when integrating, debugging, or operating zkTLS/TLSNotary-backe
 - weather-oracle sections of `src/marketplace-server.ts`
 - strict-mode env/config and attestation path handling
 
+Use this skill as general oracle-ingestion guidance for any app that binds off-chain HTTPS data into zk or on-chain settlement, not just NOAA weather.
+
 ## Workflow
 
 1. Confirm the target HTTPS source and exact request path.
@@ -47,3 +49,10 @@ description: Use when integrating, debugging, or operating zkTLS/TLSNotary-backe
 - Keep source/path policy checks explicit; do not loosen them just to make local testing easier.
 - When TLSNotary is unstable, prefer fixing deterministic request/response behavior before expanding timeouts.
 - If using historical fallback inputs, keep the on-chain oracle policy binding explicit so recovery paths still satisfy the configured source/path hashes.
+
+## Generalized Guidance
+
+- archive attestations by the business key you will need later, not only by fetch time
+- use different freshness rules for live operation versus historical recovery when the product requires both
+- keep the verification policy narrow enough that a fallback path cannot silently widen trust assumptions
+- if the product resolves dates after the original source window rolls off, design historical recovery up front rather than as a one-off patch

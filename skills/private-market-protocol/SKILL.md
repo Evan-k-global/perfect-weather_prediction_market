@@ -12,6 +12,8 @@ description: Use when implementing or modifying the reusable prediction-market p
 - Oracle trust/verification policy changes (`src/tlsn-verifier.ts`, `src/weather-attest.ts`)
 - Global safeguards (nonce handling, root sync, close-only/expired behavior)
 
+This skill should be written and applied as **portable guidance**, not just a log of what happened in this repo. Use the weather market as the concrete example, but extract the reusable rule for any hosted zk application with wallets, proofs, and external data.
+
 ## Workflow
 
 1. Confirm whether change is global protocol or demo-only.
@@ -28,6 +30,12 @@ description: Use when implementing or modifying the reusable prediction-market p
    - `pnpm build`
    - wallet tx flow (`/api/tx/market-bet`, tx-prover, `/api/tx/finalize`)
    - state sync (`pnpm sync-state:zeko`)
+
+When documenting decisions, phrase them as:
+
+- the reusable pattern
+- why it matters generally
+- how this repo instantiates it
 
 ## Guardrails
 
@@ -111,3 +119,13 @@ Design guidance:
 - treat wallet metadata as UX state, not public protocol state
 - do not call this “fully private” unless wallet funding, betting, and claiming are also hidden from public observers
 - prefer this step before attempting a full sovereign-rollup private state tree, because it is the smallest useful privacy upgrade
+
+## Generalized Takeaways
+
+For another zk app or agent-built market, the reusable rules are:
+
+- keep the proving surface narrow and explicit
+- do not let hosted cache state masquerade as chain truth
+- make time-boundary rules part of both the contract semantics and the service semantics when possible
+- fail stale proof inputs early and recover them through sync/rebuild, not operator guesswork
+- treat contract-breaking fixes as new epochs, not as hot patches to old state

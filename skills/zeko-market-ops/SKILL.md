@@ -14,6 +14,12 @@ description: Use when deploying, syncing, repairing, or operating the Zeko testn
 - `src/resolve-daily-market-zeko.ts`
 - operator runbook and `.env.local` issues
 
+Use this skill as a template for any hosted zkApp operating model where:
+
+- contract state is mirrored into a local index
+- background workers mutate roots over time
+- users submit wallet-signed transactions against that changing state
+
 ## Workflow
 
 1. Confirm the deployment target:
@@ -57,3 +63,10 @@ description: Use when deploying, syncing, repairing, or operating the Zeko testn
 - Prefer a clean new zkApp address for contract-breaking upgrades.
 - Never assume shell exports override `.env.local` in this repo.
 - After deploy changes, run `pnpm build` before retrying scripts.
+
+## Generalized Operations Rules
+
+- after a fresh contract epoch, assume all local indexes and wallet-facing caches need deliberate rebootstrap
+- when a market or app supports background mutation, treat stale-root errors as an expected operational failure mode
+- if UI state and on-chain state disagree, trust on-chain state first and repair the hosted index second
+- increasing compute is helpful for proof latency, but it will not fix stale witnesses or bad rollout order

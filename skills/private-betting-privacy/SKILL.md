@@ -12,6 +12,8 @@ description: Use when changing privacy claims, batching behavior, relayer flow, 
 - resolved-markets / claim UX wording
 - README/docs language about privacy guarantees
 
+Use this skill to extract reusable privacy language that another builder or agent could apply to a different market, not just to describe this repo’s UI.
+
 ## Privacy Model In This Repo
 
 Live default:
@@ -76,3 +78,12 @@ If extending this market for stronger privacy with the smallest rewrite:
    - winning-side eligibility
    - not-already-claimed status
 5. Keep UX metadata (`receiptMeta`, claim status, market date mapping) off-chain and wallet-scoped.
+
+## Generalized Guidance
+
+When documenting privacy for another market or agent workflow:
+
+- separate “private from casual users” from “private from sophisticated observers”
+- separate “private from the public” from “private from the application operator”
+- describe local signing, remote proving, and hosted metadata as distinct trust boundaries
+- treat receipt commitments as a legibility reduction, not as full concealment
