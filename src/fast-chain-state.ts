@@ -52,6 +52,11 @@ export async function getOnChainReceiptsRoot(zkappAddress: PublicKey): Promise<s
   return getAppStateField(appState, 1, 'receiptsRoot');
 }
 
+export async function getOnChainClaimedReceiptsRoot(zkappAddress: PublicKey): Promise<string> {
+  const appState = await getOnChainAppState(zkappAddress);
+  return getAppStateField(appState, 2, 'claimedReceiptsRoot');
+}
+
 export function getLocalMarketsRoot(state: OperatorStateFile): string {
   return buildMarketsMerkleMap(state).getRoot().toString();
 }
