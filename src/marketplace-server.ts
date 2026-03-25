@@ -1636,6 +1636,16 @@ function isRemoteProverStateDriftError(error: unknown): boolean {
   );
 }
 
+function isTransientRemoteProverAvailabilityError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes('tx prover busy; retry shortly') ||
+    message.includes('tx prover warming up; retry shortly') ||
+    message.includes('This operation was aborted') ||
+    message.includes('fetch failed')
+  );
+}
+
 async function withFreshMarketStateRetry<T>(projectRoot: string, work: () => Promise<T>): Promise<T> {
   try {
     return await work();
@@ -2610,7 +2620,8 @@ async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, u
   if (!baseUrl) throw new Error('remote tx prover not configured: set TX_PROVER_BASE_URL');
   if (!token) throw new Error('remote tx prover not configured: set TX_PROVER_ACTION_TOKEN');
   let lastError: unknown = null;
-  for (let attempt = 1; attempt <= 1; attempt += 1) {
+  const attempts = 2;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Number.parseInt(process.env.TX_PROVER_REQUEST_TIMEOUT_MS || '30000', 10));
     try {
@@ -2641,6 +2652,10 @@ async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, u
     } catch (error) {
       clearTimeout(timeout);
       lastError = error;
+      if (attempt < attempts && isTransientRemoteProverAvailabilityError(error)) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
     }
   }
   throw new Error(`remote tx prover unavailable: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
