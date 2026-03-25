@@ -12,6 +12,7 @@ const MAX_OLD_SPACE_MB = process.env.TX_PROVER_NODE_MAX_OLD_SPACE_MB || '4096';
 const PROVER_JOB_TIMEOUT_MS = Number.parseInt(process.env.TX_PROVER_JOB_TIMEOUT_MS || '180000', 10);
 const PROVER_MAX_JOBS_PER_WORKER = Number.parseInt(process.env.TX_PROVER_MAX_JOBS_PER_WORKER || '0', 10);
 const PROVER_WORKER_POOL_SIZE = Number.parseInt(process.env.TX_PROVER_WORKER_POOL_SIZE || '1', 10);
+const PROVER_MAX_QUEUE_SIZE = Number.parseInt(process.env.TX_PROVER_MAX_QUEUE_SIZE || '4', 10);
 
 type BrowserMarketBetContext = {
   network: { graphql: string; networkId: string };
@@ -72,6 +73,13 @@ type WorkerSlot = {
   activeRequest: ActiveRequest | null;
 };
 
+type QueuedJob = {
+  kind: 'market-bet' | 'claim-payout';
+  context: unknown;
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+};
+
 const workerSlots: WorkerSlot[] = Array.from({ length: Math.max(1, PROVER_WORKER_POOL_SIZE) }, (_, index) => ({
   index,
   process: null,
@@ -83,6 +91,7 @@ const workerSlots: WorkerSlot[] = Array.from({ length: Math.max(1, PROVER_WORKER
   activeJobTimeout: null,
   activeRequest: null
 }));
+const pendingJobs: QueuedJob[] = [];
 
 function writeJson(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
@@ -120,6 +129,32 @@ function rejectActiveRequest(slot: WorkerSlot, message: string): void {
   slot.busy = false;
 }
 
+function nextReadyIdleWorker(): WorkerSlot | null {
+  return workerSlots.find((slot) => slot.process && slot.ready && !slot.busy) || null;
+}
+
+function ensureWorkerCapacity(): void {
+  for (const slot of workerSlots) {
+    if (!slot.process) {
+      startWorker(slot);
+      return;
+    }
+  }
+}
+
+function drainPendingJobs(): void {
+  while (pendingJobs.length > 0) {
+    const slot = nextReadyIdleWorker();
+    if (!slot) {
+      ensureWorkerCapacity();
+      return;
+    }
+    const next = pendingJobs.shift();
+    if (!next) return;
+    dispatchJobToWorker(slot, next.kind, next.context, next.resolve, next.reject);
+  }
+}
+
 function recycleWorker(slot: WorkerSlot, reason: string): void {
   if (!slot.process) return;
   console.warn(`[tx-prover] recycling worker ${slot.index}: ${reason}`);
@@ -138,6 +173,7 @@ function handleWorkerLine(slot: WorkerSlot, line: string): void {
   }
   if (message.id === '__ready__' && message.ok) {
     slot.ready = true;
+    drainPendingJobs();
     return;
   }
   const active = slot.activeRequest;
@@ -151,6 +187,7 @@ function handleWorkerLine(slot: WorkerSlot, line: string): void {
   } else {
     active.reject(new Error(message.error));
   }
+  drainPendingJobs();
   if (PROVER_MAX_JOBS_PER_WORKER > 0 && slot.completedJobs >= PROVER_MAX_JOBS_PER_WORKER) {
     slot.completedJobs = 0;
     recycleWorker(slot, 'max jobs reached');
@@ -200,35 +237,39 @@ function startWorker(slot: WorkerSlot): void {
   });
 }
 
-function selectWorker(): { slot: WorkerSlot | null; status: 'ready' | 'warming' | 'busy' } {
-  const readyIdle = workerSlots.find((slot) => slot.process && slot.ready && !slot.busy) || null;
-  if (readyIdle) return { slot: readyIdle, status: 'ready' };
-  const unstarted = workerSlots.find((slot) => !slot.process) || null;
-  if (unstarted) {
-    startWorker(unstarted);
-    return { slot: null, status: 'warming' };
-  }
-  const warming = workerSlots.some((slot) => !slot.ready);
-  return { slot: null, status: warming ? 'warming' : 'busy' };
-}
-
-async function proveWithWorker(kind: 'market-bet' | 'claim-payout', context: unknown): Promise<unknown> {
-  const selection = selectWorker();
-  if (!selection.slot) {
-    const error = new Error(selection.status === 'warming' ? 'tx prover warming up; retry shortly' : 'tx prover busy; retry shortly');
-    (error as any).statusCode = 503;
-    throw error;
-  }
-  const slot = selection.slot;
+function dispatchJobToWorker(
+  slot: WorkerSlot,
+  kind: 'market-bet' | 'claim-payout',
+  context: unknown,
+  resolve: (value: unknown) => void,
+  reject: (error: Error) => void
+): void {
   slot.busy = true;
   const id = randomUUID();
   slot.activeJobTimeout = setTimeout(() => {
     if (!slot.activeRequest || slot.activeRequest.id !== id) return;
     recycleWorker(slot, `job timeout after ${PROVER_JOB_TIMEOUT_MS}ms`);
   }, PROVER_JOB_TIMEOUT_MS);
+  slot.activeRequest = { id, resolve, reject };
+  slot.process!.stdin.write(`${JSON.stringify({ id, kind, context })}\n`);
+}
+
+async function proveWithWorker(kind: 'market-bet' | 'claim-payout', context: unknown): Promise<unknown> {
+  const readyIdle = nextReadyIdleWorker();
+  if (readyIdle) {
+    return await new Promise((resolve, reject) => {
+      dispatchJobToWorker(readyIdle, kind, context, resolve, reject);
+    });
+  }
+  if (pendingJobs.length >= Math.max(0, PROVER_MAX_QUEUE_SIZE)) {
+    const warming = workerSlots.some((slot) => !slot.ready);
+    const error = new Error(warming ? 'tx prover warming up; retry shortly' : 'tx prover busy; retry shortly');
+    (error as any).statusCode = 503;
+    throw error;
+  }
+  ensureWorkerCapacity();
   return await new Promise((resolve, reject) => {
-    slot.activeRequest = { id, resolve, reject };
-    slot.process!.stdin.write(`${JSON.stringify({ id, kind, context })}\n`);
+    pendingJobs.push({ kind, context, resolve, reject });
   });
 }
 
@@ -253,6 +294,7 @@ async function main(): Promise<void> {
           workerAlive: aliveWorkers,
           warmedWorkers,
           busyWorkers,
+          queuedJobs: pendingJobs.length,
           completedJobs,
           warmed: warmedWorkers > 0,
           busy: busyWorkers === workerSlots.length && workerSlots.length > 0
