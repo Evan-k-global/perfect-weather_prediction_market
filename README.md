@@ -38,14 +38,6 @@ This demo is trying to solve three real problems at once:
 - **bet privacy**: hosted services stay out of wallet signing while keeping user transaction metadata separate from oracle lifecycle work
 - **developer extensibility**: the protocol layer can be reused for other markets, and agents can plug in as private model or signal providers
 
-The value of the repo is not only the weather market itself. It also captures reusable engineering patterns for hosted zk applications:
-
-- split coordination, proving, and oracle work into separate services
-- keep wallet signing local even when proving is remote
-- treat hosted indexed state as a recoverable cache, not the source of truth
-- enforce important timing rules in more than one layer
-- keep privacy claims precise about what is hidden from the public versus only hidden from casual users
-
 ## What Is Private
 
 This repo supports **wallet-signed user transactions with a hosted oracle/prover split**, not full shielded finance.
@@ -131,13 +123,6 @@ After iterating through local builds, hosted Render deploys, heavy worker splits
 - Oracle resolution should not depend only on active-window UI metadata; rolled-off markets still need durable date mapping so overdue resolution can continue.
 - Build-time and runtime compile caches materially reduce cold-start CPU and RAM pressure on hosted services.
 
-These lessons generalize beyond this repo. If you are building any hosted zk application with wallets, provers, and external-data oracles, the same rules apply:
-
-- stale Merkle witnesses are usually a coordination problem before they are a proving problem
-- tx hashes and hosted metadata are not substitutes for inclusion confirmation
-- service count should grow only when responsibilities become cleaner, not as a reaction to instability
-- a fresh contract epoch is often the safest path when time semantics, payout math, or state layout change materially
-
 ### Current architectural direction
 
 - **Public market state, more private user intent**
@@ -188,7 +173,7 @@ These lessons generalize beyond this repo. If you are building any hosted zk app
 - `skills/agent-market-integration/SKILL.md`
 
 Recent hosted learnings worth preserving:
-- retry tx-prover work after refreshing state if proving hits a root assertion mismatch
+- retry tx-prover work once after refreshing state if proving hits a root assertion mismatch
 - keep `/api/tx/finalize` resilient because wallet send success and hosted status persistence can fail independently
 - treat market resolution and receipt claims as monotonic during sync; incomplete event snapshots should not erase already-resolved or already-claimed state
 - do not let stale proof contexts reach the native tx-prover path; preflight current on-chain roots before `tx.prove()` where possible

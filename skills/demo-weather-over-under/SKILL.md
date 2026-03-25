@@ -12,13 +12,6 @@ description: Use when working on the Atherton weather demo market UI and adapter
 - Demo weather API integration (`src/weather-service.ts`, `src/weather-hourly-sync.ts`)
 - Oracle refresh UX and auto-settlement behavior for the demo
 
-This is the most demo-specific skill in the repo. Even here, document the weather market as an example of broader product patterns:
-
-- date-windowed prediction markets
-- background-created rolling markets
-- resolved/claimable wallet history
-- UI behavior when on-chain state and local projections briefly diverge
-
 ## Demo Defaults
 
 - Threshold: `68F`
