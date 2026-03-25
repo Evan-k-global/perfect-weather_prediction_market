@@ -7,7 +7,7 @@ import { dirname, resolve } from 'node:path';
 
 const PORT = Number.parseInt(process.env.TX_PROVER_PORT || process.env.PORT || '10001', 10);
 const HOST = process.env.TX_PROVER_HOST || '0.0.0.0';
-const ACTION_TOKEN = (process.env.TX_PROVER_ACTION_TOKEN || process.env.ORACLE_ACTION_TOKEN || '').trim();
+const ACTION_TOKEN = (process.env.TX_PROVER_ACTION_TOKEN || '').trim();
 const MAX_OLD_SPACE_MB = process.env.TX_PROVER_NODE_MAX_OLD_SPACE_MB || '4096';
 const PROVER_JOB_TIMEOUT_MS = Number.parseInt(process.env.TX_PROVER_JOB_TIMEOUT_MS || '45000', 10);
 const PROVER_MAX_JOBS_PER_WORKER = Number.parseInt(process.env.TX_PROVER_MAX_JOBS_PER_WORKER || '4', 10);
