@@ -3088,7 +3088,7 @@ async function main(): Promise<void> {
           const marketKey = requireString(body.marketKey, 'marketKey');
           const positionKey = requireString(body.positionKey, 'positionKey');
           const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
-          const claimStatus = await recoverAndRecordReceiptClaimFinalize({
+          let claimStatus: 'submitted' | 'confirmed' | 'claimable' | 'not-applicable' = await recoverAndRecordReceiptClaimFinalize({
             state,
             positionKey,
             marketKey,
@@ -3097,6 +3097,19 @@ async function main(): Promise<void> {
             recordedAtUnixMs: Date.now()
           });
           await saveOperatorState(defaultStatePath, state);
+          try {
+            await refreshState(projectRoot);
+            const refreshed = await loadOperatorState(defaultStatePath);
+            finalizeReceiptClaimStatuses(refreshed);
+            claimStatus =
+              refreshed.positionMeta?.[positionKey]?.claimStatus ||
+              refreshed.receiptMeta?.[positionKey]?.claimStatus ||
+              claimStatus;
+            await saveOperatorState(defaultStatePath, refreshed);
+          } catch (error) {
+            lastStateRefreshAtUnixMs = 0;
+            console.warn('[finalize] post-claim sync failed:', error instanceof Error ? error.message : String(error));
+          }
           writeJson(res, 200, {
             ok: true,
             recovered: true,
@@ -3142,12 +3155,29 @@ async function main(): Promise<void> {
         }
         await saveOperatorState(defaultStatePath, state);
 
-        if (intent.type === 'market-bet') {
+        let responseClaimStatus =
+          intent.type === 'payout-claim'
+            ? state.positionMeta?.[intent.positionKey]?.claimStatus || state.receiptMeta?.[intent.positionKey]?.claimStatus || 'submitted'
+            : undefined;
+
+        if (intent.type === 'market-bet' || intent.type === 'payout-claim') {
           try {
             await refreshState(projectRoot);
+            if (intent.type === 'payout-claim') {
+              const refreshed = await loadOperatorState(defaultStatePath);
+              finalizeReceiptClaimStatuses(refreshed);
+              responseClaimStatus =
+                refreshed.positionMeta?.[intent.positionKey]?.claimStatus ||
+                refreshed.receiptMeta?.[intent.positionKey]?.claimStatus ||
+                responseClaimStatus;
+              await saveOperatorState(defaultStatePath, refreshed);
+            }
           } catch (error) {
             lastStateRefreshAtUnixMs = 0;
-            console.warn('[finalize] post-bet sync failed:', error instanceof Error ? error.message : String(error));
+            console.warn(
+              intent.type === 'market-bet' ? '[finalize] post-bet sync failed:' : '[finalize] post-claim sync failed:',
+              error instanceof Error ? error.message : String(error)
+            );
           }
         }
         delete pendingTxIntents[intentId];
@@ -3159,10 +3189,7 @@ async function main(): Promise<void> {
           marketKey: intent.marketKey,
           userId: intent.userId,
           userNetPosition: intent.userNetPositionAfter,
-          claimStatus:
-            intent.type === 'payout-claim'
-              ? state.positionMeta?.[intent.positionKey]?.claimStatus || state.receiptMeta?.[intent.positionKey]?.claimStatus || 'submitted'
-              : undefined
+          claimStatus: responseClaimStatus
         });
         return;
       }
