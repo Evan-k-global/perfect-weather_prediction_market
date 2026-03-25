@@ -1653,20 +1653,13 @@ async function withRemoteProverStateRetry<T>(
   projectRoot: string,
   buildAndProve: () => Promise<T>
 ): Promise<T> {
-  let lastError: unknown = null;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      return await buildAndProve();
-    } catch (error) {
-      lastError = error;
-      if (!isRemoteProverStateDriftError(error) || attempt === 3) {
-        throw error;
-      }
-      await refreshState(projectRoot);
-      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
-    }
+  try {
+    return await buildAndProve();
+  } catch (error) {
+    if (!isRemoteProverStateDriftError(error)) throw error;
+    await refreshState(projectRoot);
+    return await buildAndProve();
   }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 function serializeMerkleWitness(witness: { isLefts: Bool[]; siblings: Field[] }): SerializedMerkleWitness {
