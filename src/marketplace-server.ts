@@ -230,6 +230,16 @@ type DailySettleState = {
   }>;
 };
 
+type InFlightBetBuildResult = {
+  built: Awaited<ReturnType<typeof buildBrowserFeePayerMarketBetContext>>;
+  tx: unknown;
+};
+
+type InFlightClaimBuildResult = {
+  built: Awaited<ReturnType<typeof buildClaimPayoutContext>>;
+  tx: unknown;
+};
+
 function emptyDailySettleState(): DailySettleState {
   return {
     lastNightlyRunDate: null,
@@ -239,6 +249,45 @@ function emptyDailySettleState(): DailySettleState {
     lastAutoRunSource: null,
     recentRuns: []
   };
+}
+
+const inFlightRemoteBetBuilds = new Map<string, Promise<InFlightBetBuildResult>>();
+const inFlightRemoteClaimBuilds = new Map<string, Promise<InFlightClaimBuildResult>>();
+
+function withInFlightBuild<T>(map: Map<string, Promise<T>>, key: string, work: () => Promise<T>): Promise<T> {
+  const existing = map.get(key);
+  if (existing) return existing;
+  const promise = (async () => await work())();
+  map.set(key, promise);
+  promise.finally(() => {
+    if (map.get(key) === promise) map.delete(key);
+  }).catch(() => {});
+  return promise;
+}
+
+function makeRemoteBetBuildKey(params: {
+  walletPublicKey: string;
+  marketKey: string;
+  marketDate: string | null;
+  addTotalBet: number;
+  addYesBet: number;
+}): string {
+  return [
+    'bet',
+    params.walletPublicKey,
+    params.marketKey,
+    params.marketDate || '',
+    params.addTotalBet,
+    params.addYesBet
+  ].join(':');
+}
+
+function makeRemoteClaimBuildKey(params: {
+  walletPublicKey: string;
+  marketKey: string;
+  positionKey: string;
+}): string {
+  return ['claim', params.walletPublicKey, params.marketKey, params.positionKey].join(':');
 }
 
 type PrivateQueuedBet = {
@@ -2943,23 +2992,34 @@ async function main(): Promise<void> {
         }
 
         const txResult = useRemoteTxProver()
-          ? await withRemoteProverStateRetry(projectRoot, async () => {
-              const built = await withFreshMarketStateRetry(projectRoot, async () =>
-                buildBrowserFeePayerMarketBetContext({
-                  stateFile: defaultStatePath,
-                  marketKey: String(selectedMarket.marketKey),
-                  addTotalBet: Math.floor(addTotalBet),
-                  addYesBet: Math.floor(addYesBet),
-                  marketDate,
-                  feePayerPublicKey: walletPublicKey,
-                  userId
+          ? await withInFlightBuild(
+              inFlightRemoteBetBuilds,
+              makeRemoteBetBuildKey({
+                walletPublicKey,
+                marketKey: String(selectedMarket.marketKey),
+                marketDate,
+                addTotalBet: Math.floor(addTotalBet),
+                addYesBet: Math.floor(addYesBet)
+              }),
+              async () =>
+                await withRemoteProverStateRetry(projectRoot, async () => {
+                  const built = await withFreshMarketStateRetry(projectRoot, async () =>
+                    buildBrowserFeePayerMarketBetContext({
+                      stateFile: defaultStatePath,
+                      marketKey: String(selectedMarket.marketKey),
+                      addTotalBet: Math.floor(addTotalBet),
+                      addYesBet: Math.floor(addYesBet),
+                      marketDate,
+                      feePayerPublicKey: walletPublicKey,
+                      userId
+                    })
+                  );
+                  const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/market-bet', {
+                    context: built.buildContext
+                  });
+                  return { built, tx: proved.tx };
                 })
-              );
-              const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/market-bet', {
-                context: built.buildContext
-              });
-              return { built, tx: proved.tx };
-            })
+            )
             : useLocalServerBetProving()
             ? await (async () => {
                 const built = await withFreshMarketStateRetry(projectRoot, async () =>
@@ -3012,20 +3072,25 @@ async function main(): Promise<void> {
         let mode: string;
 
         if (useRemoteTxProver()) {
-          const builtAndTx = await withRemoteProverStateRetry(projectRoot, async () => {
-            const built = await withFreshMarketStateRetry(projectRoot, async () =>
-              buildClaimPayoutContext({
-                stateFile: defaultStatePath,
-                marketKey,
-                positionKey,
-                feePayerPublicKey: walletPublicKey
+          const builtAndTx = await withInFlightBuild(
+            inFlightRemoteClaimBuilds,
+            makeRemoteClaimBuildKey({ walletPublicKey, marketKey, positionKey }),
+            async () =>
+              await withRemoteProverStateRetry(projectRoot, async () => {
+                const built = await withFreshMarketStateRetry(projectRoot, async () =>
+                  buildClaimPayoutContext({
+                    stateFile: defaultStatePath,
+                    marketKey,
+                    positionKey,
+                    feePayerPublicKey: walletPublicKey
+                  })
+                );
+                const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/claim-payout', {
+                  context: built.buildContext
+                });
+                return { built, tx: proved.tx };
               })
-            );
-            const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/claim-payout', {
-              context: built.buildContext
-            });
-            return { built, tx: proved.tx };
-          });
+          );
           tx = builtAndTx.tx;
           const built = builtAndTx.built;
           fee = built.fee;
