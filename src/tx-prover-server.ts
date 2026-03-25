@@ -11,6 +11,7 @@ const ACTION_TOKEN = (process.env.TX_PROVER_ACTION_TOKEN || process.env.ORACLE_A
 const MAX_OLD_SPACE_MB = process.env.TX_PROVER_NODE_MAX_OLD_SPACE_MB || '4096';
 const PROVER_JOB_TIMEOUT_MS = Number.parseInt(process.env.TX_PROVER_JOB_TIMEOUT_MS || '45000', 10);
 const PROVER_MAX_JOBS_PER_WORKER = Number.parseInt(process.env.TX_PROVER_MAX_JOBS_PER_WORKER || '4', 10);
+const PROVER_WORKER_POOL_SIZE = Number.parseInt(process.env.TX_PROVER_WORKER_POOL_SIZE || '2', 10);
 
 type BrowserMarketBetContext = {
   network: { graphql: string; networkId: string };
@@ -49,23 +50,39 @@ type ClaimPayoutContext = {
   claimedReceiptWitness: unknown;
 };
 
-type PendingRequest = {
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-};
-
 type WorkerResponse =
   | { id: string; ok: true; tx?: unknown }
   | { id: string; ok: false; error: string };
 
-let worker: ChildProcessWithoutNullStreams | null = null;
-let workerReady = false;
-let workerBusy = false;
-let respawnTimer: NodeJS.Timeout | null = null;
-const pending = new Map<string, PendingRequest>();
-let stdoutBuffer = '';
-let activeJobTimeout: NodeJS.Timeout | null = null;
-let completedJobs = 0;
+type ActiveRequest = {
+  id: string;
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+};
+
+type WorkerSlot = {
+  index: number;
+  process: ChildProcessWithoutNullStreams | null;
+  ready: boolean;
+  busy: boolean;
+  completedJobs: number;
+  stdoutBuffer: string;
+  respawnTimer: NodeJS.Timeout | null;
+  activeJobTimeout: NodeJS.Timeout | null;
+  activeRequest: ActiveRequest | null;
+};
+
+const workerSlots: WorkerSlot[] = Array.from({ length: Math.max(1, PROVER_WORKER_POOL_SIZE) }, (_, index) => ({
+  index,
+  process: null,
+  ready: false,
+  busy: false,
+  completedJobs: 0,
+  stdoutBuffer: '',
+  respawnTimer: null,
+  activeJobTimeout: null,
+  activeRequest: null
+}));
 
 function writeJson(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
@@ -87,32 +104,32 @@ function requireAuth(req: IncomingMessage): void {
   if (!supplied || supplied !== ACTION_TOKEN) throw new Error('tx prover authorization failed');
 }
 
-function clearActiveJobTimeout(): void {
-  if (activeJobTimeout) {
-    clearTimeout(activeJobTimeout);
-    activeJobTimeout = null;
+function clearActiveJobTimeout(slot: WorkerSlot): void {
+  if (slot.activeJobTimeout) {
+    clearTimeout(slot.activeJobTimeout);
+    slot.activeJobTimeout = null;
   }
 }
 
-function recycleWorker(reason: string): void {
-  if (!worker) return;
-  console.warn(`[tx-prover] recycling worker: ${reason}`);
-  workerReady = false;
+function rejectActiveRequest(slot: WorkerSlot, message: string): void {
+  clearActiveJobTimeout(slot);
+  if (slot.activeRequest) {
+    slot.activeRequest.reject(new Error(message));
+    slot.activeRequest = null;
+  }
+  slot.busy = false;
+}
+
+function recycleWorker(slot: WorkerSlot, reason: string): void {
+  if (!slot.process) return;
+  console.warn(`[tx-prover] recycling worker ${slot.index}: ${reason}`);
+  slot.ready = false;
   try {
-    worker.kill('SIGKILL');
+    slot.process.kill('SIGKILL');
   } catch {}
 }
 
-function rejectAllPending(message: string): void {
-  clearActiveJobTimeout();
-  for (const [id, request] of pending.entries()) {
-    request.reject(new Error(message));
-    pending.delete(id);
-  }
-  workerBusy = false;
-}
-
-function handleWorkerLine(line: string): void {
+function handleWorkerLine(slot: WorkerSlot, line: string): void {
   let message: WorkerResponse;
   try {
     message = JSON.parse(line) as WorkerResponse;
@@ -120,99 +137,122 @@ function handleWorkerLine(line: string): void {
     return;
   }
   if (message.id === '__ready__' && message.ok) {
-    workerReady = true;
+    slot.ready = true;
     return;
   }
-  const request = pending.get(message.id);
-  if (!request) return;
-  pending.delete(message.id);
-  clearActiveJobTimeout();
-  workerBusy = false;
-  completedJobs += 1;
+  const active = slot.activeRequest;
+  if (!active || active.id !== message.id) return;
+  slot.activeRequest = null;
+  clearActiveJobTimeout(slot);
+  slot.busy = false;
+  slot.completedJobs += 1;
   if (message.ok) {
-    request.resolve(message.tx);
+    active.resolve(message.tx);
   } else {
-    request.reject(new Error(message.error));
+    active.reject(new Error(message.error));
   }
-  if (completedJobs >= PROVER_MAX_JOBS_PER_WORKER) {
-    completedJobs = 0;
-    recycleWorker('max jobs reached');
+  if (slot.completedJobs >= PROVER_MAX_JOBS_PER_WORKER) {
+    slot.completedJobs = 0;
+    recycleWorker(slot, 'max jobs reached');
   }
 }
 
-function startWorker(): void {
-  if (worker) return;
+function startWorker(slot: WorkerSlot): void {
+  if (slot.process) return;
   const here = dirname(fileURLToPath(import.meta.url));
   const workerPath = resolve(here, 'tx-prover-job.js');
-  workerReady = false;
-  workerBusy = false;
-  stdoutBuffer = '';
-  completedJobs = 0;
-  clearActiveJobTimeout();
-  worker = spawn(process.execPath, [`--max-old-space-size=${MAX_OLD_SPACE_MB}`, workerPath], {
+  slot.ready = false;
+  slot.busy = false;
+  slot.completedJobs = 0;
+  slot.stdoutBuffer = '';
+  clearActiveJobTimeout(slot);
+  slot.activeRequest = null;
+  slot.process = spawn(process.execPath, [`--max-old-space-size=${MAX_OLD_SPACE_MB}`, workerPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: process.env
   });
-  worker.stdout.setEncoding('utf8');
-  worker.stdout.on('data', (chunk: string) => {
-    stdoutBuffer += chunk;
-    let idx = stdoutBuffer.indexOf('\n');
+  slot.process.stdout.setEncoding('utf8');
+  slot.process.stdout.on('data', (chunk: string) => {
+    slot.stdoutBuffer += chunk;
+    let idx = slot.stdoutBuffer.indexOf('\n');
     while (idx >= 0) {
-      const line = stdoutBuffer.slice(0, idx).trim();
-      stdoutBuffer = stdoutBuffer.slice(idx + 1);
-      if (line) handleWorkerLine(line);
-      idx = stdoutBuffer.indexOf('\n');
+      const line = slot.stdoutBuffer.slice(0, idx).trim();
+      slot.stdoutBuffer = slot.stdoutBuffer.slice(idx + 1);
+      if (line) handleWorkerLine(slot, line);
+      idx = slot.stdoutBuffer.indexOf('\n');
     }
   });
-  worker.stderr.setEncoding('utf8');
-  worker.stderr.on('data', (chunk: string) => {
-    process.stderr.write(chunk);
+  slot.process.stderr.setEncoding('utf8');
+  slot.process.stderr.on('data', (chunk: string) => {
+    process.stderr.write(`[worker ${slot.index}] ${chunk}`);
   });
-  worker.on('exit', (code, signal) => {
-    const detail = `tx prover worker exited code=${code ?? 'null'} signal=${signal ?? 'null'}`;
-    worker = null;
-    workerReady = false;
-    rejectAllPending(detail);
-    if (!respawnTimer) {
-      respawnTimer = setTimeout(() => {
-        respawnTimer = null;
-        startWorker();
+  slot.process.on('exit', (code, signal) => {
+    const detail = `tx prover worker ${slot.index} exited code=${code ?? 'null'} signal=${signal ?? 'null'}`;
+    slot.process = null;
+    slot.ready = false;
+    rejectActiveRequest(slot, detail);
+    if (!slot.respawnTimer) {
+      slot.respawnTimer = setTimeout(() => {
+        slot.respawnTimer = null;
+        startWorker(slot);
       }, 1000);
     }
   });
 }
 
+function ensureWorkersStarted(): void {
+  for (const slot of workerSlots) startWorker(slot);
+}
+
+function selectWorker(): { slot: WorkerSlot | null; status: 'ready' | 'warming' | 'busy' } {
+  ensureWorkersStarted();
+  const readyIdle = workerSlots.find((slot) => slot.process && slot.ready && !slot.busy) || null;
+  if (readyIdle) return { slot: readyIdle, status: 'ready' };
+  const warming = workerSlots.some((slot) => !slot.process || !slot.ready);
+  return { slot: null, status: warming ? 'warming' : 'busy' };
+}
+
 async function proveWithWorker(kind: 'market-bet' | 'claim-payout', context: unknown): Promise<unknown> {
-  startWorker();
-  if (!worker || !workerReady) {
-    const error = new Error('tx prover warming up; retry shortly');
+  const selection = selectWorker();
+  if (!selection.slot) {
+    const error = new Error(selection.status === 'warming' ? 'tx prover warming up; retry shortly' : 'tx prover busy; retry shortly');
     (error as any).statusCode = 503;
     throw error;
   }
-  if (workerBusy) {
-    const error = new Error('tx prover busy; retry shortly');
-    (error as any).statusCode = 503;
-    throw error;
-  }
-  workerBusy = true;
+  const slot = selection.slot;
+  slot.busy = true;
   const id = randomUUID();
-  activeJobTimeout = setTimeout(() => {
-    if (!pending.has(id)) return;
-    recycleWorker(`job timeout after ${PROVER_JOB_TIMEOUT_MS}ms`);
+  slot.activeJobTimeout = setTimeout(() => {
+    if (!slot.activeRequest || slot.activeRequest.id !== id) return;
+    recycleWorker(slot, `job timeout after ${PROVER_JOB_TIMEOUT_MS}ms`);
   }, PROVER_JOB_TIMEOUT_MS);
   return await new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    worker!.stdin.write(`${JSON.stringify({ id, kind, context })}\n`);
+    slot.activeRequest = { id, resolve, reject };
+    slot.process!.stdin.write(`${JSON.stringify({ id, kind, context })}\n`);
   });
 }
 
 async function main(): Promise<void> {
-  startWorker();
+  ensureWorkersStarted();
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
       if (req.method === 'GET' && url.pathname === '/health') {
-        writeJson(res, 200, { ok: true, service: 'tx-prover', warmed: workerReady, busy: workerBusy, workerAlive: Boolean(worker), completedJobs });
+        const aliveWorkers = workerSlots.filter((slot) => Boolean(slot.process)).length;
+        const warmedWorkers = workerSlots.filter((slot) => slot.ready).length;
+        const busyWorkers = workerSlots.filter((slot) => slot.busy).length;
+        const completedJobs = workerSlots.reduce((sum, slot) => sum + slot.completedJobs, 0);
+        writeJson(res, 200, {
+          ok: true,
+          service: 'tx-prover',
+          workerPoolSize: workerSlots.length,
+          workerAlive: aliveWorkers,
+          warmedWorkers,
+          busyWorkers,
+          completedJobs,
+          warmed: warmedWorkers > 0,
+          busy: busyWorkers === workerSlots.length && workerSlots.length > 0
+        });
         return;
       }
       if (req.method === 'POST' && url.pathname === '/prove/market-bet') {
@@ -243,6 +283,7 @@ async function main(): Promise<void> {
 
   server.listen(PORT, HOST, () => {
     console.log(`[tx-prover] listening on http://${HOST}:${PORT}`);
+    console.log(`[tx-prover] worker_pool_size=${workerSlots.length} job_timeout_ms=${PROVER_JOB_TIMEOUT_MS} max_jobs_per_worker=${PROVER_MAX_JOBS_PER_WORKER}`);
   });
 }
 
