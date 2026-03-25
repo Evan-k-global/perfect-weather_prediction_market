@@ -184,30 +184,6 @@ function deserializeMerkleWitness(serialized: SerializedMerkleWitness): MerkleMa
   );
 }
 
-async function assertBetContextRootsFresh(
-  zkappAddress: PublicKey,
-  marketKey: Field,
-  oldLeaf: MarketLeaf,
-  marketWitness: MerkleMapWitness,
-  receiptKey: Field,
-  receiptWitness: MerkleMapWitness
-): Promise<void> {
-  const [localMarketsRoot, witnessMarketKey] = marketWitness.computeRootAndKey(oldLeaf.hash());
-  witnessMarketKey.assertEquals(marketKey);
-  const [localReceiptsRoot, witnessReceiptKey] = receiptWitness.computeRootAndKey(Field(0));
-  witnessReceiptKey.assertEquals(receiptKey);
-  const [chainMarketsRoot, chainReceiptsRoot] = await Promise.all([
-    getOnChainMarketsRoot(zkappAddress),
-    getOnChainReceiptsRoot(zkappAddress)
-  ]);
-  if (localMarketsRoot.toString() !== chainMarketsRoot) {
-    throw new Error(`marketsRoot mismatch local=${localMarketsRoot.toString()} chain=${chainMarketsRoot}`);
-  }
-  if (localReceiptsRoot.toString() !== chainReceiptsRoot) {
-    throw new Error(`receiptsRoot mismatch local=${localReceiptsRoot.toString()} chain=${chainReceiptsRoot}`);
-  }
-}
-
 async function assertClaimContextRootsFresh(
   zkappAddress: PublicKey,
   marketKey: Field,
@@ -261,8 +237,6 @@ async function buildMarketBetTx(context: BrowserMarketBetContext): Promise<unkno
   const receiptWitness = deserializeMerkleWitness(context.receiptWitness);
   const betAmountNanomina = BigInt(context.addTotalBet) * 1_000_000_000n;
   const zkapp = new FastPredictionMarketPlatform(zkappAddress);
-
-  await assertBetContextRootsFresh(zkappAddress, marketKey, oldLeaf, marketWitness, receiptKey, receiptWitness);
 
   const tx = await Mina.transaction({ sender: feePayer, fee: context.fee }, async () => {
     const bettorPayment = AccountUpdate.createSigned(feePayer);
