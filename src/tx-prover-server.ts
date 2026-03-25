@@ -12,7 +12,7 @@ const MAX_OLD_SPACE_MB = process.env.TX_PROVER_NODE_MAX_OLD_SPACE_MB || '4096';
 const PROVER_JOB_TIMEOUT_MS = Number.parseInt(process.env.TX_PROVER_JOB_TIMEOUT_MS || '180000', 10);
 const PROVER_MAX_JOBS_PER_WORKER = Number.parseInt(process.env.TX_PROVER_MAX_JOBS_PER_WORKER || '0', 10);
 const PROVER_WORKER_POOL_SIZE = Number.parseInt(process.env.TX_PROVER_WORKER_POOL_SIZE || '1', 10);
-const PROVER_MAX_QUEUE_SIZE = Number.parseInt(process.env.TX_PROVER_MAX_QUEUE_SIZE || '4', 10);
+const PROVER_MAX_QUEUE_SIZE = Number.parseInt(process.env.TX_PROVER_MAX_QUEUE_SIZE || '0', 10);
 
 type BrowserMarketBetContext = {
   network: { graphql: string; networkId: string };
