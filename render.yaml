@@ -22,8 +22,6 @@ services:
         value: "1"
       - key: SYNC_STATE_BLOCKING
         value: "0"
-      - key: TX_PROVER_REQUEST_TIMEOUT_MS
-        value: "30000"
   - type: worker
     name: perfect-weather-oracle-worker
     env: docker
@@ -52,7 +50,6 @@ services:
     env: docker
     dockerfilePath: ./deploy/Dockerfile.tx-prover
     dockerCommand: /app/deploy/start-tx-prover.sh
-    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production

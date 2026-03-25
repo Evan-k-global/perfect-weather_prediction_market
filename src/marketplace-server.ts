@@ -1653,14 +1653,20 @@ async function withRemoteProverStateRetry<T>(
   projectRoot: string,
   buildAndProve: () => Promise<T>
 ): Promise<T> {
-  try {
-    return await buildAndProve();
-  } catch (error) {
-    if (!isRemoteProverStateDriftError(error)) throw error;
-    await refreshState(projectRoot);
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    return await buildAndProve();
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await buildAndProve();
+    } catch (error) {
+      lastError = error;
+      if (!isRemoteProverStateDriftError(error) || attempt === 3) {
+        throw error;
+      }
+      await refreshState(projectRoot);
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    }
   }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 function serializeMerkleWitness(witness: { isLefts: Bool[]; siblings: Field[] }): SerializedMerkleWitness {
@@ -2613,12 +2619,10 @@ async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, u
   const token = getRemoteTxProverToken();
   if (!baseUrl) throw new Error('remote tx prover not configured: set TX_PROVER_BASE_URL');
   if (!token) throw new Error('remote tx prover not configured: set TX_PROVER_ACTION_TOKEN');
-  const timeoutMs = Number.parseInt(process.env.TX_PROVER_REQUEST_TIMEOUT_MS || '30000', 10);
-  const maxAttempts = Number.parseInt(process.env.TX_PROVER_REQUEST_ATTEMPTS || '2', 10);
   let lastError: unknown = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), 120_000);
     try {
       const res = await fetch(`${baseUrl}${endpoint}`, {
         method: 'POST',
@@ -2647,7 +2651,7 @@ async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, u
     } catch (error) {
       clearTimeout(timeout);
       lastError = error;
-      if (attempt < maxAttempts) {
+      if (attempt < 2) {
         await new Promise((resolve) => setTimeout(resolve, 750));
         continue;
       }
