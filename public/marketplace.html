@@ -1343,10 +1343,11 @@
         console.warn("initial refresh failed", e);
       });
       setInterval(() => {
+        if (document.hidden) return;
         refreshPageState().catch((e) => {
           console.warn("interval refresh failed", e);
         });
-      }, 10000);
+      }, 30000);
     </script>
   </body>
 </html>
