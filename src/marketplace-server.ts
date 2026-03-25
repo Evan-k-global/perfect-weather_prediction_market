@@ -2623,7 +2623,7 @@ async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, u
   const attempts = 2;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Number.parseInt(process.env.TX_PROVER_REQUEST_TIMEOUT_MS || '30000', 10));
+    const timeout = setTimeout(() => controller.abort(), Number.parseInt(process.env.TX_PROVER_REQUEST_TIMEOUT_MS || '150000', 10));
     try {
       const res = await fetch(`${baseUrl}${endpoint}`, {
         method: 'POST',

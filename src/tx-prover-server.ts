@@ -9,8 +9,8 @@ const PORT = Number.parseInt(process.env.TX_PROVER_PORT || process.env.PORT || '
 const HOST = process.env.TX_PROVER_HOST || '0.0.0.0';
 const ACTION_TOKEN = (process.env.TX_PROVER_ACTION_TOKEN || '').trim();
 const MAX_OLD_SPACE_MB = process.env.TX_PROVER_NODE_MAX_OLD_SPACE_MB || '4096';
-const PROVER_JOB_TIMEOUT_MS = Number.parseInt(process.env.TX_PROVER_JOB_TIMEOUT_MS || '45000', 10);
-const PROVER_MAX_JOBS_PER_WORKER = Number.parseInt(process.env.TX_PROVER_MAX_JOBS_PER_WORKER || '4', 10);
+const PROVER_JOB_TIMEOUT_MS = Number.parseInt(process.env.TX_PROVER_JOB_TIMEOUT_MS || '180000', 10);
+const PROVER_MAX_JOBS_PER_WORKER = Number.parseInt(process.env.TX_PROVER_MAX_JOBS_PER_WORKER || '0', 10);
 const PROVER_WORKER_POOL_SIZE = Number.parseInt(process.env.TX_PROVER_WORKER_POOL_SIZE || '1', 10);
 
 type BrowserMarketBetContext = {
@@ -151,7 +151,7 @@ function handleWorkerLine(slot: WorkerSlot, line: string): void {
   } else {
     active.reject(new Error(message.error));
   }
-  if (slot.completedJobs >= PROVER_MAX_JOBS_PER_WORKER) {
+  if (PROVER_MAX_JOBS_PER_WORKER > 0 && slot.completedJobs >= PROVER_MAX_JOBS_PER_WORKER) {
     slot.completedJobs = 0;
     recycleWorker(slot, 'max jobs reached');
   }
@@ -232,7 +232,12 @@ async function proveWithWorker(kind: 'market-bet' | 'claim-payout', context: unk
   });
 }
 
+function ensureWorkersStarted(): void {
+  for (const slot of workerSlots) startWorker(slot);
+}
+
 async function main(): Promise<void> {
+  ensureWorkersStarted();
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
