@@ -3131,7 +3131,12 @@ async function main(): Promise<void> {
         await saveOperatorState(defaultStatePath, state);
 
         if (intent.type === 'market-bet') {
-          // Keep wallet activity metadata, but let chain sync authoritatively update roots and pool totals.
+          try {
+            await refreshState(projectRoot);
+          } catch (error) {
+            lastStateRefreshAtUnixMs = 0;
+            console.warn('[finalize] post-bet sync failed:', error instanceof Error ? error.message : String(error));
+          }
         }
         delete pendingTxIntents[intentId];
 
