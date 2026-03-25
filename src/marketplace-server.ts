@@ -352,9 +352,6 @@ function shouldAssertChainRootsInBetContext(): boolean {
     const normalized = explicit.trim().toLowerCase();
     return !['0', 'false', 'no', 'off'].includes(normalized);
   }
-  if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
-    return false;
-  }
   return true;
 }
 
