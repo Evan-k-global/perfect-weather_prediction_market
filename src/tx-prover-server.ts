@@ -9,6 +9,8 @@ const PORT = Number.parseInt(process.env.TX_PROVER_PORT || process.env.PORT || '
 const HOST = process.env.TX_PROVER_HOST || '0.0.0.0';
 const ACTION_TOKEN = (process.env.TX_PROVER_ACTION_TOKEN || process.env.ORACLE_ACTION_TOKEN || '').trim();
 const MAX_OLD_SPACE_MB = process.env.TX_PROVER_NODE_MAX_OLD_SPACE_MB || '4096';
+const PROVER_JOB_TIMEOUT_MS = Number.parseInt(process.env.TX_PROVER_JOB_TIMEOUT_MS || '45000', 10);
+const PROVER_MAX_JOBS_PER_WORKER = Number.parseInt(process.env.TX_PROVER_MAX_JOBS_PER_WORKER || '4', 10);
 
 type BrowserMarketBetContext = {
   network: { graphql: string; networkId: string };
@@ -62,6 +64,8 @@ let workerBusy = false;
 let respawnTimer: NodeJS.Timeout | null = null;
 const pending = new Map<string, PendingRequest>();
 let stdoutBuffer = '';
+let activeJobTimeout: NodeJS.Timeout | null = null;
+let completedJobs = 0;
 
 function writeJson(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
@@ -83,7 +87,24 @@ function requireAuth(req: IncomingMessage): void {
   if (!supplied || supplied !== ACTION_TOKEN) throw new Error('tx prover authorization failed');
 }
 
+function clearActiveJobTimeout(): void {
+  if (activeJobTimeout) {
+    clearTimeout(activeJobTimeout);
+    activeJobTimeout = null;
+  }
+}
+
+function recycleWorker(reason: string): void {
+  if (!worker) return;
+  console.warn(`[tx-prover] recycling worker: ${reason}`);
+  workerReady = false;
+  try {
+    worker.kill('SIGKILL');
+  } catch {}
+}
+
 function rejectAllPending(message: string): void {
+  clearActiveJobTimeout();
   for (const [id, request] of pending.entries()) {
     request.reject(new Error(message));
     pending.delete(id);
@@ -105,11 +126,17 @@ function handleWorkerLine(line: string): void {
   const request = pending.get(message.id);
   if (!request) return;
   pending.delete(message.id);
+  clearActiveJobTimeout();
   workerBusy = false;
+  completedJobs += 1;
   if (message.ok) {
     request.resolve(message.tx);
   } else {
     request.reject(new Error(message.error));
+  }
+  if (completedJobs >= PROVER_MAX_JOBS_PER_WORKER) {
+    completedJobs = 0;
+    recycleWorker('max jobs reached');
   }
 }
 
@@ -120,6 +147,8 @@ function startWorker(): void {
   workerReady = false;
   workerBusy = false;
   stdoutBuffer = '';
+  completedJobs = 0;
+  clearActiveJobTimeout();
   worker = spawn(process.execPath, [`--max-old-space-size=${MAX_OLD_SPACE_MB}`, workerPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: process.env
@@ -167,6 +196,10 @@ async function proveWithWorker(kind: 'market-bet' | 'claim-payout', context: unk
   }
   workerBusy = true;
   const id = randomUUID();
+  activeJobTimeout = setTimeout(() => {
+    if (!pending.has(id)) return;
+    recycleWorker(`job timeout after ${PROVER_JOB_TIMEOUT_MS}ms`);
+  }, PROVER_JOB_TIMEOUT_MS);
   return await new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
     worker!.stdin.write(`${JSON.stringify({ id, kind, context })}\n`);
@@ -179,7 +212,7 @@ async function main(): Promise<void> {
     try {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
       if (req.method === 'GET' && url.pathname === '/health') {
-        writeJson(res, 200, { ok: true, service: 'tx-prover', warmed: workerReady, busy: workerBusy, workerAlive: Boolean(worker) });
+        writeJson(res, 200, { ok: true, service: 'tx-prover', warmed: workerReady, busy: workerBusy, workerAlive: Boolean(worker), completedJobs });
         return;
       }
       if (req.method === 'POST' && url.pathname === '/prove/market-bet') {
