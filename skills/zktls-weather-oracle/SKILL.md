@@ -35,10 +35,6 @@ description: Use when integrating, debugging, or operating zkTLS/TLSNotary-backe
 - Preferred attestation path is `./data/tlsn-output/latest/attestation.json`.
 - Legacy copy path is `./data/weather-attestation.json`.
 - Runtime config should come from `.env` / `.env.local`, not shell-only exports.
-- Historical overdue resolution can fall back to archived per-date attestations or synthetic historical observation inputs when the original forecast window rolled off.
-- Live freshness and historical freshness are intentionally different:
-  - live sync should stay tight
-  - historical recovery can use a wider window
 
 ## Guardrails
 
@@ -46,4 +42,3 @@ description: Use when integrating, debugging, or operating zkTLS/TLSNotary-backe
 - If strict mode is enabled, settlement must pause when the snapshot is too old or unverified.
 - Keep source/path policy checks explicit; do not loosen them just to make local testing easier.
 - When TLSNotary is unstable, prefer fixing deterministic request/response behavior before expanding timeouts.
-- If using historical fallback inputs, keep the on-chain oracle policy binding explicit so recovery paths still satisfy the configured source/path hashes.

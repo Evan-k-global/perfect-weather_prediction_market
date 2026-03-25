@@ -46,12 +46,3 @@ curl -s http://127.0.0.1:8790/api/health
 
 - Keep `WEATHER_TLSN_MAX_AGE_MS` tight for production (for example 15m or 60m).
 - Render should use a persistent disk mounted at `/app/data`.
-- After a fresh zkApp rollout, expect a clean market epoch:
-  - oracle recreates the rolling daily markets
-  - market sync repopulates from the new address
-  - old receipts/claims do not automatically carry over
-- The current demo uses a `9pm Pacific` cutoff for:
-  - daily market close
-  - same-day resolution eligibility
-  - advancing the active rolling market window
-- If tx-prover logs show `Field.assertEquals(): ... != ...`, suspect stale roots/witnesses first. Redeploying a larger prover instance alone will not fix stale proof inputs.

@@ -15,7 +15,6 @@ description: Use when working on the Atherton weather demo market UI and adapter
 ## Demo Defaults
 
 - Threshold: `68F`
-- Daily cutoff: `9pm Pacific`
 - Market semantics:
   - YES = observed high > threshold
   - NO = observed high <= threshold
@@ -52,19 +51,15 @@ description: Use when working on the Atherton weather demo market UI and adapter
   - create the rolling markets
   - sync local state
   - only then let the UI claim a date is active or missing
-- The active demo market window is not midnight-based anymore:
-  - before `9pm PT`, today is active
-  - at or after `9pm PT`, tomorrow becomes the first active market date
 - If the market feed and daily-market feed disagree, trust the real on-chain market feed first and repair the projection layer second.
 - For hosted operation:
   - market renders quickly from shared state
   - oracle runs background lifecycle work
   - tx-prover handles bet/claim proving
   - browser wallet signs
-- If the tx-prover throws a raw `Field.assertEquals(): ... != ...` after a few bets/claims, suspect stale witnesses from a root update rather than a broken wallet flow; refresh state, rebuild context, and retry multiple times before surfacing the error.
+- If the tx-prover throws a raw `Field.assertEquals(): ... != ...` after a few bets/claims, suspect stale witnesses from a root update rather than a broken wallet flow; refresh state, rebuild context, and retry once.
 - Past-date resolution must retry on the next oracle cycle if a market missed its first nightly window; do not make users wait another full day.
 - If `Resolved Markets` empties after a real resolve/claim, suspect sync regression before blaming the UI. The demo should preserve monotonic resolved/claimed state rather than allowing an incomplete event snapshot to erase it.
-- If a bet appears in `Your Activity` but the on-chain pool returns to zero after refresh, treat the entry as optimistic hosted metadata until inclusion is confirmed.
 - In the resolved-markets card:
   - keep progress on the claim button itself (`Generating tx proof`, `Sign Wallet Tx`, `Finalizing claim...`)
   - avoid long raw market identifiers unless they are needed for debugging
