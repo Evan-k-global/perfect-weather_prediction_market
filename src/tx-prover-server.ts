@@ -11,7 +11,7 @@ const ACTION_TOKEN = (process.env.TX_PROVER_ACTION_TOKEN || process.env.ORACLE_A
 const MAX_OLD_SPACE_MB = process.env.TX_PROVER_NODE_MAX_OLD_SPACE_MB || '4096';
 const PROVER_JOB_TIMEOUT_MS = Number.parseInt(process.env.TX_PROVER_JOB_TIMEOUT_MS || '45000', 10);
 const PROVER_MAX_JOBS_PER_WORKER = Number.parseInt(process.env.TX_PROVER_MAX_JOBS_PER_WORKER || '4', 10);
-const PROVER_WORKER_POOL_SIZE = Number.parseInt(process.env.TX_PROVER_WORKER_POOL_SIZE || '2', 10);
+const PROVER_WORKER_POOL_SIZE = Number.parseInt(process.env.TX_PROVER_WORKER_POOL_SIZE || '1', 10);
 
 type BrowserMarketBetContext = {
   network: { graphql: string; networkId: string };
@@ -200,15 +200,15 @@ function startWorker(slot: WorkerSlot): void {
   });
 }
 
-function ensureWorkersStarted(): void {
-  for (const slot of workerSlots) startWorker(slot);
-}
-
 function selectWorker(): { slot: WorkerSlot | null; status: 'ready' | 'warming' | 'busy' } {
-  ensureWorkersStarted();
   const readyIdle = workerSlots.find((slot) => slot.process && slot.ready && !slot.busy) || null;
   if (readyIdle) return { slot: readyIdle, status: 'ready' };
-  const warming = workerSlots.some((slot) => !slot.process || !slot.ready);
+  const unstarted = workerSlots.find((slot) => !slot.process) || null;
+  if (unstarted) {
+    startWorker(unstarted);
+    return { slot: null, status: 'warming' };
+  }
+  const warming = workerSlots.some((slot) => !slot.ready);
   return { slot: null, status: warming ? 'warming' : 'busy' };
 }
 
@@ -233,7 +233,6 @@ async function proveWithWorker(kind: 'market-bet' | 'claim-payout', context: unk
 }
 
 async function main(): Promise<void> {
-  ensureWorkersStarted();
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
