@@ -56,6 +56,7 @@ type WorkerResponse =
 
 type ActiveRequest = {
   id: string;
+  kind: 'market-bet' | 'claim-payout';
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
 };
@@ -215,24 +216,26 @@ function dispatchJobToWorker(
   slot: WorkerSlot,
   kind: 'market-bet' | 'claim-payout',
   context: unknown,
+  requestId: string | null,
   resolve: (value: unknown) => void,
   reject: (error: Error) => void
 ): void {
   slot.busy = true;
-  const id = randomUUID();
+  const id = requestId || randomUUID();
   slot.activeJobTimeout = setTimeout(() => {
     if (!slot.activeRequest || slot.activeRequest.id !== id) return;
     recycleWorker(slot, `job timeout after ${PROVER_JOB_TIMEOUT_MS}ms`);
   }, PROVER_JOB_TIMEOUT_MS);
-  slot.activeRequest = { id, resolve, reject };
+  slot.activeRequest = { id, kind, resolve, reject };
+  console.log(`[tx-prover] dispatch kind=${kind} requestId=${id}`);
   slot.process!.stdin.write(`${JSON.stringify({ id, kind, context })}\n`);
 }
 
-async function proveWithWorker(kind: 'market-bet' | 'claim-payout', context: unknown): Promise<unknown> {
+async function proveWithWorker(kind: 'market-bet' | 'claim-payout', context: unknown, requestId: string | null): Promise<unknown> {
   const readyIdle = nextReadyIdleWorker();
   if (readyIdle) {
     return await new Promise((resolve, reject) => {
-      dispatchJobToWorker(readyIdle, kind, context, resolve, reject);
+      dispatchJobToWorker(readyIdle, kind, context, requestId, resolve, reject);
     });
   }
   const warming = workerSlots.some((slot) => !slot.ready);
@@ -255,6 +258,13 @@ async function main(): Promise<void> {
         const warmedWorkers = workerSlots.filter((slot) => slot.ready).length;
         const busyWorkers = workerSlots.filter((slot) => slot.busy).length;
         const completedJobs = workerSlots.reduce((sum, slot) => sum + slot.completedJobs, 0);
+        const activeRequests = workerSlots
+          .map((slot) =>
+            slot.activeRequest
+              ? { worker: slot.index, requestId: slot.activeRequest.id, kind: slot.activeRequest.kind }
+              : null
+          )
+          .filter(Boolean);
         writeJson(res, 200, {
           ok: true,
           service: 'tx-prover',
@@ -263,9 +273,25 @@ async function main(): Promise<void> {
           warmedWorkers,
           busyWorkers,
           completedJobs,
+          activeRequests,
           warmed: warmedWorkers > 0,
           busy: busyWorkers === workerSlots.length && workerSlots.length > 0
         });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/cancel') {
+        requireAuth(req);
+        const body = await readJsonBody(req);
+        const requestId =
+          typeof body.requestId === 'string' && body.requestId.trim() ? body.requestId.trim() : null;
+        if (!requestId) throw new Error('requestId is required');
+        const activeSlot = workerSlots.find((slot) => slot.activeRequest?.id === requestId) || null;
+        if (!activeSlot) {
+          writeJson(res, 200, { ok: true, cancelled: false, requestId });
+          return;
+        }
+        recycleWorker(activeSlot, `cancelled requestId=${requestId}`);
+        writeJson(res, 200, { ok: true, cancelled: true, requestId, worker: activeSlot.index });
         return;
       }
       if (req.method === 'POST' && url.pathname === '/prove/market-bet') {
@@ -275,8 +301,9 @@ async function main(): Promise<void> {
         );
         const body = await readJsonBody(req);
         const context = body.context as BrowserMarketBetContext | undefined;
+        const requestId = typeof body.requestId === 'string' && body.requestId.trim() ? body.requestId.trim() : null;
         if (!context) throw new Error('context is required');
-        const tx = await proveWithWorker('market-bet', context);
+        const tx = await proveWithWorker('market-bet', context, requestId);
         writeJson(res, 200, { ok: true, tx });
         return;
       }
@@ -287,8 +314,9 @@ async function main(): Promise<void> {
         );
         const body = await readJsonBody(req);
         const context = body.context as ClaimPayoutContext | undefined;
+        const requestId = typeof body.requestId === 'string' && body.requestId.trim() ? body.requestId.trim() : null;
         if (!context) throw new Error('context is required');
-        const tx = await proveWithWorker('claim-payout', context);
+        const tx = await proveWithWorker('claim-payout', context, requestId);
         writeJson(res, 200, { ok: true, tx });
         return;
       }

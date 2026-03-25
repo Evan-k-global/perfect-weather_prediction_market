@@ -222,16 +222,25 @@ async function main(): Promise<void> {
     const trimmed = line.trim();
     if (!trimmed) continue;
     let request: JobRequest | null = null;
+    const startedAt = Date.now();
     try {
       request = JSON.parse(trimmed) as JobRequest;
+      log(
+        `[tx-prover-job] start kind=${request.kind} requestId=${request.id} wallet=${request.context.walletPublicKey} marketKey=${request.context.marketKey}`
+      );
       if (request.kind === 'market-bet') {
         const tx = await buildMarketBetTx(request.context);
+        log(`[tx-prover-job] done kind=market-bet requestId=${request.id} durationMs=${Date.now() - startedAt}`);
         send({ id: request.id, ok: true, tx });
       } else if (request.kind === 'claim-payout') {
         const tx = await buildClaimPayoutTx(request.context);
+        log(`[tx-prover-job] done kind=claim-payout requestId=${request.id} durationMs=${Date.now() - startedAt}`);
         send({ id: request.id, ok: true, tx });
       }
     } catch (error) {
+      log(
+        `[tx-prover-job] fail kind=${request?.kind || 'unknown'} requestId=${request?.id || 'unknown'} durationMs=${Date.now() - startedAt} error=${error instanceof Error ? error.message : String(error)}`
+      );
       send({ id: request?.id || 'unknown', ok: false, error: error instanceof Error ? error.message : String(error) });
     }
   }

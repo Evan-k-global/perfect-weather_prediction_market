@@ -2677,6 +2677,7 @@ async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, u
   const token = getRemoteTxProverToken();
   if (!baseUrl) throw new Error('remote tx prover not configured: set TX_PROVER_BASE_URL');
   if (!token) throw new Error('remote tx prover not configured: set TX_PROVER_ACTION_TOKEN');
+  const requestId = randomUUID();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Number.parseInt(process.env.TX_PROVER_REQUEST_TIMEOUT_MS || '60000', 10));
   try {
@@ -2686,7 +2687,7 @@ async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, u
         'content-type': 'application/json',
         'x-prover-token': token
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, requestId }),
       signal: controller.signal
     });
     const text = await res.text();
@@ -2704,6 +2705,18 @@ async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, u
     }
     return data as T;
   } catch (error) {
+    if (controller.signal.aborted) {
+      try {
+        await fetch(`${baseUrl}/cancel`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-prover-token': token
+          },
+          body: JSON.stringify({ requestId })
+        });
+      } catch {}
+    }
     throw new Error(`remote tx prover unavailable: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     clearTimeout(timeout);
