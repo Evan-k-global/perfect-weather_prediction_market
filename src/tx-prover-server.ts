@@ -99,6 +99,13 @@ function writeJson(res: ServerResponse, status: number, data: unknown): void {
   res.end(JSON.stringify(data));
 }
 
+function getCaller(req: IncomingMessage): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0]!.trim();
+  if (Array.isArray(forwarded) && forwarded[0]?.trim()) return forwarded[0].split(',')[0]!.trim();
+  return req.socket.remoteAddress || 'unknown';
+}
+
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -303,6 +310,9 @@ async function main(): Promise<void> {
       }
       if (req.method === 'POST' && url.pathname === '/prove/market-bet') {
         requireAuth(req);
+        console.log(
+          `[tx-prover] request kind=market-bet caller=${getCaller(req)} busyWorkers=${workerSlots.filter((slot) => slot.busy).length} queuedJobs=${pendingJobs.length}`
+        );
         const body = await readJsonBody(req);
         const context = body.context as BrowserMarketBetContext | undefined;
         if (!context) throw new Error('context is required');
@@ -312,6 +322,9 @@ async function main(): Promise<void> {
       }
       if (req.method === 'POST' && url.pathname === '/prove/claim-payout') {
         requireAuth(req);
+        console.log(
+          `[tx-prover] request kind=claim-payout caller=${getCaller(req)} busyWorkers=${workerSlots.filter((slot) => slot.busy).length} queuedJobs=${pendingJobs.length}`
+        );
         const body = await readJsonBody(req);
         const context = body.context as ClaimPayoutContext | undefined;
         if (!context) throw new Error('context is required');
