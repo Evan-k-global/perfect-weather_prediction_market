@@ -10,7 +10,6 @@ import {
   PublicKey,
   UInt32,
   UInt64,
-  fetchAccount
 } from 'o1js';
 import { FastPredictionMarketPlatform } from './fast-contract.js';
 import { getFastNodeCompileCache } from './fast-compile-cache.js';
@@ -71,26 +70,26 @@ type ClaimPayoutContext = {
 
 let compilePromise: Promise<unknown> | null = null;
 let activeNetworkKey = '';
-let proveQueue: Promise<void> = Promise.resolve();
+let proverBusy = false;
 
 async function withProverSlot<T>(work: () => Promise<T>): Promise<T> {
-  const previous = proveQueue;
-  let release!: () => void;
-  proveQueue = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await previous;
+  if (proverBusy) {
+    const error = new Error('tx prover busy; retry shortly');
+    (error as any).statusCode = 503;
+    throw error;
+  }
+  proverBusy = true;
   try {
     return await work();
   } finally {
-    release();
+    proverBusy = false;
   }
 }
 
 function writeJson(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.end(JSON.stringify(data, null, 2));
+  res.end(JSON.stringify(data));
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -184,10 +183,6 @@ async function buildMarketBetTx(context: BrowserMarketBetContext): Promise<unkno
   await ensureFastContractCompiled();
 
   const feePayer = PublicKey.fromBase58(context.walletPublicKey);
-  const account = await fetchAccount({ publicKey: feePayer });
-  if (account.error) {
-    throw new Error(`fee payer account not found: ${account.error.statusText || 'unknown'}`);
-  }
 
   const zkappAddress = PublicKey.fromBase58(context.zkappPublicKey);
   const marketKey = Field(context.marketKey);
@@ -235,10 +230,6 @@ async function buildClaimPayoutTx(context: ClaimPayoutContext): Promise<unknown>
   setActiveNetwork(context.network);
   await ensureFastContractCompiled();
   const feePayer = PublicKey.fromBase58(context.walletPublicKey);
-  const feePayerAccount = await fetchAccount({ publicKey: feePayer });
-  if (feePayerAccount.error) {
-    throw new Error(`fee payer account not found: ${feePayerAccount.error.statusText || 'unknown'}`);
-  }
   const zkappAddress = PublicKey.fromBase58(context.zkappPublicKey);
   const zkapp = new FastPredictionMarketPlatform(zkappAddress);
   const tx = await Mina.transaction({ sender: feePayer, fee: context.fee }, async () => {
@@ -275,7 +266,7 @@ async function main(): Promise<void> {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
       if (req.method === 'GET' && url.pathname === '/health') {
-        writeJson(res, 200, { ok: true, service: 'tx-prover', warmed: compilePromise !== null });
+        writeJson(res, 200, { ok: true, service: 'tx-prover', warmed: compilePromise !== null, busy: proverBusy });
         return;
       }
 
@@ -301,7 +292,7 @@ async function main(): Promise<void> {
 
       writeJson(res, 404, { error: 'not found' });
     } catch (error) {
-      writeJson(res, 500, {
+      writeJson(res, Number((error as any)?.statusCode || 500), {
         error: error instanceof Error ? error.message : String(error)
       });
     }

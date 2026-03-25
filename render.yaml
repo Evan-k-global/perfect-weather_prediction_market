@@ -50,6 +50,7 @@ services:
     env: docker
     dockerfilePath: ./deploy/Dockerfile.tx-prover
     dockerCommand: /app/deploy/start-tx-prover.sh
+    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production

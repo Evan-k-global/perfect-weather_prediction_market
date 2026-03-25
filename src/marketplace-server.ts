@@ -2613,9 +2613,9 @@ async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, u
   if (!baseUrl) throw new Error('remote tx prover not configured: set TX_PROVER_BASE_URL');
   if (!token) throw new Error('remote tx prover not configured: set TX_PROVER_ACTION_TOKEN');
   let lastError: unknown = null;
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  for (let attempt = 1; attempt <= 1; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
+    const timeout = setTimeout(() => controller.abort(), Number.parseInt(process.env.TX_PROVER_REQUEST_TIMEOUT_MS || '30000', 10));
     try {
       const res = await fetch(`${baseUrl}${endpoint}`, {
         method: 'POST',
@@ -2644,10 +2644,6 @@ async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, u
     } catch (error) {
       clearTimeout(timeout);
       lastError = error;
-      if (attempt < 2) {
-        await new Promise((resolve) => setTimeout(resolve, 750));
-        continue;
-      }
     }
   }
   throw new Error(`remote tx prover unavailable: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
