@@ -549,6 +549,18 @@ function requireHostedTxOrigin(req: IncomingMessage, url: URL, isHosted: boolean
   throw new Error(`tx request rejected: cross-origin caller ${callerLabel(req)}`);
 }
 
+function requireHostedBrowserFetch(req: IncomingMessage, isHosted: boolean): void {
+  if (!isHosted) return;
+  const secFetchSite = typeof req.headers['sec-fetch-site'] === 'string' ? req.headers['sec-fetch-site'].trim().toLowerCase() : '';
+  const secFetchMode = typeof req.headers['sec-fetch-mode'] === 'string' ? req.headers['sec-fetch-mode'].trim().toLowerCase() : '';
+  if (secFetchSite !== 'same-origin') {
+    throw new Error(`tx request rejected: invalid fetch site ${secFetchSite || 'missing'}`);
+  }
+  if (secFetchMode !== 'cors' && secFetchMode !== 'same-origin') {
+    throw new Error(`tx request rejected: invalid fetch mode ${secFetchMode || 'missing'}`);
+  }
+}
+
 function contentTypeForFile(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.html') return 'text/html; charset=utf-8';
@@ -2887,6 +2899,7 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-bet-context') {
+        requireHostedBrowserFetch(req, isHosted);
         requireHostedTxOrigin(req, url, isHosted);
         requireHostedTxSession(req, isHosted);
         const body = await readJsonBody(req);
@@ -2949,6 +2962,7 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/session') {
+        requireHostedBrowserFetch(req, isHosted);
         requireHostedTxOrigin(req, url, isHosted);
         const session = issueTxSessionToken(req);
         writeJson(res, 200, {
@@ -2960,6 +2974,7 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-bet') {
+        requireHostedBrowserFetch(req, isHosted);
         requireHostedTxOrigin(req, url, isHosted);
         requireHostedTxSession(req, isHosted);
         console.log(`[market] request path=/api/tx/market-bet caller=${callerLabel(req)}`);
@@ -3065,6 +3080,7 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/claim-payout') {
+        requireHostedBrowserFetch(req, isHosted);
         requireHostedTxOrigin(req, url, isHosted);
         requireHostedTxSession(req, isHosted);
         console.log(`[market] request path=/api/tx/claim-payout caller=${callerLabel(req)}`);
@@ -3149,6 +3165,7 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/finalize') {
+        requireHostedBrowserFetch(req, isHosted);
         requireHostedTxOrigin(req, url, isHosted);
         requireHostedTxSession(req, isHosted);
         const body = await readJsonBody(req);
