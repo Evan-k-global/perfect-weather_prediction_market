@@ -73,6 +73,7 @@ const DAILY_SETTLE_STATE_FILE = './data/daily-settle-state.json';
 const TLSN_STATUS_FILE = './data/tlsn-output/latest/status.json';
 const STARTUP_READY_FILE = './data/startup-ready.json';
 const FRESH_ZKAPP_ARCHIVE_DIR = './data/fresh-zkapp-archives';
+const HOSTED_TX_BANLIST_FILE = './data/hosted-tx-banlist.json';
 const CLAIM_STATUS_CACHE_TTL_MS = 30_000;
 const RECEIPT_BACKFILL_TTL_MS = 5 * 60_000;
 
@@ -311,6 +312,9 @@ const claimTxStatusCache = new Map<string, { status: string; fetchedAtUnixMs: nu
 const txSessionTokens = new Map<string, { caller: string; expiresAtUnixMs: number }>();
 const lastTxSessionIssuedAtByCaller = new Map<string, number>();
 const hostedTxBetCountsByFingerprint = new Map<string, { date: string; count: number }>();
+const hostedTxLastBetAtByFingerprint = new Map<string, number>();
+const persistentHostedBlockedCallers = new Set<string>();
+const persistentHostedBlockedWallets = new Set<string>();
 const privateBetQueue: PrivateQueuedBet[] = [];
 const privateBatchHistory: PrivateBatchHistoryEntry[] = [];
 let privateBatchInFlight = false;
@@ -535,6 +539,44 @@ function envCsvSet(name: string): Set<string> {
   );
 }
 
+function loadHostedTxBanlistFromDisk(): void {
+  try {
+    if (!existsSync(HOSTED_TX_BANLIST_FILE)) return;
+    const raw = readFileSync(HOSTED_TX_BANLIST_FILE, 'utf8');
+    const parsed = JSON.parse(raw) as { callers?: unknown; wallets?: unknown };
+    const callers = Array.isArray(parsed.callers) ? parsed.callers : [];
+    const wallets = Array.isArray(parsed.wallets) ? parsed.wallets : [];
+    for (const caller of callers) {
+      if (typeof caller === 'string' && caller.trim()) persistentHostedBlockedCallers.add(caller.trim());
+    }
+    for (const wallet of wallets) {
+      if (typeof wallet === 'string' && wallet.trim()) persistentHostedBlockedWallets.add(wallet.trim());
+    }
+  } catch (error) {
+    console.warn('[market] failed to load hosted tx banlist:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function saveHostedTxBanlistToDisk(): Promise<void> {
+  try {
+    await mkdir(path.dirname(HOSTED_TX_BANLIST_FILE), { recursive: true });
+    await writeFile(
+      HOSTED_TX_BANLIST_FILE,
+      JSON.stringify(
+        {
+          callers: Array.from(persistentHostedBlockedCallers).sort(),
+          wallets: Array.from(persistentHostedBlockedWallets).sort()
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+  } catch (error) {
+    console.warn('[market] failed to save hosted tx banlist:', error instanceof Error ? error.message : String(error));
+  }
+}
+
 function hostedTxCallerFingerprint(req: IncomingMessage): string {
   return `${callerLabel(req)}|${requestUserAgent(req)}`;
 }
@@ -546,31 +588,52 @@ function requireHostedTxNotBlocked(
 ): void {
   const caller = callerLabel(req);
   const blockedCallers = envCsvSet('HOSTED_TX_BLOCKED_CALLERS');
-  if (blockedCallers.has(caller)) {
+  if (blockedCallers.has(caller) || persistentHostedBlockedCallers.has(caller)) {
     logHostedTxRequest(req, path, 'reject', appendLogDetail('', `blocked-caller=${caller}`));
     throw new Error('tx request rejected: blocked caller');
   }
   const wallet = detail.walletPublicKey || null;
   if (wallet) {
     const blockedWallets = envCsvSet('HOSTED_TX_BLOCKED_WALLETS');
-    if (blockedWallets.has(wallet)) {
+    if (blockedWallets.has(wallet) || persistentHostedBlockedWallets.has(wallet)) {
       logHostedTxRequest(req, path, 'reject', appendLogDetail('', `blocked-wallet=${wallet}`));
       throw new Error('tx request rejected: blocked wallet');
     }
   }
 }
 
-function recordHostedMarketBetAndMaybeBlock(req: IncomingMessage, path: string): void {
+async function recordHostedMarketBetAndMaybeBlock(
+  req: IncomingMessage,
+  path: string,
+  walletPublicKey: string
+): Promise<void> {
+  const fingerprint = hostedTxCallerFingerprint(req);
+  const cooldownMs = Number.parseInt(process.env.HOSTED_TX_MIN_SECONDS_BET_COOLDOWN || '60', 10) * 1000;
+  const lastBetAt = hostedTxLastBetAtByFingerprint.get(fingerprint) || 0;
+  if (cooldownMs > 0 && Date.now() - lastBetAt < cooldownMs) {
+    logHostedTxRequest(req, path, 'reject', `bet-cooldown-ms=${cooldownMs}`);
+    throw new Error('tx request rejected: hosted bet cooldown active');
+  }
+  hostedTxLastBetAtByFingerprint.set(fingerprint, Date.now());
+
   const maxPerDay = Number.parseInt(process.env.HOSTED_TX_MAX_BETS_PER_BROWSER_PER_DAY || '24', 10);
   if (!(maxPerDay > 0)) return;
   const todayIso = currentLocalDate();
-  const fingerprint = hostedTxCallerFingerprint(req);
   const existing = hostedTxBetCountsByFingerprint.get(fingerprint);
   const nextCount = existing && existing.date === todayIso ? existing.count + 1 : 1;
   hostedTxBetCountsByFingerprint.set(fingerprint, { date: todayIso, count: nextCount });
   if (nextCount > maxPerDay) {
-    logHostedTxRequest(req, path, 'reject', `daily-browser-bet-limit count=${nextCount} max=${maxPerDay}`);
-    throw new Error('tx request rejected: daily browser bet limit exceeded');
+    const caller = callerLabel(req);
+    persistentHostedBlockedCallers.add(caller);
+    persistentHostedBlockedWallets.add(walletPublicKey);
+    await saveHostedTxBanlistToDisk();
+    logHostedTxRequest(
+      req,
+      path,
+      'reject',
+      `auto-banned count=${nextCount} max=${maxPerDay} caller=${caller} wallet=${walletPublicKey}`
+    );
+    throw new Error('tx request rejected: hosted browser permanently banned after daily abuse limit');
   }
 }
 
@@ -2834,6 +2897,7 @@ async function processPrivateBetBatch(params: {
 }
 
 async function main(): Promise<void> {
+  loadHostedTxBanlistFromDisk();
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const projectRoot = path.resolve(__dirname, '..');
@@ -3087,7 +3151,7 @@ async function main(): Promise<void> {
         const addYesBet = requireNonNegativeNumber(body.addYesBet, 'addYesBet');
         const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
         requireHostedTxNotBlocked(req, url.pathname, { walletPublicKey });
-        recordHostedMarketBetAndMaybeBlock(req, url.pathname);
+        await recordHostedMarketBetAndMaybeBlock(req, url.pathname, walletPublicKey);
         logHostedTxRequest(
           req,
           url.pathname,
