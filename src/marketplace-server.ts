@@ -1593,6 +1593,11 @@ async function ensureRecentlySyncedState(projectRoot: string, maxAgeMs = 5 * 60 
   await refreshState(projectRoot);
 }
 
+async function ensureFreshHostedProvingState(projectRoot: string): Promise<void> {
+  const hostedFreshnessMs = Number.parseInt(process.env.HOSTED_PROVER_STATE_MAX_AGE_MS || '15000', 10);
+  await ensureRecentlySyncedState(projectRoot, hostedFreshnessMs);
+}
+
 async function ensureDailyMarkets(projectRoot: string): Promise<void> {
   await refreshState(projectRoot);
   try {
@@ -2885,7 +2890,11 @@ async function main(): Promise<void> {
           typeof body.thresholdF === 'number' && Number.isFinite(body.thresholdF) ? Math.round(body.thresholdF) : null;
         const userId = walletPublicKey;
         if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
-        await ensureRecentlySyncedState(projectRoot);
+        if (useRemoteTxProver() && isHosted) {
+          await ensureFreshHostedProvingState(projectRoot);
+        } else {
+          await ensureRecentlySyncedState(projectRoot);
+        }
 
         const ensureLocalBettableMarket = async () => {
           let currentState = await loadOperatorState(defaultStatePath);
@@ -2977,7 +2986,11 @@ async function main(): Promise<void> {
         const marketKey = requireString(body.marketKey, 'marketKey');
         const positionKey = requireString(body.positionKey, 'positionKey');
         const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
-        await ensureRecentlySyncedState(projectRoot);
+        if (useRemoteTxProver() && isHosted) {
+          await ensureFreshHostedProvingState(projectRoot);
+        } else {
+          await ensureRecentlySyncedState(projectRoot);
+        }
         let fee: string;
         let payoutSummary: { payoutTmina: string; marketKey: string; positionKey: string };
         let tx: unknown;
