@@ -493,6 +493,27 @@ function callerLabel(req: IncomingMessage): string {
   return req.socket.remoteAddress || 'unknown';
 }
 
+function requireHostedTxOrigin(req: IncomingMessage, url: URL, isHosted: boolean): void {
+  if (!isHosted) return;
+  const host = req.headers.host;
+  if (!host) throw new Error('tx request rejected: missing host');
+  const expectedHost = url.host || host;
+  const rawOrigin = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : '';
+  const rawReferer = typeof req.headers.referer === 'string' ? req.headers.referer.trim() : '';
+
+  const matchesHost = (value: string): boolean => {
+    if (!value) return false;
+    try {
+      return new URL(value).host === expectedHost;
+    } catch {
+      return false;
+    }
+  };
+
+  if (matchesHost(rawOrigin) || matchesHost(rawReferer)) return;
+  throw new Error(`tx request rejected: cross-origin caller ${callerLabel(req)}`);
+}
+
 function contentTypeForFile(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.html') return 'text/html; charset=utf-8';
@@ -2831,6 +2852,7 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-bet-context') {
+        requireHostedTxOrigin(req, url, isHosted);
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const addTotalBet = requireNumber(body.addTotalBet, 'addTotalBet');
@@ -2891,6 +2913,7 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-bet') {
+        requireHostedTxOrigin(req, url, isHosted);
         console.log(`[market] request path=/api/tx/market-bet caller=${callerLabel(req)}`);
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
@@ -2994,6 +3017,7 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/claim-payout') {
+        requireHostedTxOrigin(req, url, isHosted);
         console.log(`[market] request path=/api/tx/claim-payout caller=${callerLabel(req)}`);
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
@@ -3076,6 +3100,7 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/finalize') {
+        requireHostedTxOrigin(req, url, isHosted);
         const body = await readJsonBody(req);
         const intentId = requireString(body.intentId, 'intentId');
         const txHash = requireString(body.txHash, 'txHash');
