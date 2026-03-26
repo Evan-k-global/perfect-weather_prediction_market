@@ -523,6 +523,38 @@ function appendLogDetail(detail: string, extra: string): string {
   return detail ? `${detail} ${extra}` : extra;
 }
 
+function envCsvSet(name: string): Set<string> {
+  const raw = process.env[name];
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+  );
+}
+
+function requireHostedTxNotBlocked(
+  req: IncomingMessage,
+  path: string,
+  detail: { walletPublicKey?: string | null } = {}
+): void {
+  const caller = callerLabel(req);
+  const blockedCallers = envCsvSet('HOSTED_TX_BLOCKED_CALLERS');
+  if (blockedCallers.has(caller)) {
+    logHostedTxRequest(req, path, 'reject', appendLogDetail('', `blocked-caller=${caller}`));
+    throw new Error('tx request rejected: blocked caller');
+  }
+  const wallet = detail.walletPublicKey || null;
+  if (wallet) {
+    const blockedWallets = envCsvSet('HOSTED_TX_BLOCKED_WALLETS');
+    if (blockedWallets.has(wallet)) {
+      logHostedTxRequest(req, path, 'reject', appendLogDetail('', `blocked-wallet=${wallet}`));
+      throw new Error('tx request rejected: blocked wallet');
+    }
+  }
+}
+
 function pruneExpiredTxSessions(now = Date.now()): void {
   for (const [token, entry] of txSessionTokens.entries()) {
     if (entry.expiresAtUnixMs <= now) txSessionTokens.delete(token);
@@ -3015,6 +3047,7 @@ async function main(): Promise<void> {
       if (req.method === 'POST' && url.pathname === '/api/tx/session') {
         requireHostedBrowserFetch(req, isHosted, url.pathname);
         requireHostedTxOrigin(req, url, isHosted, url.pathname);
+        requireHostedTxNotBlocked(req, url.pathname);
         const session = issueTxSessionToken(req);
         logHostedTxRequest(req, url.pathname, 'issue-session', `expiresAtUnixMs=${session.expiresAtUnixMs}`);
         writeJson(res, 200, {
@@ -3034,6 +3067,7 @@ async function main(): Promise<void> {
         const addTotalBet = requireNumber(body.addTotalBet, 'addTotalBet');
         const addYesBet = requireNonNegativeNumber(body.addYesBet, 'addYesBet');
         const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
+        requireHostedTxNotBlocked(req, url.pathname, { walletPublicKey });
         logHostedTxRequest(
           req,
           url.pathname,
@@ -3144,6 +3178,7 @@ async function main(): Promise<void> {
         const marketKey = requireString(body.marketKey, 'marketKey');
         const positionKey = requireString(body.positionKey, 'positionKey');
         const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
+        requireHostedTxNotBlocked(req, url.pathname, { walletPublicKey });
         logHostedTxRequest(
           req,
           url.pathname,
