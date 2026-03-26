@@ -66,6 +66,19 @@ let pendingRequestId: string | null = null;
 let pendingRequest: PendingRequest | null = null;
 let stdoutBuffer = '';
 let activeJobTimer: NodeJS.Timeout | null = null;
+let activeJobStartedAtUnixMs = 0;
+let acceptedJobCount = 0;
+
+function callerLabel(req: IncomingMessage): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  if (Array.isArray(forwarded) && forwarded[0]) {
+    return forwarded[0].split(',')[0].trim();
+  }
+  return req.socket.remoteAddress || 'unknown';
+}
 
 function writeJson(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
@@ -97,6 +110,7 @@ function rejectPending(message: string): void {
   pendingRequest = null;
   pendingRequestId = null;
   workerBusy = false;
+  activeJobStartedAtUnixMs = 0;
 }
 
 function handleWorkerLine(line: string): void {
@@ -120,6 +134,7 @@ function handleWorkerLine(line: string): void {
     activeJobTimer = null;
   }
   workerBusy = false;
+  activeJobStartedAtUnixMs = 0;
   if (message.ok && 'tx' in message) {
     request.resolve(message.tx);
     return;
@@ -194,6 +209,8 @@ async function proveWithWorker(kind: 'market-bet' | 'claim-payout', context: unk
   }
   const id = randomUUID();
   workerBusy = true;
+  activeJobStartedAtUnixMs = Date.now();
+  acceptedJobCount += 1;
   pendingRequestId = id;
   activeJobTimer = setTimeout(() => {
     recycleWorker(`job timed out after ${JOB_TIMEOUT_MS}ms requestId=${id}`);
@@ -230,12 +247,15 @@ async function main(): Promise<void> {
           service: 'tx-prover',
           warmed: workerReady,
           busy: workerBusy,
-          workerAlive: Boolean(worker)
+          workerAlive: Boolean(worker),
+          acceptedJobCount,
+          activeJobAgeMs: activeJobStartedAtUnixMs > 0 ? Date.now() - activeJobStartedAtUnixMs : 0
         });
         return;
       }
       if (req.method === 'POST' && url.pathname === '/prove/market-bet') {
         requireAuth(req);
+        console.log(`[tx-prover] request kind=market-bet caller=${callerLabel(req)} busy=${workerBusy}`);
         const body = await readJsonBody(req);
         const context = body.context as BrowserMarketBetContext | undefined;
         if (!context) throw new Error('context is required');
@@ -245,6 +265,7 @@ async function main(): Promise<void> {
       }
       if (req.method === 'POST' && url.pathname === '/prove/claim-payout') {
         requireAuth(req);
+        console.log(`[tx-prover] request kind=claim-payout caller=${callerLabel(req)} busy=${workerBusy}`);
         const body = await readJsonBody(req);
         const context = body.context as ClaimPayoutContext | undefined;
         if (!context) throw new Error('context is required');
