@@ -84,6 +84,28 @@ function callerLabel(req: IncomingMessage): string {
   return req.socket.remoteAddress || 'unknown';
 }
 
+function requestUserAgent(req: IncomingMessage): string {
+  const value = req.headers['user-agent'];
+  return typeof value === 'string' ? value : Array.isArray(value) ? value[0] || '' : '';
+}
+
+function requestHeaderLabel(req: IncomingMessage, name: string): string {
+  const value = req.headers[name.toLowerCase()];
+  return typeof value === 'string' ? value : Array.isArray(value) ? value[0] || '' : '';
+}
+
+function logProverRequest(req: IncomingMessage, kind: 'market-bet' | 'claim-payout', event: string): void {
+  const caller = callerLabel(req);
+  const origin = requestHeaderLabel(req, 'origin') || '-';
+  const referer = requestHeaderLabel(req, 'referer') || '-';
+  const secFetchSite = requestHeaderLabel(req, 'sec-fetch-site') || '-';
+  const secFetchMode = requestHeaderLabel(req, 'sec-fetch-mode') || '-';
+  const userAgent = requestUserAgent(req) || '-';
+  console.log(
+    `[tx-prover] ${event} kind=${kind} caller=${caller} busy=${workerBusy} origin=${origin} referer=${referer} secFetchSite=${secFetchSite} secFetchMode=${secFetchMode} ua=${JSON.stringify(userAgent)}`
+  );
+}
+
 function isPrivateCaller(caller: string): boolean {
   if (!caller) return false;
   if (
@@ -289,7 +311,7 @@ async function main(): Promise<void> {
       }
       if (req.method === 'POST' && url.pathname === '/prove/market-bet') {
         requireAuth(req);
-        console.log(`[tx-prover] request kind=market-bet caller=${callerLabel(req)} busy=${workerBusy}`);
+        logProverRequest(req, 'market-bet', 'request');
         const body = await readJsonBody(req);
         const context = body.context as BrowserMarketBetContext | undefined;
         if (!context) throw new Error('context is required');
@@ -299,7 +321,7 @@ async function main(): Promise<void> {
       }
       if (req.method === 'POST' && url.pathname === '/prove/claim-payout') {
         requireAuth(req);
-        console.log(`[tx-prover] request kind=claim-payout caller=${callerLabel(req)} busy=${workerBusy}`);
+        logProverRequest(req, 'claim-payout', 'request');
         const body = await readJsonBody(req);
         const context = body.context as ClaimPayoutContext | undefined;
         if (!context) throw new Error('context is required');

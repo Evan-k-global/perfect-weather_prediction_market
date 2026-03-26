@@ -494,6 +494,29 @@ function callerLabel(req: IncomingMessage): string {
   return req.socket.remoteAddress || 'unknown';
 }
 
+function requestUserAgent(req: IncomingMessage): string {
+  const value = req.headers['user-agent'];
+  return typeof value === 'string' ? value : Array.isArray(value) ? value[0] || '' : '';
+}
+
+function requestHeaderLabel(req: IncomingMessage, name: string): string {
+  const value = req.headers[name.toLowerCase()];
+  return typeof value === 'string' ? value : Array.isArray(value) ? value[0] || '' : '';
+}
+
+function logHostedTxRequest(req: IncomingMessage, path: string, event: string, detail = ''): void {
+  const caller = callerLabel(req);
+  const origin = requestHeaderLabel(req, 'origin') || '-';
+  const referer = requestHeaderLabel(req, 'referer') || '-';
+  const secFetchSite = requestHeaderLabel(req, 'sec-fetch-site') || '-';
+  const secFetchMode = requestHeaderLabel(req, 'sec-fetch-mode') || '-';
+  const userAgent = requestUserAgent(req) || '-';
+  const suffix = detail ? ` detail=${detail}` : '';
+  console.log(
+    `[market] tx ${event} path=${path} caller=${caller} origin=${origin} referer=${referer} secFetchSite=${secFetchSite} secFetchMode=${secFetchMode} ua=${JSON.stringify(userAgent)}${suffix}`
+  );
+}
+
 function pruneExpiredTxSessions(now = Date.now()): void {
   for (const [token, entry] of txSessionTokens.entries()) {
     if (entry.expiresAtUnixMs <= now) txSessionTokens.delete(token);
@@ -511,7 +534,7 @@ function issueTxSessionToken(req: IncomingMessage): { token: string; expiresAtUn
   return { token, expiresAtUnixMs };
 }
 
-function requireHostedTxSession(req: IncomingMessage, isHosted: boolean): void {
+function requireHostedTxSession(req: IncomingMessage, isHosted: boolean, path: string): void {
   if (!isHosted) return;
   pruneExpiredTxSessions();
   const supplied = typeof req.headers['x-market-tx-session'] === 'string'
@@ -519,19 +542,29 @@ function requireHostedTxSession(req: IncomingMessage, isHosted: boolean): void {
     : Array.isArray(req.headers['x-market-tx-session'])
     ? (req.headers['x-market-tx-session'][0] || '').trim()
     : '';
-  if (!supplied) throw new Error('tx request rejected: missing tx session');
+  if (!supplied) {
+    logHostedTxRequest(req, path, 'reject', 'missing-tx-session');
+    throw new Error('tx request rejected: missing tx session');
+  }
   const entry = txSessionTokens.get(supplied);
-  if (!entry) throw new Error('tx request rejected: invalid or expired tx session');
+  if (!entry) {
+    logHostedTxRequest(req, path, 'reject', 'invalid-or-expired-tx-session');
+    throw new Error('tx request rejected: invalid or expired tx session');
+  }
   const caller = callerLabel(req);
   if (entry.caller !== caller) {
+    logHostedTxRequest(req, path, 'reject', `tx-session-caller-mismatch expected=${entry.caller}`);
     throw new Error(`tx request rejected: tx session caller mismatch ${caller}`);
   }
 }
 
-function requireHostedTxOrigin(req: IncomingMessage, url: URL, isHosted: boolean): void {
+function requireHostedTxOrigin(req: IncomingMessage, url: URL, isHosted: boolean, path: string): void {
   if (!isHosted) return;
   const host = req.headers.host;
-  if (!host) throw new Error('tx request rejected: missing host');
+  if (!host) {
+    logHostedTxRequest(req, path, 'reject', 'missing-host');
+    throw new Error('tx request rejected: missing host');
+  }
   const expectedHost = url.host || host;
   const rawOrigin = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : '';
   const rawReferer = typeof req.headers.referer === 'string' ? req.headers.referer.trim() : '';
@@ -546,17 +579,20 @@ function requireHostedTxOrigin(req: IncomingMessage, url: URL, isHosted: boolean
   };
 
   if (matchesHost(rawOrigin) || matchesHost(rawReferer)) return;
+  logHostedTxRequest(req, path, 'reject', `cross-origin expectedHost=${expectedHost}`);
   throw new Error(`tx request rejected: cross-origin caller ${callerLabel(req)}`);
 }
 
-function requireHostedBrowserFetch(req: IncomingMessage, isHosted: boolean): void {
+function requireHostedBrowserFetch(req: IncomingMessage, isHosted: boolean, path: string): void {
   if (!isHosted) return;
   const secFetchSite = typeof req.headers['sec-fetch-site'] === 'string' ? req.headers['sec-fetch-site'].trim().toLowerCase() : '';
   const secFetchMode = typeof req.headers['sec-fetch-mode'] === 'string' ? req.headers['sec-fetch-mode'].trim().toLowerCase() : '';
   if (secFetchSite !== 'same-origin') {
+    logHostedTxRequest(req, path, 'reject', `invalid-fetch-site=${secFetchSite || 'missing'}`);
     throw new Error(`tx request rejected: invalid fetch site ${secFetchSite || 'missing'}`);
   }
   if (secFetchMode !== 'cors' && secFetchMode !== 'same-origin') {
+    logHostedTxRequest(req, path, 'reject', `invalid-fetch-mode=${secFetchMode || 'missing'}`);
     throw new Error(`tx request rejected: invalid fetch mode ${secFetchMode || 'missing'}`);
   }
 }
@@ -2899,9 +2935,10 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-bet-context') {
-        requireHostedBrowserFetch(req, isHosted);
-        requireHostedTxOrigin(req, url, isHosted);
-        requireHostedTxSession(req, isHosted);
+        requireHostedBrowserFetch(req, isHosted, url.pathname);
+        requireHostedTxOrigin(req, url, isHosted, url.pathname);
+        requireHostedTxSession(req, isHosted, url.pathname);
+        logHostedTxRequest(req, url.pathname, 'accept');
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const addTotalBet = requireNumber(body.addTotalBet, 'addTotalBet');
@@ -2962,9 +2999,10 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/session') {
-        requireHostedBrowserFetch(req, isHosted);
-        requireHostedTxOrigin(req, url, isHosted);
+        requireHostedBrowserFetch(req, isHosted, url.pathname);
+        requireHostedTxOrigin(req, url, isHosted, url.pathname);
         const session = issueTxSessionToken(req);
+        logHostedTxRequest(req, url.pathname, 'issue-session', `expiresAtUnixMs=${session.expiresAtUnixMs}`);
         writeJson(res, 200, {
           ok: true,
           token: session.token,
@@ -2974,10 +3012,10 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-bet') {
-        requireHostedBrowserFetch(req, isHosted);
-        requireHostedTxOrigin(req, url, isHosted);
-        requireHostedTxSession(req, isHosted);
-        console.log(`[market] request path=/api/tx/market-bet caller=${callerLabel(req)}`);
+        requireHostedBrowserFetch(req, isHosted, url.pathname);
+        requireHostedTxOrigin(req, url, isHosted, url.pathname);
+        requireHostedTxSession(req, isHosted, url.pathname);
+        logHostedTxRequest(req, url.pathname, 'accept');
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const addTotalBet = requireNumber(body.addTotalBet, 'addTotalBet');
@@ -3080,10 +3118,10 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/claim-payout') {
-        requireHostedBrowserFetch(req, isHosted);
-        requireHostedTxOrigin(req, url, isHosted);
-        requireHostedTxSession(req, isHosted);
-        console.log(`[market] request path=/api/tx/claim-payout caller=${callerLabel(req)}`);
+        requireHostedBrowserFetch(req, isHosted, url.pathname);
+        requireHostedTxOrigin(req, url, isHosted, url.pathname);
+        requireHostedTxSession(req, isHosted, url.pathname);
+        logHostedTxRequest(req, url.pathname, 'accept');
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const positionKey = requireString(body.positionKey, 'positionKey');
@@ -3165,9 +3203,10 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/finalize') {
-        requireHostedBrowserFetch(req, isHosted);
-        requireHostedTxOrigin(req, url, isHosted);
-        requireHostedTxSession(req, isHosted);
+        requireHostedBrowserFetch(req, isHosted, url.pathname);
+        requireHostedTxOrigin(req, url, isHosted, url.pathname);
+        requireHostedTxSession(req, isHosted, url.pathname);
+        logHostedTxRequest(req, url.pathname, 'accept');
         const body = await readJsonBody(req);
         const intentId = requireString(body.intentId, 'intentId');
         const txHash = requireString(body.txHash, 'txHash');
