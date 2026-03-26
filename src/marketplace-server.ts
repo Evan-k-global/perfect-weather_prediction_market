@@ -2612,45 +2612,37 @@ async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, u
   const token = getRemoteTxProverToken();
   if (!baseUrl) throw new Error('remote tx prover not configured: set TX_PROVER_BASE_URL');
   if (!token) throw new Error('remote tx prover not configured: set TX_PROVER_ACTION_TOKEN');
-  let lastError: unknown = null;
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
-    try {
-      const res = await fetch(`${baseUrl}${endpoint}`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-prover-token': token
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal
-      });
-      const text = await res.text();
-      let data: any = null;
-      if (text) {
-        try {
-          data = JSON.parse(text);
-        } catch {
-          const snippet = text.slice(0, 160).replace(/\s+/g, ' ').trim();
-          throw new Error(`remote tx prover returned non-JSON response (${res.status}): ${snippet}`);
-        }
-      }
-      if (!res.ok) {
-        throw new Error((data && data.error) || `remote tx prover request ${endpoint} failed with status ${res.status}`);
-      }
-      clearTimeout(timeout);
-      return data as T;
-    } catch (error) {
-      clearTimeout(timeout);
-      lastError = error;
-      if (attempt < 2) {
-        await new Promise((resolve) => setTimeout(resolve, 750));
-        continue;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000);
+  try {
+    const res = await fetch(`${baseUrl}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-prover-token': token
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    const text = await res.text();
+    let data: any = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        const snippet = text.slice(0, 160).replace(/\s+/g, ' ').trim();
+        throw new Error(`remote tx prover returned non-JSON response (${res.status}): ${snippet}`);
       }
     }
+    if (!res.ok) {
+      throw new Error((data && data.error) || `remote tx prover request ${endpoint} failed with status ${res.status}`);
+    }
+    return data as T;
+  } catch (error) {
+    throw new Error(`remote tx prover unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    clearTimeout(timeout);
   }
-  throw new Error(`remote tx prover unavailable: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
 async function processPrivateBetBatch(params: {

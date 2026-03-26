@@ -10,6 +10,7 @@ const HOST = process.env.TX_PROVER_HOST || '0.0.0.0';
 const ACTION_TOKEN = (process.env.TX_PROVER_ACTION_TOKEN || '').trim();
 const MAX_OLD_SPACE_MB = process.env.TX_PROVER_NODE_MAX_OLD_SPACE_MB || '4096';
 const VERBOSE = process.env.TX_PROVER_VERBOSE === '1';
+const JOB_TIMEOUT_MS = Number.parseInt(process.env.TX_PROVER_JOB_TIMEOUT_MS || '90000', 10);
 
 type BrowserMarketBetContext = {
   network: { graphql: string; networkId: string };
@@ -64,6 +65,7 @@ let workerBusy = false;
 let pendingRequestId: string | null = null;
 let pendingRequest: PendingRequest | null = null;
 let stdoutBuffer = '';
+let activeJobTimer: NodeJS.Timeout | null = null;
 
 function writeJson(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
@@ -87,6 +89,10 @@ function requireAuth(req: IncomingMessage): void {
 
 function rejectPending(message: string): void {
   if (!pendingRequest) return;
+  if (activeJobTimer) {
+    clearTimeout(activeJobTimer);
+    activeJobTimer = null;
+  }
   pendingRequest.reject(new Error(message));
   pendingRequest = null;
   pendingRequestId = null;
@@ -109,6 +115,10 @@ function handleWorkerLine(line: string): void {
   const request = pendingRequest;
   pendingRequest = null;
   pendingRequestId = null;
+  if (activeJobTimer) {
+    clearTimeout(activeJobTimer);
+    activeJobTimer = null;
+  }
   workerBusy = false;
   if (message.ok && 'tx' in message) {
     request.resolve(message.tx);
@@ -157,6 +167,19 @@ function startWorker(): void {
   });
 }
 
+function recycleWorker(reason: string): void {
+  if (!worker) return;
+  if (VERBOSE) {
+    console.warn(`[tx-prover] recycling worker: ${reason}`);
+  }
+  const current = worker;
+  worker = null;
+  workerReady = false;
+  try {
+    current.kill('SIGKILL');
+  } catch {}
+}
+
 async function proveWithWorker(kind: 'market-bet' | 'claim-payout', context: unknown): Promise<unknown> {
   startWorker();
   if (!worker || !workerReady) {
@@ -172,6 +195,9 @@ async function proveWithWorker(kind: 'market-bet' | 'claim-payout', context: unk
   const id = randomUUID();
   workerBusy = true;
   pendingRequestId = id;
+  activeJobTimer = setTimeout(() => {
+    recycleWorker(`job timed out after ${JOB_TIMEOUT_MS}ms requestId=${id}`);
+  }, JOB_TIMEOUT_MS);
   const leanContext =
     kind === 'market-bet' && context && typeof context === 'object'
       ? (() => {
