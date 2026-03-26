@@ -6,6 +6,7 @@ import {
   Field,
   MerkleMapWitness,
   Mina,
+  PrivateKey,
   PublicKey,
   UInt32,
   UInt64,
@@ -18,7 +19,7 @@ import type { StoredMarketLeaf } from './state-store.js';
 
 const PORT = Number.parseInt(process.env.TX_PROVER_PORT || process.env.PORT || '10001', 10);
 const HOST = process.env.TX_PROVER_HOST || '0.0.0.0';
-const ACTION_TOKEN = (process.env.TX_PROVER_ACTION_TOKEN || '').trim();
+const ACTION_TOKEN = (process.env.TX_PROVER_ACTION_TOKEN || process.env.ORACLE_ACTION_TOKEN || '').trim();
 
 type SerializedMerkleWitness = {
   isLefts: boolean[];
@@ -71,7 +72,6 @@ type ClaimPayoutContext = {
 let compilePromise: Promise<unknown> | null = null;
 let activeNetworkKey = '';
 let proveQueue: Promise<void> = Promise.resolve();
-let inFlightProofs = 0;
 
 async function withProverSlot<T>(work: () => Promise<T>): Promise<T> {
   const previous = proveQueue;
@@ -80,11 +80,9 @@ async function withProverSlot<T>(work: () => Promise<T>): Promise<T> {
     release = resolve;
   });
   await previous;
-  inFlightProofs += 1;
   try {
     return await work();
   } finally {
-    inFlightProofs = Math.max(0, inFlightProofs - 1);
     release();
   }
 }
@@ -92,7 +90,7 @@ async function withProverSlot<T>(work: () => Promise<T>): Promise<T> {
 function writeJson(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.end(JSON.stringify(data));
+  res.end(JSON.stringify(data, null, 2));
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -111,6 +109,11 @@ function requireAuth(req: IncomingMessage): void {
   if (!supplied || supplied !== ACTION_TOKEN) {
     throw new Error('tx prover authorization failed');
   }
+}
+
+function requireString(value: unknown, name: string): string {
+  if (typeof value !== 'string' || value.length === 0) throw new Error(`${name} must be a non-empty string`);
+  return value;
 }
 
 function setActiveNetwork(network: { graphql: string; networkId: string }): void {
@@ -272,13 +275,7 @@ async function main(): Promise<void> {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
       if (req.method === 'GET' && url.pathname === '/health') {
-        writeJson(res, 200, {
-          ok: true,
-          service: 'tx-prover',
-          warmed: compilePromise !== null,
-          busy: inFlightProofs > 0,
-          inFlightProofs
-        });
+        writeJson(res, 200, { ok: true, service: 'tx-prover', warmed: compilePromise !== null });
         return;
       }
 
@@ -287,7 +284,6 @@ async function main(): Promise<void> {
         const body = await readJsonBody(req);
         const context = body.context as BrowserMarketBetContext | undefined;
         if (!context) throw new Error('context is required');
-        console.log(`[tx-prover] request kind=market-bet inFlight=${inFlightProofs}`);
         const tx = await withProverSlot(() => buildMarketBetTx(context));
         writeJson(res, 200, { ok: true, tx });
         return;
@@ -298,7 +294,6 @@ async function main(): Promise<void> {
         const body = await readJsonBody(req);
         const context = body.context as ClaimPayoutContext | undefined;
         if (!context) throw new Error('context is required');
-        console.log(`[tx-prover] request kind=claim-payout inFlight=${inFlightProofs}`);
         const tx = await withProverSlot(() => buildClaimPayoutTx(context));
         writeJson(res, 200, { ok: true, tx });
         return;

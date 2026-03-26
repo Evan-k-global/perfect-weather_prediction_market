@@ -1649,6 +1649,19 @@ async function withFreshMarketStateRetry<T>(projectRoot: string, work: () => Pro
   }
 }
 
+async function withRemoteProverStateRetry<T>(
+  projectRoot: string,
+  buildAndProve: () => Promise<T>
+): Promise<T> {
+  try {
+    return await buildAndProve();
+  } catch (error) {
+    if (!isRemoteProverStateDriftError(error)) throw error;
+    await refreshState(projectRoot);
+    return await buildAndProve();
+  }
+}
+
 function serializeMerkleWitness(witness: { isLefts: Bool[]; siblings: Field[] }): SerializedMerkleWitness {
   return {
     isLefts: witness.isLefts.map((value) => value.toBoolean()),
@@ -2602,7 +2615,7 @@ async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, u
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Number.parseInt(process.env.TX_PROVER_REQUEST_TIMEOUT_MS || '120000', 10));
+    const timeout = setTimeout(() => controller.abort(), 120_000);
     try {
       const res = await fetch(`${baseUrl}${endpoint}`, {
         method: 'POST',
@@ -2893,16 +2906,6 @@ async function main(): Promise<void> {
           typeof body.thresholdF === 'number' && Number.isFinite(body.thresholdF) ? Math.round(body.thresholdF) : null;
         const userId = walletPublicKey;
         if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
-        {
-          const todayIso = currentActiveMarketDate();
-          if (marketDate < todayIso) {
-            throw new Error(`market date ${marketDate} is closed (past date). Today is ${todayIso}`);
-          }
-          const maxDate = isoDateOffset(todayIso, 5);
-          if (marketDate > maxDate) {
-            throw new Error(`market date ${marketDate} is outside rolling window (${todayIso} to ${maxDate})`);
-          }
-        }
         await ensureRecentlySyncedState(projectRoot);
 
         const ensureLocalBettableMarket = async () => {
@@ -2910,10 +2913,8 @@ async function main(): Promise<void> {
           let selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
           let createdOnDemand = false;
           if (!selectedMarket) {
-            if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
-              throw new Error(`market ${marketDate} is not active on-chain yet. Wait for oracle sync, then try again.`);
-            }
             await ensureDailyMarkets(projectRoot);
+            await refreshState(projectRoot);
             currentState = await loadOperatorState(defaultStatePath);
             selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
             createdOnDemand = true;
@@ -2934,7 +2935,7 @@ async function main(): Promise<void> {
         }
 
         const txResult = useRemoteTxProver()
-          ? await (async () => {
+          ? await withRemoteProverStateRetry(projectRoot, async () => {
               const built = await withFreshMarketStateRetry(projectRoot, async () =>
                 buildBrowserFeePayerMarketBetContext({
                   stateFile: defaultStatePath,
@@ -2946,14 +2947,11 @@ async function main(): Promise<void> {
                   userId
                 })
               );
-              console.log(
-                `[market] prove start kind=market-bet wallet=${walletPublicKey} marketKey=${selectedMarket.marketKey} stake=${Math.floor(addTotalBet)} side=${Math.floor(addYesBet)}`
-              );
               const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/market-bet', {
                 context: built.buildContext
               });
               return { built, tx: proved.tx };
-            })()
+            })
             : useLocalServerBetProving()
             ? await (async () => {
                 const built = await withFreshMarketStateRetry(projectRoot, async () =>
@@ -3006,7 +3004,7 @@ async function main(): Promise<void> {
         let mode: string;
 
         if (useRemoteTxProver()) {
-          const builtAndTx = await (async () => {
+          const builtAndTx = await withRemoteProverStateRetry(projectRoot, async () => {
             const built = await withFreshMarketStateRetry(projectRoot, async () =>
               buildClaimPayoutContext({
                 stateFile: defaultStatePath,
@@ -3015,14 +3013,11 @@ async function main(): Promise<void> {
                 feePayerPublicKey: walletPublicKey
               })
             );
-            console.log(
-              `[market] prove start kind=claim-payout wallet=${walletPublicKey} marketKey=${marketKey} positionKey=${positionKey}`
-            );
             const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/claim-payout', {
               context: built.buildContext
             });
             return { built, tx: proved.tx };
-          })();
+          });
           tx = builtAndTx.tx;
           const built = builtAndTx.built;
           fee = built.fee;
@@ -3085,7 +3080,7 @@ async function main(): Promise<void> {
           const marketKey = requireString(body.marketKey, 'marketKey');
           const positionKey = requireString(body.positionKey, 'positionKey');
           const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
-          let claimStatus: 'submitted' | 'confirmed' | 'claimable' | 'not-applicable' = await recoverAndRecordReceiptClaimFinalize({
+          const claimStatus = await recoverAndRecordReceiptClaimFinalize({
             state,
             positionKey,
             marketKey,
@@ -3094,19 +3089,6 @@ async function main(): Promise<void> {
             recordedAtUnixMs: Date.now()
           });
           await saveOperatorState(defaultStatePath, state);
-          try {
-            await refreshState(projectRoot);
-            const refreshed = await loadOperatorState(defaultStatePath);
-            finalizeReceiptClaimStatuses(refreshed);
-            claimStatus =
-              refreshed.positionMeta?.[positionKey]?.claimStatus ||
-              refreshed.receiptMeta?.[positionKey]?.claimStatus ||
-              claimStatus;
-            await saveOperatorState(defaultStatePath, refreshed);
-          } catch (error) {
-            lastStateRefreshAtUnixMs = 0;
-            console.warn('[finalize] post-claim sync failed:', error instanceof Error ? error.message : String(error));
-          }
           writeJson(res, 200, {
             ok: true,
             recovered: true,
@@ -3123,9 +3105,12 @@ async function main(): Promise<void> {
           throw new Error('intent expired; rebuild transaction');
         }
         if (intent.type === 'market-bet' && intent.newLeaf) {
+          state.markets[intent.marketKey] = intent.newLeaf;
+          state.receipts = state.receipts || {};
           if (!intent.receiptCommitment) {
             throw new Error('receipt commitment missing for market bet finalize');
           }
+          state.receipts[intent.positionKey] = intent.receiptCommitment;
           state.receiptMeta = state.receiptMeta || {};
           state.receiptMeta[intent.positionKey] = {
             zkappPublicKey: state.zkappPublicKey || getZkappPublicKey().toBase58(),
@@ -3152,36 +3137,23 @@ async function main(): Promise<void> {
         }
         await saveOperatorState(defaultStatePath, state);
 
-        let responseClaimStatus =
-          intent.type === 'payout-claim'
-            ? state.positionMeta?.[intent.positionKey]?.claimStatus || state.receiptMeta?.[intent.positionKey]?.claimStatus || 'submitted'
-            : undefined;
+        if (intent.type === 'market-bet') {
+          const positions = await loadUserPositions(USER_POSITIONS_FILE);
+          positions[intent.userId] = positions[intent.userId] || {};
+          positions[intent.userId][intent.marketKey] = intent.userNetPositionAfter;
+          await saveUserPositions(USER_POSITIONS_FILE, positions);
+        }
 
-        if (intent.type === 'market-bet' || intent.type === 'payout-claim') {
-          try {
-            await refreshState(projectRoot);
-            const refreshed = await loadOperatorState(defaultStatePath);
-            if (intent.type === 'market-bet') {
-              if (!refreshed.receipts?.[intent.positionKey]) {
-                refreshed.receiptMeta = refreshed.receiptMeta || {};
-                delete refreshed.receiptMeta[intent.positionKey];
-              }
-              await saveOperatorState(defaultStatePath, refreshed);
-            }
-            if (intent.type === 'payout-claim') {
-              finalizeReceiptClaimStatuses(refreshed);
-              responseClaimStatus =
-                refreshed.positionMeta?.[intent.positionKey]?.claimStatus ||
-                refreshed.receiptMeta?.[intent.positionKey]?.claimStatus ||
-                responseClaimStatus;
-              await saveOperatorState(defaultStatePath, refreshed);
-            }
-          } catch (error) {
-            lastStateRefreshAtUnixMs = 0;
-            console.warn(
-              intent.type === 'market-bet' ? '[finalize] post-bet sync failed:' : '[finalize] post-claim sync failed:',
-              error instanceof Error ? error.message : String(error)
-            );
+        if (intent.type === 'market-bet' && intent.marketDate) {
+          const dailyMarketMap = await loadDemoDailyMarkets();
+          const day = dailyMarketMap[intent.marketDate];
+          if (day) {
+            const nextTotal = (Number.isFinite(day.totalPositionBet) ? day.totalPositionBet : 0) + intent.addTotalBet;
+            const nextYes = (Number.isFinite(day.totalYesPositionBet) ? day.totalYesPositionBet : 0) + intent.addYesBet;
+            day.totalPositionBet = nextTotal;
+            day.totalYesPositionBet = nextYes;
+            dailyMarketMap[intent.marketDate] = day;
+            await saveDemoDailyMarkets(dailyMarketMap);
           }
         }
         delete pendingTxIntents[intentId];
@@ -3193,7 +3165,10 @@ async function main(): Promise<void> {
           marketKey: intent.marketKey,
           userId: intent.userId,
           userNetPosition: intent.userNetPositionAfter,
-          claimStatus: responseClaimStatus
+          claimStatus:
+            intent.type === 'payout-claim'
+              ? state.positionMeta?.[intent.positionKey]?.claimStatus || state.receiptMeta?.[intent.positionKey]?.claimStatus || 'submitted'
+              : undefined
         });
         return;
       }
