@@ -11,6 +11,10 @@ const ACTION_TOKEN = (process.env.TX_PROVER_ACTION_TOKEN || '').trim();
 const MAX_OLD_SPACE_MB = process.env.TX_PROVER_NODE_MAX_OLD_SPACE_MB || '4096';
 const VERBOSE = process.env.TX_PROVER_VERBOSE === '1';
 const JOB_TIMEOUT_MS = Number.parseInt(process.env.TX_PROVER_JOB_TIMEOUT_MS || '90000', 10);
+const REQUIRE_PRIVATE_CALLERS =
+  process.env.TX_PROVER_REQUIRE_PRIVATE_CALLERS === '0'
+    ? false
+    : process.env.RENDER === 'true' || process.env.IS_RENDER === 'true';
 
 type BrowserMarketBetContext = {
   network: { graphql: string; networkId: string };
@@ -80,6 +84,28 @@ function callerLabel(req: IncomingMessage): string {
   return req.socket.remoteAddress || 'unknown';
 }
 
+function isPrivateCaller(caller: string): boolean {
+  if (!caller) return false;
+  if (
+    caller === '127.0.0.1' ||
+    caller === '::1' ||
+    caller.startsWith('::ffff:127.') ||
+    caller.startsWith('10.') ||
+    caller.startsWith('::ffff:10.') ||
+    caller.startsWith('192.168.') ||
+    caller.startsWith('::ffff:192.168.')
+  ) {
+    return true;
+  }
+  const v4 = caller.startsWith('::ffff:') ? caller.slice('::ffff:'.length) : caller;
+  const match = /^172\.(\d{1,3})\./.exec(v4);
+  if (match) {
+    const octet = Number.parseInt(match[1], 10);
+    return octet >= 16 && octet <= 31;
+  }
+  return false;
+}
+
 function writeJson(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -98,6 +124,14 @@ function requireAuth(req: IncomingMessage): void {
   const headerToken = req.headers['x-prover-token'];
   const supplied = typeof headerToken === 'string' ? headerToken : Array.isArray(headerToken) ? headerToken[0] : null;
   if (!supplied || supplied !== ACTION_TOKEN) throw new Error('tx prover authorization failed');
+  if (REQUIRE_PRIVATE_CALLERS) {
+    const caller = callerLabel(req);
+    if (!isPrivateCaller(caller)) {
+      const error = new Error(`tx prover caller rejected: ${caller}`);
+      (error as any).statusCode = 403;
+      throw error;
+    }
+  }
 }
 
 function rejectPending(message: string): void {

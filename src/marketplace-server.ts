@@ -482,6 +482,17 @@ function writeJson(res: import('node:http').ServerResponse, status: number, data
   res.end(JSON.stringify(data, null, 2));
 }
 
+function callerLabel(req: IncomingMessage): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  if (Array.isArray(forwarded) && forwarded[0]) {
+    return forwarded[0].split(',')[0].trim();
+  }
+  return req.socket.remoteAddress || 'unknown';
+}
+
 function contentTypeForFile(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.html') return 'text/html; charset=utf-8';
@@ -2880,6 +2891,7 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-bet') {
+        console.log(`[market] request path=/api/tx/market-bet caller=${callerLabel(req)}`);
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const addTotalBet = requireNumber(body.addTotalBet, 'addTotalBet');
@@ -2982,6 +2994,7 @@ async function main(): Promise<void> {
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tx/claim-payout') {
+        console.log(`[market] request path=/api/tx/claim-payout caller=${callerLabel(req)}`);
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const positionKey = requireString(body.positionKey, 'positionKey');
