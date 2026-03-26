@@ -1649,19 +1649,6 @@ async function withFreshMarketStateRetry<T>(projectRoot: string, work: () => Pro
   }
 }
 
-async function withRemoteProverStateRetry<T>(
-  projectRoot: string,
-  buildAndProve: () => Promise<T>
-): Promise<T> {
-  try {
-    return await buildAndProve();
-  } catch (error) {
-    if (!isRemoteProverStateDriftError(error)) throw error;
-    await refreshState(projectRoot);
-    return await buildAndProve();
-  }
-}
-
 function serializeMerkleWitness(witness: { isLefts: Bool[]; siblings: Field[] }): SerializedMerkleWitness {
   return {
     isLefts: witness.isLefts.map((value) => value.toBoolean()),
@@ -2905,8 +2892,10 @@ async function main(): Promise<void> {
           let selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
           let createdOnDemand = false;
           if (!selectedMarket) {
+            if (isHosted) {
+              throw new Error(`market ${marketDate} is not active on-chain yet. Wait for oracle sync, then try again.`);
+            }
             await ensureDailyMarkets(projectRoot);
-            await refreshState(projectRoot);
             currentState = await loadOperatorState(defaultStatePath);
             selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
             createdOnDemand = true;
@@ -2927,7 +2916,7 @@ async function main(): Promise<void> {
         }
 
         const txResult = useRemoteTxProver()
-          ? await withRemoteProverStateRetry(projectRoot, async () => {
+          ? await (async () => {
               const built = await withFreshMarketStateRetry(projectRoot, async () =>
                 buildBrowserFeePayerMarketBetContext({
                   stateFile: defaultStatePath,
@@ -2943,7 +2932,7 @@ async function main(): Promise<void> {
                 context: built.buildContext
               });
               return { built, tx: proved.tx };
-            })
+            })()
             : useLocalServerBetProving()
             ? await (async () => {
                 const built = await withFreshMarketStateRetry(projectRoot, async () =>
@@ -2996,7 +2985,7 @@ async function main(): Promise<void> {
         let mode: string;
 
         if (useRemoteTxProver()) {
-          const builtAndTx = await withRemoteProverStateRetry(projectRoot, async () => {
+          const builtAndTx = await (async () => {
             const built = await withFreshMarketStateRetry(projectRoot, async () =>
               buildClaimPayoutContext({
                 stateFile: defaultStatePath,
@@ -3009,7 +2998,7 @@ async function main(): Promise<void> {
               context: built.buildContext
             });
             return { built, tx: proved.tx };
-          });
+          })();
           tx = builtAndTx.tx;
           const built = builtAndTx.built;
           fee = built.fee;
