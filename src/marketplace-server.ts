@@ -3086,12 +3086,9 @@ async function main(): Promise<void> {
           throw new Error('intent expired; rebuild transaction');
         }
         if (intent.type === 'market-bet' && intent.newLeaf) {
-          state.markets[intent.marketKey] = intent.newLeaf;
-          state.receipts = state.receipts || {};
           if (!intent.receiptCommitment) {
             throw new Error('receipt commitment missing for market bet finalize');
           }
-          state.receipts[intent.positionKey] = intent.receiptCommitment;
           state.receiptMeta = state.receiptMeta || {};
           state.receiptMeta[intent.positionKey] = {
             zkappPublicKey: state.zkappPublicKey || getZkappPublicKey().toBase58(),
@@ -3118,23 +3115,23 @@ async function main(): Promise<void> {
         }
         await saveOperatorState(defaultStatePath, state);
 
-        if (intent.type === 'market-bet') {
-          const positions = await loadUserPositions(USER_POSITIONS_FILE);
-          positions[intent.userId] = positions[intent.userId] || {};
-          positions[intent.userId][intent.marketKey] = intent.userNetPositionAfter;
-          await saveUserPositions(USER_POSITIONS_FILE, positions);
-        }
-
-        if (intent.type === 'market-bet' && intent.marketDate) {
-          const dailyMarketMap = await loadDemoDailyMarkets();
-          const day = dailyMarketMap[intent.marketDate];
-          if (day) {
-            const nextTotal = (Number.isFinite(day.totalPositionBet) ? day.totalPositionBet : 0) + intent.addTotalBet;
-            const nextYes = (Number.isFinite(day.totalYesPositionBet) ? day.totalYesPositionBet : 0) + intent.addYesBet;
-            day.totalPositionBet = nextTotal;
-            day.totalYesPositionBet = nextYes;
-            dailyMarketMap[intent.marketDate] = day;
-            await saveDemoDailyMarkets(dailyMarketMap);
+        if (intent.type === 'market-bet' || intent.type === 'payout-claim') {
+          try {
+            await refreshState(projectRoot);
+            const refreshed = await loadOperatorState(defaultStatePath);
+            if (intent.type === 'market-bet') {
+              if (!refreshed.receipts?.[intent.positionKey]) {
+                refreshed.receiptMeta = refreshed.receiptMeta || {};
+                delete refreshed.receiptMeta[intent.positionKey];
+              }
+            }
+            await saveOperatorState(defaultStatePath, refreshed);
+          } catch (error) {
+            lastStateRefreshAtUnixMs = 0;
+            console.warn(
+              intent.type === 'market-bet' ? '[finalize] post-bet sync failed:' : '[finalize] post-claim sync failed:',
+              error instanceof Error ? error.message : String(error)
+            );
           }
         }
         delete pendingTxIntents[intentId];
