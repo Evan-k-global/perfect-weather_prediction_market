@@ -151,6 +151,7 @@ After iterating through local builds, hosted Render deploys, heavy worker splits
 - developer setup and implementation details: `docs/developer-setup.md`
 - operator runbook: `docs/operator-runbook.md`
 - build recommendations and architecture retrospective: `docs/build-recommendations.md`
+- local prover mode for power users: `docs/local-prover-mode.md`
 - zkTLS hardening notes: `docs/zktls-hardening-notes.md`
 - production deploy and fresh-zkApp rollout: `deploy/README.production.md`
 - blog post / overview: `docs/blog-zeko-private-market.md`

@@ -6,6 +6,7 @@
 - [Build Recommendations](build-recommendations.md)
 - [Protocol vs Demo](protocol-vs-demo.md)
 - [Developer Setup](developer-setup.md)
+- [Local Prover Mode](local-prover-mode.md)
 - [Operator Runbook](operator-runbook.md)
 - [zkTLS Hardening Notes](zktls-hardening-notes.md)
 

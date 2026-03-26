@@ -42,6 +42,16 @@ Terminal 2:
 pnpm oracle:worker
 ```
 
+Terminal 3:
+
+```bash
+pnpm tx-prover:serve
+```
+
+For a power-user overview of keeping the hosted market/oracle flow while moving only proving onto a local machine, see:
+
+- `docs/local-prover-mode.md`
+
 ## Useful zkTLS / Weather Commands
 
 Generate a weather attestation:
