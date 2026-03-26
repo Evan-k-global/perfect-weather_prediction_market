@@ -87,6 +87,29 @@ async function req(baseUrl: string, oracleToken: string, endpoint: string, body:
   return data;
 }
 
+async function waitForMarketReady(baseUrl: string, maxAttempts: number, delayMs: number): Promise<void> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const res = await fetch(`${baseUrl}/api/ready`, {
+        method: 'GET',
+        headers: { 'cache-control': 'no-store' }
+      });
+      if (res.ok) {
+        const data = (await res.json().catch(() => null)) as { ready?: boolean } | null;
+        if (data?.ready === true) {
+          console.log(`[oracle-worker] market ready after ${attempt} check(s)`);
+          return;
+        }
+      }
+    } catch {}
+    if (attempt < maxAttempts) {
+      console.log(`[oracle-worker] waiting for market readiness attempt=${attempt}/${maxAttempts}`);
+      await sleep(delayMs);
+    }
+  }
+  throw new Error(`market did not become ready after ${maxAttempts} readiness checks`);
+}
+
 function marketDateFromTitle(title: string | undefined): string | null {
   if (!title) return null;
   const match = /^Atherton, CA - (\d{4}-\d{2}-\d{2}) Over\/Under \d+F$/.exec(title);
@@ -357,6 +380,7 @@ async function main(): Promise<void> {
     console.log(`[oracle-worker] initial delay ${startDelayMs}ms`);
     await sleep(startDelayMs);
   }
+  await waitForMarketReady(baseUrl, envInt('ORACLE_WORKER_READY_CHECK_ATTEMPTS', 20), envInt('ORACLE_WORKER_READY_CHECK_DELAY_MS', 3000));
 
   let cycle = 0;
   while (true) {

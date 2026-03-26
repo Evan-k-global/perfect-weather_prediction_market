@@ -2983,6 +2983,9 @@ async function main(): Promise<void> {
           let selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
           let createdOnDemand = false;
           if (!selectedMarket) {
+            if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
+              throw new Error(`market ${marketDate} is not active on-chain yet. Wait for oracle sync, then try again.`);
+            }
             await ensureDailyMarkets(projectRoot);
             currentState = await loadOperatorState(defaultStatePath);
             selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
