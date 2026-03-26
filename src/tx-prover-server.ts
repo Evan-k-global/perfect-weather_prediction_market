@@ -9,6 +9,7 @@ const PORT = Number.parseInt(process.env.TX_PROVER_PORT || process.env.PORT || '
 const HOST = process.env.TX_PROVER_HOST || '0.0.0.0';
 const ACTION_TOKEN = (process.env.TX_PROVER_ACTION_TOKEN || '').trim();
 const MAX_OLD_SPACE_MB = process.env.TX_PROVER_NODE_MAX_OLD_SPACE_MB || '4096';
+const VERBOSE = process.env.TX_PROVER_VERBOSE === '1';
 
 type BrowserMarketBetContext = {
   network: { graphql: string; networkId: string };
@@ -171,9 +172,24 @@ async function proveWithWorker(kind: 'market-bet' | 'claim-payout', context: unk
   const id = randomUUID();
   workerBusy = true;
   pendingRequestId = id;
+  const leanContext =
+    kind === 'market-bet' && context && typeof context === 'object'
+      ? (() => {
+          const { marketDate: _marketDate, ...rest } = context as BrowserMarketBetContext;
+          return rest;
+        })()
+      : kind === 'claim-payout' && context && typeof context === 'object'
+      ? (() => {
+          const { payoutTmina: _payoutTmina, ...rest } = context as ClaimPayoutContext;
+          return rest;
+        })()
+      : context;
   return await new Promise((resolve, reject) => {
     pendingRequest = { resolve, reject };
-    worker!.stdin.write(`${JSON.stringify({ id, kind, context })}\n`);
+    if (VERBOSE) {
+      console.log(`[tx-prover] dispatch kind=${kind} requestId=${id}`);
+    }
+    worker!.stdin.write(`${JSON.stringify({ id, kind, context: leanContext })}\n`);
   });
 }
 

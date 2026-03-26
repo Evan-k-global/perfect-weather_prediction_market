@@ -74,6 +74,7 @@ type JobResponse =
 
 let compilePromise: Promise<unknown> | null = null;
 let activeNetworkKey = '';
+const VERBOSE = process.env.TX_PROVER_VERBOSE === '1';
 
 function send(response: JobResponse): void {
   process.stdout.write(`${JSON.stringify(response)}\n`);
@@ -81,6 +82,12 @@ function send(response: JobResponse): void {
 
 function log(message: string): void {
   process.stderr.write(`${message}\n`);
+}
+
+function debug(message: string): void {
+  if (VERBOSE) {
+    log(message);
+  }
 }
 
 function setActiveNetwork(network: { graphql: string; networkId: string }): void {
@@ -225,16 +232,16 @@ async function main(): Promise<void> {
     const startedAt = Date.now();
     try {
       request = JSON.parse(trimmed) as JobRequest;
-      log(
+      debug(
         `[tx-prover-job] start kind=${request.kind} requestId=${request.id} wallet=${request.context.walletPublicKey} marketKey=${request.context.marketKey}`
       );
       if (request.kind === 'market-bet') {
         const tx = await buildMarketBetTx(request.context);
-        log(`[tx-prover-job] done kind=market-bet requestId=${request.id} durationMs=${Date.now() - startedAt}`);
+        debug(`[tx-prover-job] done kind=market-bet requestId=${request.id} durationMs=${Date.now() - startedAt}`);
         send({ id: request.id, ok: true, tx });
       } else if (request.kind === 'claim-payout') {
         const tx = await buildClaimPayoutTx(request.context);
-        log(`[tx-prover-job] done kind=claim-payout requestId=${request.id} durationMs=${Date.now() - startedAt}`);
+        debug(`[tx-prover-job] done kind=claim-payout requestId=${request.id} durationMs=${Date.now() - startedAt}`);
         send({ id: request.id, ok: true, tx });
       }
     } catch (error) {
