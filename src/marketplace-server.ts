@@ -309,6 +309,7 @@ const pendingTxIntents: Record<string, PendingTxIntent> = {};
 const receiptBackfillCache = new Map<string, ReceiptBackfillCacheEntry>();
 const claimTxStatusCache = new Map<string, { status: string; fetchedAtUnixMs: number }>();
 const txSessionTokens = new Map<string, { caller: string; expiresAtUnixMs: number }>();
+const lastTxSessionIssuedAtByCaller = new Map<string, number>();
 const privateBetQueue: PrivateQueuedBet[] = [];
 const privateBatchHistory: PrivateBatchHistoryEntry[] = [];
 let privateBatchInFlight = false;
@@ -517,6 +518,11 @@ function logHostedTxRequest(req: IncomingMessage, path: string, event: string, d
   );
 }
 
+function appendLogDetail(detail: string, extra: string): string {
+  if (!extra) return detail;
+  return detail ? `${detail} ${extra}` : extra;
+}
+
 function pruneExpiredTxSessions(now = Date.now()): void {
   for (const [token, entry] of txSessionTokens.entries()) {
     if (entry.expiresAtUnixMs <= now) txSessionTokens.delete(token);
@@ -525,12 +531,20 @@ function pruneExpiredTxSessions(now = Date.now()): void {
 
 function issueTxSessionToken(req: IncomingMessage): { token: string; expiresAtUnixMs: number } {
   pruneExpiredTxSessions();
+  const caller = callerLabel(req);
+  const minIntervalMs = Number.parseInt(process.env.HOSTED_TX_SESSION_MIN_INTERVAL_MS || '60000', 10);
+  const lastIssuedAt = lastTxSessionIssuedAtByCaller.get(caller) || 0;
+  if (minIntervalMs > 0 && Date.now() - lastIssuedAt < minIntervalMs) {
+    logHostedTxRequest(req, '/api/tx/session', 'reject', `rate-limited minIntervalMs=${minIntervalMs}`);
+    throw new Error('tx request rejected: tx session rate limited');
+  }
   const token = randomUUID();
   const expiresAtUnixMs = Date.now() + 15 * 60 * 1000;
   txSessionTokens.set(token, {
-    caller: callerLabel(req),
+    caller,
     expiresAtUnixMs
   });
+  lastTxSessionIssuedAtByCaller.set(caller, Date.now());
   return { token, expiresAtUnixMs };
 }
 
@@ -3015,12 +3029,17 @@ async function main(): Promise<void> {
         requireHostedBrowserFetch(req, isHosted, url.pathname);
         requireHostedTxOrigin(req, url, isHosted, url.pathname);
         requireHostedTxSession(req, isHosted, url.pathname);
-        logHostedTxRequest(req, url.pathname, 'accept');
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const addTotalBet = requireNumber(body.addTotalBet, 'addTotalBet');
         const addYesBet = requireNonNegativeNumber(body.addYesBet, 'addYesBet');
         const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
+        logHostedTxRequest(
+          req,
+          url.pathname,
+          'accept',
+          `wallet=${walletPublicKey} marketKey=${marketKey} addTotalBet=${Math.floor(addTotalBet)} addYesBet=${Math.floor(addYesBet)}`
+        );
         const marketDate = requireString(body.marketDate, 'marketDate');
         const selectedThresholdF =
           typeof body.thresholdF === 'number' && Number.isFinite(body.thresholdF) ? Math.round(body.thresholdF) : null;
@@ -3121,11 +3140,16 @@ async function main(): Promise<void> {
         requireHostedBrowserFetch(req, isHosted, url.pathname);
         requireHostedTxOrigin(req, url, isHosted, url.pathname);
         requireHostedTxSession(req, isHosted, url.pathname);
-        logHostedTxRequest(req, url.pathname, 'accept');
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const positionKey = requireString(body.positionKey, 'positionKey');
         const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
+        logHostedTxRequest(
+          req,
+          url.pathname,
+          'accept',
+          `wallet=${walletPublicKey} marketKey=${marketKey} positionKey=${positionKey}`
+        );
         if (useRemoteTxProver() && isHosted) {
           await ensureFreshHostedProvingState(projectRoot);
         } else {
