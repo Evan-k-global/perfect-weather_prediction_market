@@ -310,6 +310,7 @@ const receiptBackfillCache = new Map<string, ReceiptBackfillCacheEntry>();
 const claimTxStatusCache = new Map<string, { status: string; fetchedAtUnixMs: number }>();
 const txSessionTokens = new Map<string, { caller: string; expiresAtUnixMs: number }>();
 const lastTxSessionIssuedAtByCaller = new Map<string, number>();
+const hostedTxBetCountsByFingerprint = new Map<string, { date: string; count: number }>();
 const privateBetQueue: PrivateQueuedBet[] = [];
 const privateBatchHistory: PrivateBatchHistoryEntry[] = [];
 let privateBatchInFlight = false;
@@ -534,6 +535,10 @@ function envCsvSet(name: string): Set<string> {
   );
 }
 
+function hostedTxCallerFingerprint(req: IncomingMessage): string {
+  return `${callerLabel(req)}|${requestUserAgent(req)}`;
+}
+
 function requireHostedTxNotBlocked(
   req: IncomingMessage,
   path: string,
@@ -552,6 +557,20 @@ function requireHostedTxNotBlocked(
       logHostedTxRequest(req, path, 'reject', appendLogDetail('', `blocked-wallet=${wallet}`));
       throw new Error('tx request rejected: blocked wallet');
     }
+  }
+}
+
+function recordHostedMarketBetAndMaybeBlock(req: IncomingMessage, path: string): void {
+  const maxPerDay = Number.parseInt(process.env.HOSTED_TX_MAX_BETS_PER_BROWSER_PER_DAY || '24', 10);
+  if (!(maxPerDay > 0)) return;
+  const todayIso = currentLocalDate();
+  const fingerprint = hostedTxCallerFingerprint(req);
+  const existing = hostedTxBetCountsByFingerprint.get(fingerprint);
+  const nextCount = existing && existing.date === todayIso ? existing.count + 1 : 1;
+  hostedTxBetCountsByFingerprint.set(fingerprint, { date: todayIso, count: nextCount });
+  if (nextCount > maxPerDay) {
+    logHostedTxRequest(req, path, 'reject', `daily-browser-bet-limit count=${nextCount} max=${maxPerDay}`);
+    throw new Error('tx request rejected: daily browser bet limit exceeded');
   }
 }
 
@@ -3068,6 +3087,7 @@ async function main(): Promise<void> {
         const addYesBet = requireNonNegativeNumber(body.addYesBet, 'addYesBet');
         const walletPublicKey = requireString(body.walletPublicKey, 'walletPublicKey');
         requireHostedTxNotBlocked(req, url.pathname, { walletPublicKey });
+        recordHostedMarketBetAndMaybeBlock(req, url.pathname);
         logHostedTxRequest(
           req,
           url.pathname,
