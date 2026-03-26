@@ -230,16 +230,6 @@ type DailySettleState = {
   }>;
 };
 
-type InFlightBetBuildResult = {
-  built: Awaited<ReturnType<typeof buildBrowserFeePayerMarketBetContext>>;
-  tx: unknown;
-};
-
-type InFlightClaimBuildResult = {
-  built: Awaited<ReturnType<typeof buildClaimPayoutContext>>;
-  tx: unknown;
-};
-
 function emptyDailySettleState(): DailySettleState {
   return {
     lastNightlyRunDate: null,
@@ -249,64 +239,6 @@ function emptyDailySettleState(): DailySettleState {
     lastAutoRunSource: null,
     recentRuns: []
   };
-}
-
-const inFlightRemoteBetBuilds = new Map<string, Promise<InFlightBetBuildResult>>();
-const inFlightRemoteClaimBuilds = new Map<string, Promise<InFlightClaimBuildResult>>();
-const inFlightWalletProofs = new Map<string, Promise<unknown>>();
-
-function withInFlightBuild<T>(map: Map<string, Promise<T>>, key: string, work: () => Promise<T>): Promise<T> {
-  const existing = map.get(key);
-  if (existing) return existing;
-  const promise = (async () => await work())();
-  map.set(key, promise);
-  promise.finally(() => {
-    if (map.get(key) === promise) map.delete(key);
-  }).catch(() => {});
-  return promise;
-}
-
-function withWalletProofLock<T>(walletPublicKey: string, work: () => Promise<T>): Promise<T> {
-  const existing = inFlightWalletProofs.get(walletPublicKey);
-  if (existing) {
-    console.warn(`[market] wallet proof lock hit wallet=${walletPublicKey}`);
-    const error = new Error('another proof is already in progress for this wallet; wait for it to finish before retrying');
-    (error as any).statusCode = 409;
-    throw error;
-  }
-  const promise = (async () => await work())();
-  inFlightWalletProofs.set(walletPublicKey, promise);
-  promise.finally(() => {
-    if (inFlightWalletProofs.get(walletPublicKey) === promise) {
-      inFlightWalletProofs.delete(walletPublicKey);
-    }
-  }).catch(() => {});
-  return promise;
-}
-
-function makeRemoteBetBuildKey(params: {
-  walletPublicKey: string;
-  marketKey: string;
-  marketDate: string | null;
-  addTotalBet: number;
-  addYesBet: number;
-}): string {
-  return [
-    'bet',
-    params.walletPublicKey,
-    params.marketKey,
-    params.marketDate || '',
-    params.addTotalBet,
-    params.addYesBet
-  ].join(':');
-}
-
-function makeRemoteClaimBuildKey(params: {
-  walletPublicKey: string;
-  marketKey: string;
-  positionKey: string;
-}): string {
-  return ['claim', params.walletPublicKey, params.marketKey, params.positionKey].join(':');
 }
 
 type PrivateQueuedBet = {
@@ -2667,50 +2599,45 @@ async function requestRemoteTxProver<T>(endpoint: string, body: Record<string, u
   const token = getRemoteTxProverToken();
   if (!baseUrl) throw new Error('remote tx prover not configured: set TX_PROVER_BASE_URL');
   if (!token) throw new Error('remote tx prover not configured: set TX_PROVER_ACTION_TOKEN');
-  const requestId = randomUUID();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Number.parseInt(process.env.TX_PROVER_REQUEST_TIMEOUT_MS || '60000', 10));
-  try {
-    const res = await fetch(`${baseUrl}${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-prover-token': token
-      },
-      body: JSON.stringify({ ...body, requestId }),
-      signal: controller.signal
-    });
-    const text = await res.text();
-    let data: any = null;
-    if (text) {
-      try {
-        data = JSON.parse(text);
-      } catch {
-        const snippet = text.slice(0, 160).replace(/\s+/g, ' ').trim();
-        throw new Error(`remote tx prover returned non-JSON response (${res.status}): ${snippet}`);
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Number.parseInt(process.env.TX_PROVER_REQUEST_TIMEOUT_MS || '120000', 10));
+    try {
+      const res = await fetch(`${baseUrl}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-prover-token': token
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      const text = await res.text();
+      let data: any = null;
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          const snippet = text.slice(0, 160).replace(/\s+/g, ' ').trim();
+          throw new Error(`remote tx prover returned non-JSON response (${res.status}): ${snippet}`);
+        }
+      }
+      if (!res.ok) {
+        throw new Error((data && data.error) || `remote tx prover request ${endpoint} failed with status ${res.status}`);
+      }
+      clearTimeout(timeout);
+      return data as T;
+    } catch (error) {
+      clearTimeout(timeout);
+      lastError = error;
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        continue;
       }
     }
-    if (!res.ok) {
-      throw new Error((data && data.error) || `remote tx prover request ${endpoint} failed with status ${res.status}`);
-    }
-    return data as T;
-  } catch (error) {
-    if (controller.signal.aborted) {
-      try {
-        await fetch(`${baseUrl}/cancel`, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-prover-token': token
-          },
-          body: JSON.stringify({ requestId })
-        });
-      } catch {}
-    }
-    throw new Error(`remote tx prover unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  } finally {
-    clearTimeout(timeout);
   }
+  throw new Error(`remote tx prover unavailable: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
 async function processPrivateBetBatch(params: {
@@ -3007,40 +2934,26 @@ async function main(): Promise<void> {
         }
 
         const txResult = useRemoteTxProver()
-          ? await withWalletProofLock(
-              walletPublicKey,
-              async () =>
-                await withInFlightBuild(
-                  inFlightRemoteBetBuilds,
-                  makeRemoteBetBuildKey({
-                    walletPublicKey,
-                    marketKey: String(selectedMarket.marketKey),
-                    marketDate,
-                    addTotalBet: Math.floor(addTotalBet),
-                    addYesBet: Math.floor(addYesBet)
-                  }),
-                  async () => {
-                    const built = await withFreshMarketStateRetry(projectRoot, async () =>
-                      buildBrowserFeePayerMarketBetContext({
-                        stateFile: defaultStatePath,
-                        marketKey: String(selectedMarket.marketKey),
-                        addTotalBet: Math.floor(addTotalBet),
-                        addYesBet: Math.floor(addYesBet),
-                        marketDate,
-                        feePayerPublicKey: walletPublicKey,
-                        userId
-                      })
-                    );
-                    console.log(
-                      `[market] prove start kind=market-bet wallet=${walletPublicKey} marketKey=${selectedMarket.marketKey} stake=${Math.floor(addTotalBet)} side=${Math.floor(addYesBet)}`
-                    );
-                    const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/market-bet', {
-                      context: built.buildContext
-                    });
-                    return { built, tx: proved.tx };
-                  }
-                )
-            )
+          ? await (async () => {
+              const built = await withFreshMarketStateRetry(projectRoot, async () =>
+                buildBrowserFeePayerMarketBetContext({
+                  stateFile: defaultStatePath,
+                  marketKey: String(selectedMarket.marketKey),
+                  addTotalBet: Math.floor(addTotalBet),
+                  addYesBet: Math.floor(addYesBet),
+                  marketDate,
+                  feePayerPublicKey: walletPublicKey,
+                  userId
+                })
+              );
+              console.log(
+                `[market] prove start kind=market-bet wallet=${walletPublicKey} marketKey=${selectedMarket.marketKey} stake=${Math.floor(addTotalBet)} side=${Math.floor(addYesBet)}`
+              );
+              const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/market-bet', {
+                context: built.buildContext
+              });
+              return { built, tx: proved.tx };
+            })()
             : useLocalServerBetProving()
             ? await (async () => {
                 const built = await withFreshMarketStateRetry(projectRoot, async () =>
@@ -3093,31 +3006,23 @@ async function main(): Promise<void> {
         let mode: string;
 
         if (useRemoteTxProver()) {
-          const builtAndTx = await withWalletProofLock(
-            walletPublicKey,
-            async () =>
-              await withInFlightBuild(
-                inFlightRemoteClaimBuilds,
-                makeRemoteClaimBuildKey({ walletPublicKey, marketKey, positionKey }),
-                async () => {
-                  const built = await withFreshMarketStateRetry(projectRoot, async () =>
-                    buildClaimPayoutContext({
-                      stateFile: defaultStatePath,
-                      marketKey,
-                      positionKey,
-                      feePayerPublicKey: walletPublicKey
-                    })
-                  );
-                  console.log(
-                    `[market] prove start kind=claim-payout wallet=${walletPublicKey} marketKey=${marketKey} positionKey=${positionKey}`
-                  );
-                  const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/claim-payout', {
-                    context: built.buildContext
-                  });
-                  return { built, tx: proved.tx };
-                }
-              )
-          );
+          const builtAndTx = await (async () => {
+            const built = await withFreshMarketStateRetry(projectRoot, async () =>
+              buildClaimPayoutContext({
+                stateFile: defaultStatePath,
+                marketKey,
+                positionKey,
+                feePayerPublicKey: walletPublicKey
+              })
+            );
+            console.log(
+              `[market] prove start kind=claim-payout wallet=${walletPublicKey} marketKey=${marketKey} positionKey=${positionKey}`
+            );
+            const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/claim-payout', {
+              context: built.buildContext
+            });
+            return { built, tx: proved.tx };
+          })();
           tx = builtAndTx.tx;
           const built = builtAndTx.built;
           fee = built.fee;
