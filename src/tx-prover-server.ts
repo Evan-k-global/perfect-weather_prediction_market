@@ -1,20 +1,35 @@
 import './env.js';
-import { randomUUID } from 'node:crypto';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import {
+  AccountUpdate,
+  Bool,
+  Field,
+  MerkleMapWitness,
+  Mina,
+  PublicKey,
+  UInt32,
+  UInt64,
+  fetchAccount
+} from 'o1js';
+import { FastPredictionMarketPlatform } from './fast-contract.js';
+import { getFastNodeCompileCache } from './fast-compile-cache.js';
+import { MarketLeaf } from './market-types.js';
+import type { StoredMarketLeaf } from './state-store.js';
 
 const PORT = Number.parseInt(process.env.TX_PROVER_PORT || process.env.PORT || '10001', 10);
 const HOST = process.env.TX_PROVER_HOST || '0.0.0.0';
 const ACTION_TOKEN = (process.env.TX_PROVER_ACTION_TOKEN || '').trim();
-const MAX_OLD_SPACE_MB = process.env.TX_PROVER_NODE_MAX_OLD_SPACE_MB || '4096';
-const PROVER_JOB_TIMEOUT_MS = Number.parseInt(process.env.TX_PROVER_JOB_TIMEOUT_MS || '75000', 10);
-const PROVER_MAX_JOBS_PER_WORKER = Number.parseInt(process.env.TX_PROVER_MAX_JOBS_PER_WORKER || '0', 10);
-const PROVER_WORKER_POOL_SIZE = Number.parseInt(process.env.TX_PROVER_WORKER_POOL_SIZE || '1', 10);
+
+type SerializedMerkleWitness = {
+  isLefts: boolean[];
+  siblings: string[];
+};
 
 type BrowserMarketBetContext = {
-  network: { graphql: string; networkId: string };
+  network: {
+    graphql: string;
+    networkId: string;
+  };
   zkappPublicKey: string;
   walletPublicKey: string;
   marketKey: string;
@@ -25,14 +40,17 @@ type BrowserMarketBetContext = {
   receiptCommitment: string;
   ownerCommitment: string;
   fee: string;
-  oldLeaf: unknown;
-  newLeaf: unknown;
-  marketWitness: unknown;
-  receiptWitness: unknown;
+  oldLeaf: StoredMarketLeaf;
+  newLeaf: StoredMarketLeaf;
+  marketWitness: SerializedMerkleWitness;
+  receiptWitness: SerializedMerkleWitness;
 };
 
 type ClaimPayoutContext = {
-  network: { graphql: string; networkId: string };
+  network: {
+    graphql: string;
+    networkId: string;
+  };
   zkappPublicKey: string;
   walletPublicKey: string;
   fee: string;
@@ -44,58 +62,37 @@ type ClaimPayoutContext = {
   addTotalBet: number;
   addYesBet: number;
   saltHash: string;
-  resolvedLeaf: unknown;
-  marketWitness: unknown;
-  receiptWitness: unknown;
-  claimedReceiptWitness: unknown;
+  resolvedLeaf: StoredMarketLeaf;
+  marketWitness: SerializedMerkleWitness;
+  receiptWitness: SerializedMerkleWitness;
+  claimedReceiptWitness: SerializedMerkleWitness;
 };
 
-type WorkerResponse =
-  | { id: string; ok: true; tx?: unknown }
-  | { id: string; ok: false; error: string };
+let compilePromise: Promise<unknown> | null = null;
+let activeNetworkKey = '';
+let proveQueue: Promise<void> = Promise.resolve();
+let inFlightProofs = 0;
 
-type ActiveRequest = {
-  id: string;
-  kind: 'market-bet' | 'claim-payout';
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-};
-
-type WorkerSlot = {
-  index: number;
-  process: ChildProcessWithoutNullStreams | null;
-  ready: boolean;
-  busy: boolean;
-  completedJobs: number;
-  stdoutBuffer: string;
-  respawnTimer: NodeJS.Timeout | null;
-  activeJobTimeout: NodeJS.Timeout | null;
-  activeRequest: ActiveRequest | null;
-};
-
-const workerSlots: WorkerSlot[] = Array.from({ length: Math.max(1, PROVER_WORKER_POOL_SIZE) }, (_, index) => ({
-  index,
-  process: null,
-  ready: false,
-  busy: false,
-  completedJobs: 0,
-  stdoutBuffer: '',
-  respawnTimer: null,
-  activeJobTimeout: null,
-  activeRequest: null
-}));
+async function withProverSlot<T>(work: () => Promise<T>): Promise<T> {
+  const previous = proveQueue;
+  let release!: () => void;
+  proveQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  inFlightProofs += 1;
+  try {
+    return await work();
+  } finally {
+    inFlightProofs = Math.max(0, inFlightProofs - 1);
+    release();
+  }
+}
 
 function writeJson(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(data));
-}
-
-function getCaller(req: IncomingMessage): string {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0]!.trim();
-  if (Array.isArray(forwarded) && forwarded[0]?.trim()) return forwarded[0].split(',')[0]!.trim();
-  return req.socket.remoteAddress || 'unknown';
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -106,223 +103,210 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
 }
 
 function requireAuth(req: IncomingMessage): void {
-  if (!ACTION_TOKEN) throw new Error('tx prover auth disabled: set TX_PROVER_ACTION_TOKEN');
+  if (!ACTION_TOKEN) {
+    throw new Error('tx prover auth disabled: set TX_PROVER_ACTION_TOKEN');
+  }
   const headerToken = req.headers['x-prover-token'];
   const supplied = typeof headerToken === 'string' ? headerToken : Array.isArray(headerToken) ? headerToken[0] : null;
-  if (!supplied || supplied !== ACTION_TOKEN) throw new Error('tx prover authorization failed');
-}
-
-function clearActiveJobTimeout(slot: WorkerSlot): void {
-  if (slot.activeJobTimeout) {
-    clearTimeout(slot.activeJobTimeout);
-    slot.activeJobTimeout = null;
+  if (!supplied || supplied !== ACTION_TOKEN) {
+    throw new Error('tx prover authorization failed');
   }
 }
 
-function rejectActiveRequest(slot: WorkerSlot, message: string): void {
-  clearActiveJobTimeout(slot);
-  if (slot.activeRequest) {
-    slot.activeRequest.reject(new Error(message));
-    slot.activeRequest = null;
-  }
-  slot.busy = false;
-}
-
-function nextReadyIdleWorker(): WorkerSlot | null {
-  return workerSlots.find((slot) => slot.process && slot.ready && !slot.busy) || null;
-}
-
-function recycleWorker(slot: WorkerSlot, reason: string): void {
-  if (!slot.process) return;
-  console.warn(`[tx-prover] recycling worker ${slot.index}: ${reason}`);
-  slot.ready = false;
-  try {
-    slot.process.kill('SIGKILL');
-  } catch {}
-}
-
-function handleWorkerLine(slot: WorkerSlot, line: string): void {
-  let message: WorkerResponse;
-  try {
-    message = JSON.parse(line) as WorkerResponse;
-  } catch {
-    return;
-  }
-  if (message.id === '__ready__' && message.ok) {
-    slot.ready = true;
-    return;
-  }
-  const active = slot.activeRequest;
-  if (!active || active.id !== message.id) return;
-  slot.activeRequest = null;
-  clearActiveJobTimeout(slot);
-  slot.busy = false;
-  slot.completedJobs += 1;
-  if (message.ok) {
-    active.resolve(message.tx);
-  } else {
-    active.reject(new Error(message.error));
-  }
-  if (PROVER_MAX_JOBS_PER_WORKER > 0 && slot.completedJobs >= PROVER_MAX_JOBS_PER_WORKER) {
-    slot.completedJobs = 0;
-    recycleWorker(slot, 'max jobs reached');
-  }
-}
-
-function startWorker(slot: WorkerSlot): void {
-  if (slot.process) return;
-  const here = dirname(fileURLToPath(import.meta.url));
-  const workerPath = resolve(here, 'tx-prover-job.js');
-  slot.ready = false;
-  slot.busy = false;
-  slot.completedJobs = 0;
-  slot.stdoutBuffer = '';
-  clearActiveJobTimeout(slot);
-  slot.activeRequest = null;
-  slot.process = spawn(process.execPath, [`--max-old-space-size=${MAX_OLD_SPACE_MB}`, workerPath], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: process.env
+function setActiveNetwork(network: { graphql: string; networkId: string }): void {
+  const nextKey = `${network.networkId}:${network.graphql}`;
+  if (activeNetworkKey === nextKey) return;
+  const instance = Mina.Network({
+    networkId: network.networkId as never,
+    mina: network.graphql,
+    archive: network.graphql
   });
-  slot.process.stdout.setEncoding('utf8');
-  slot.process.stdout.on('data', (chunk: string) => {
-    slot.stdoutBuffer += chunk;
-    let idx = slot.stdoutBuffer.indexOf('\n');
-    while (idx >= 0) {
-      const line = slot.stdoutBuffer.slice(0, idx).trim();
-      slot.stdoutBuffer = slot.stdoutBuffer.slice(idx + 1);
-      if (line) handleWorkerLine(slot, line);
-      idx = slot.stdoutBuffer.indexOf('\n');
-    }
-  });
-  slot.process.stderr.setEncoding('utf8');
-  slot.process.stderr.on('data', (chunk: string) => {
-    process.stderr.write(`[worker ${slot.index}] ${chunk}`);
-  });
-  slot.process.on('exit', (code, signal) => {
-    const detail = `tx prover worker ${slot.index} exited code=${code ?? 'null'} signal=${signal ?? 'null'}`;
-    slot.process = null;
-    slot.ready = false;
-    rejectActiveRequest(slot, detail);
-    if (!slot.respawnTimer) {
-      slot.respawnTimer = setTimeout(() => {
-        slot.respawnTimer = null;
-        startWorker(slot);
-      }, 1000);
-    }
-  });
+  Mina.setActiveInstance(instance);
+  activeNetworkKey = nextKey;
 }
 
-function dispatchJobToWorker(
-  slot: WorkerSlot,
-  kind: 'market-bet' | 'claim-payout',
-  context: unknown,
-  requestId: string | null,
-  resolve: (value: unknown) => void,
-  reject: (error: Error) => void
-): void {
-  slot.busy = true;
-  const id = requestId || randomUUID();
-  slot.activeJobTimeout = setTimeout(() => {
-    if (!slot.activeRequest || slot.activeRequest.id !== id) return;
-    recycleWorker(slot, `job timeout after ${PROVER_JOB_TIMEOUT_MS}ms`);
-  }, PROVER_JOB_TIMEOUT_MS);
-  slot.activeRequest = { id, kind, resolve, reject };
-  console.log(`[tx-prover] dispatch kind=${kind} requestId=${id}`);
-  slot.process!.stdin.write(`${JSON.stringify({ id, kind, context })}\n`);
+async function ensureFastContractCompiled(): Promise<void> {
+  if (!compilePromise) {
+    compilePromise = FastPredictionMarketPlatform.compile({
+      cache: getFastNodeCompileCache()
+    }).then(() => undefined);
+  }
+  await compilePromise;
 }
 
-async function proveWithWorker(kind: 'market-bet' | 'claim-payout', context: unknown, requestId: string | null): Promise<unknown> {
-  const readyIdle = nextReadyIdleWorker();
-  if (readyIdle) {
-    return await new Promise((resolve, reject) => {
-      dispatchJobToWorker(readyIdle, kind, context, requestId, resolve, reject);
+function getNetworkConfig() {
+  const graphql = process.env.ZEKO_GRAPHQL || 'https://testnet.zeko.io';
+  const requestedNetworkId = process.env.ZEKO_NETWORK_ID || 'testnet';
+  const isZekoTestnet = /testnet\.zeko\.io/i.test(graphql);
+  const networkId = isZekoTestnet && requestedNetworkId === 'zeko' ? 'testnet' : requestedNetworkId;
+  return { graphql, networkId };
+}
+
+function warmProver(): void {
+  const network = getNetworkConfig();
+  setActiveNetwork(network);
+  void ensureFastContractCompiled()
+    .then(() => {
+      console.log('[tx-prover] compile warmup finished');
+    })
+    .catch((error) => {
+      console.error('[tx-prover] compile warmup failed:', error);
+      compilePromise = null;
     });
-  }
-  const warming = workerSlots.some((slot) => !slot.ready);
-  const error = new Error(warming ? 'tx prover warming up; retry shortly' : 'tx prover busy; retry shortly');
-  (error as any).statusCode = 503;
-  throw error;
 }
 
-function ensureWorkersStarted(): void {
-  for (const slot of workerSlots) startWorker(slot);
+function deserializeMarketLeaf(stored: StoredMarketLeaf): MarketLeaf {
+  return new MarketLeaf({
+    configHash: Field(stored.configHash),
+    closeSlot: UInt64.from(stored.closeSlot),
+    expirySlot: UInt64.from(stored.expirySlot),
+    thresholdValueTenthC: UInt64.from(stored.thresholdValueTenthC),
+    totalPositionBet: UInt64.from(stored.totalPositionBet),
+    totalYesPositionBet: UInt64.from(stored.totalYesPositionBet),
+    resolved: Bool(stored.resolved === '1'),
+    outcome: Bool(stored.outcome === '1'),
+    oracleStatementHash: Field(stored.oracleStatementHash)
+  });
+}
+
+function deserializeMerkleWitness(serialized: SerializedMerkleWitness): MerkleMapWitness {
+  return new MerkleMapWitness(
+    serialized.isLefts.map((value) => Bool(Boolean(value))),
+    serialized.siblings.map((value) => Field(value))
+  );
+}
+
+async function buildMarketBetTx(context: BrowserMarketBetContext): Promise<unknown> {
+  setActiveNetwork(context.network);
+  await ensureFastContractCompiled();
+
+  const feePayer = PublicKey.fromBase58(context.walletPublicKey);
+  const account = await fetchAccount({ publicKey: feePayer });
+  if (account.error) {
+    throw new Error(`fee payer account not found: ${account.error.statusText || 'unknown'}`);
+  }
+
+  const zkappAddress = PublicKey.fromBase58(context.zkappPublicKey);
+  const marketKey = Field(context.marketKey);
+  const receiptKey = Field(context.receiptKey);
+  const receiptCommitment = Field(context.receiptCommitment);
+  const ownerCommitment = Field(context.ownerCommitment);
+  const oldLeaf = deserializeMarketLeaf(context.oldLeaf);
+  const newLeaf = deserializeMarketLeaf(context.newLeaf);
+  const marketWitness = deserializeMerkleWitness(context.marketWitness);
+  const receiptWitness = deserializeMerkleWitness(context.receiptWitness);
+  const betAmountNanomina = BigInt(context.addTotalBet) * 1_000_000_000n;
+  const zkapp = new FastPredictionMarketPlatform(zkappAddress);
+
+  const tx = await Mina.transaction({ sender: feePayer, fee: context.fee }, async () => {
+    const bettorPayment = AccountUpdate.createSigned(feePayer);
+    bettorPayment.send({
+      to: zkappAddress,
+      amount: UInt64.from(betAmountNanomina)
+    });
+    zkapp.placeReceiptBet(
+      marketKey,
+      oldLeaf,
+      newLeaf,
+      marketWitness,
+      receiptKey,
+      receiptCommitment,
+      receiptWitness,
+      ownerCommitment
+    );
+  });
+
+  const feePayerUpdate = (tx as any).feePayer;
+  if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
+    feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
+  }
+  if (feePayerUpdate?.body) {
+    feePayerUpdate.body.useFullCommitment = Bool(true);
+  }
+
+  await tx.prove();
+  return tx.toJSON();
+}
+
+async function buildClaimPayoutTx(context: ClaimPayoutContext): Promise<unknown> {
+  setActiveNetwork(context.network);
+  await ensureFastContractCompiled();
+  const feePayer = PublicKey.fromBase58(context.walletPublicKey);
+  const feePayerAccount = await fetchAccount({ publicKey: feePayer });
+  if (feePayerAccount.error) {
+    throw new Error(`fee payer account not found: ${feePayerAccount.error.statusText || 'unknown'}`);
+  }
+  const zkappAddress = PublicKey.fromBase58(context.zkappPublicKey);
+  const zkapp = new FastPredictionMarketPlatform(zkappAddress);
+  const tx = await Mina.transaction({ sender: feePayer, fee: context.fee }, async () => {
+    zkapp.claimReceiptPayout(
+      Field(context.marketKey),
+      deserializeMarketLeaf(context.resolvedLeaf),
+      deserializeMerkleWitness(context.marketWitness),
+      Field(context.positionKey),
+      Field(context.receiptCommitment),
+      deserializeMerkleWitness(context.receiptWitness),
+      deserializeMerkleWitness(context.claimedReceiptWitness),
+      feePayer,
+      UInt64.from(context.addTotalBet),
+      UInt64.from(context.addYesBet),
+      Field(context.ownerCommitment),
+      Field(context.saltHash)
+    );
+  });
+  const feePayerUpdate = (tx as any).feePayer;
+  if (feePayerUpdate?.body?.preconditions?.account?.nonce) {
+    feePayerUpdate.body.preconditions.account.nonce = { isSome: Bool(false), value: UInt32.from(0) };
+  }
+  if (feePayerUpdate?.body) {
+    feePayerUpdate.body.useFullCommitment = Bool(true);
+  }
+  await tx.prove();
+  return tx.toJSON();
 }
 
 async function main(): Promise<void> {
-  ensureWorkersStarted();
+  warmProver();
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+
       if (req.method === 'GET' && url.pathname === '/health') {
-        const aliveWorkers = workerSlots.filter((slot) => Boolean(slot.process)).length;
-        const warmedWorkers = workerSlots.filter((slot) => slot.ready).length;
-        const busyWorkers = workerSlots.filter((slot) => slot.busy).length;
-        const completedJobs = workerSlots.reduce((sum, slot) => sum + slot.completedJobs, 0);
-        const activeRequests = workerSlots
-          .map((slot) =>
-            slot.activeRequest
-              ? { worker: slot.index, requestId: slot.activeRequest.id, kind: slot.activeRequest.kind }
-              : null
-          )
-          .filter(Boolean);
         writeJson(res, 200, {
           ok: true,
           service: 'tx-prover',
-          workerPoolSize: workerSlots.length,
-          workerAlive: aliveWorkers,
-          warmedWorkers,
-          busyWorkers,
-          completedJobs,
-          activeRequests,
-          warmed: warmedWorkers > 0,
-          busy: busyWorkers === workerSlots.length && workerSlots.length > 0
+          warmed: compilePromise !== null,
+          busy: inFlightProofs > 0,
+          inFlightProofs
         });
         return;
       }
-      if (req.method === 'POST' && url.pathname === '/cancel') {
-        requireAuth(req);
-        const body = await readJsonBody(req);
-        const requestId =
-          typeof body.requestId === 'string' && body.requestId.trim() ? body.requestId.trim() : null;
-        if (!requestId) throw new Error('requestId is required');
-        const activeSlot = workerSlots.find((slot) => slot.activeRequest?.id === requestId) || null;
-        if (!activeSlot) {
-          writeJson(res, 200, { ok: true, cancelled: false, requestId });
-          return;
-        }
-        recycleWorker(activeSlot, `cancelled requestId=${requestId}`);
-        writeJson(res, 200, { ok: true, cancelled: true, requestId, worker: activeSlot.index });
-        return;
-      }
+
       if (req.method === 'POST' && url.pathname === '/prove/market-bet') {
         requireAuth(req);
-        console.log(
-          `[tx-prover] request kind=market-bet caller=${getCaller(req)} busyWorkers=${workerSlots.filter((slot) => slot.busy).length}`
-        );
         const body = await readJsonBody(req);
         const context = body.context as BrowserMarketBetContext | undefined;
-        const requestId = typeof body.requestId === 'string' && body.requestId.trim() ? body.requestId.trim() : null;
         if (!context) throw new Error('context is required');
-        const tx = await proveWithWorker('market-bet', context, requestId);
+        console.log(`[tx-prover] request kind=market-bet inFlight=${inFlightProofs}`);
+        const tx = await withProverSlot(() => buildMarketBetTx(context));
         writeJson(res, 200, { ok: true, tx });
         return;
       }
+
       if (req.method === 'POST' && url.pathname === '/prove/claim-payout') {
         requireAuth(req);
-        console.log(
-          `[tx-prover] request kind=claim-payout caller=${getCaller(req)} busyWorkers=${workerSlots.filter((slot) => slot.busy).length}`
-        );
         const body = await readJsonBody(req);
         const context = body.context as ClaimPayoutContext | undefined;
-        const requestId = typeof body.requestId === 'string' && body.requestId.trim() ? body.requestId.trim() : null;
         if (!context) throw new Error('context is required');
-        const tx = await proveWithWorker('claim-payout', context, requestId);
+        console.log(`[tx-prover] request kind=claim-payout inFlight=${inFlightProofs}`);
+        const tx = await withProverSlot(() => buildClaimPayoutTx(context));
         writeJson(res, 200, { ok: true, tx });
         return;
       }
+
       writeJson(res, 404, { error: 'not found' });
     } catch (error) {
-      writeJson(res, Number((error as any)?.statusCode || 500), {
+      writeJson(res, 500, {
         error: error instanceof Error ? error.message : String(error)
       });
     }
@@ -330,7 +314,6 @@ async function main(): Promise<void> {
 
   server.listen(PORT, HOST, () => {
     console.log(`[tx-prover] listening on http://${HOST}:${PORT}`);
-    console.log(`[tx-prover] worker_pool_size=${workerSlots.length} job_timeout_ms=${PROVER_JOB_TIMEOUT_MS} max_jobs_per_worker=${PROVER_MAX_JOBS_PER_WORKER}`);
   });
 }
 
