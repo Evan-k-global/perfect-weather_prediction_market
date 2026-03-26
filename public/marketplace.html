@@ -451,6 +451,8 @@
       let localServerBetProvingEnabled = true;
       let remoteTxProverEnabled = false;
       let latestOracleRows = [];
+      let txSessionToken = null;
+      let txSessionExpiresAtUnixMs = 0;
       const claimButtonState = new Map();
 
       function syncSelectedWeatherDayToCurrentMarketDate() {
@@ -478,6 +480,20 @@
         }
         if (!res.ok) throw new Error((json && json.error) || `request ${path} failed`);
         return json;
+      }
+
+      async function ensureTxSession() {
+        const now = Date.now();
+        if (txSessionToken && txSessionExpiresAtUnixMs - now > 30000) return txSessionToken;
+        const session = await req("/api/tx/session", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({})
+        });
+        txSessionToken = String(session?.token || "");
+        txSessionExpiresAtUnixMs = Number(session?.expiresAtUnixMs || 0);
+        if (!txSessionToken) throw new Error("tx session unavailable");
+        return txSessionToken;
       }
 
       function setMarketAvailabilityNote(text) {
@@ -962,11 +978,15 @@
           await refreshResolvedMarkets();
         };
         try {
+          const txSession = await ensureTxSession();
           await setClaimProgress("Generating tx proof");
           const walletKey = await ensureWalletConnected();
           const built = await req("/api/tx/claim-payout", {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: {
+              "content-type": "application/json",
+              "x-market-tx-session": txSession
+            },
             body: JSON.stringify({
               marketKey: position.marketKey,
               positionKey: position.positionKey,
@@ -1053,12 +1073,16 @@
       }
 
       async function finalizeTxWithRetry(payload) {
+        const txSession = await ensureTxSession();
         let lastError = null;
         for (let attempt = 1; attempt <= 2; attempt += 1) {
           try {
             return await req("/api/tx/finalize", {
               method: "POST",
-              headers: { "content-type": "application/json" },
+              headers: {
+                "content-type": "application/json",
+                "x-market-tx-session": txSession
+              },
               body: JSON.stringify(payload)
             });
           } catch (e) {
@@ -1199,6 +1223,7 @@
 
       document.getElementById("placeMarketBet").onclick = async () => {
         try {
+          const txSession = await ensureTxSession();
           setBetProgress("Preparing bet...", true);
           const walletKey = await ensureWalletConnected();
           const stakeInputEl = document.getElementById("marketStake");
@@ -1225,7 +1250,10 @@
           };
           const built = await req("/api/tx/market-bet", {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: {
+              "content-type": "application/json",
+              "x-market-tx-session": txSession
+            },
             body: JSON.stringify(requestBody)
           });
           const txPayload = built.tx;

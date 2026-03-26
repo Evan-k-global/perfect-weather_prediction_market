@@ -308,6 +308,7 @@ const balances: Record<string, UserBalance> = {};
 const pendingTxIntents: Record<string, PendingTxIntent> = {};
 const receiptBackfillCache = new Map<string, ReceiptBackfillCacheEntry>();
 const claimTxStatusCache = new Map<string, { status: string; fetchedAtUnixMs: number }>();
+const txSessionTokens = new Map<string, { caller: string; expiresAtUnixMs: number }>();
 const privateBetQueue: PrivateQueuedBet[] = [];
 const privateBatchHistory: PrivateBatchHistoryEntry[] = [];
 let privateBatchInFlight = false;
@@ -491,6 +492,40 @@ function callerLabel(req: IncomingMessage): string {
     return forwarded[0].split(',')[0].trim();
   }
   return req.socket.remoteAddress || 'unknown';
+}
+
+function pruneExpiredTxSessions(now = Date.now()): void {
+  for (const [token, entry] of txSessionTokens.entries()) {
+    if (entry.expiresAtUnixMs <= now) txSessionTokens.delete(token);
+  }
+}
+
+function issueTxSessionToken(req: IncomingMessage): { token: string; expiresAtUnixMs: number } {
+  pruneExpiredTxSessions();
+  const token = randomUUID();
+  const expiresAtUnixMs = Date.now() + 15 * 60 * 1000;
+  txSessionTokens.set(token, {
+    caller: callerLabel(req),
+    expiresAtUnixMs
+  });
+  return { token, expiresAtUnixMs };
+}
+
+function requireHostedTxSession(req: IncomingMessage, isHosted: boolean): void {
+  if (!isHosted) return;
+  pruneExpiredTxSessions();
+  const supplied = typeof req.headers['x-market-tx-session'] === 'string'
+    ? req.headers['x-market-tx-session'].trim()
+    : Array.isArray(req.headers['x-market-tx-session'])
+    ? (req.headers['x-market-tx-session'][0] || '').trim()
+    : '';
+  if (!supplied) throw new Error('tx request rejected: missing tx session');
+  const entry = txSessionTokens.get(supplied);
+  if (!entry) throw new Error('tx request rejected: invalid or expired tx session');
+  const caller = callerLabel(req);
+  if (entry.caller !== caller) {
+    throw new Error(`tx request rejected: tx session caller mismatch ${caller}`);
+  }
 }
 
 function requireHostedTxOrigin(req: IncomingMessage, url: URL, isHosted: boolean): void {
@@ -2853,6 +2888,7 @@ async function main(): Promise<void> {
 
       if (req.method === 'POST' && url.pathname === '/api/tx/market-bet-context') {
         requireHostedTxOrigin(req, url, isHosted);
+        requireHostedTxSession(req, isHosted);
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
         const addTotalBet = requireNumber(body.addTotalBet, 'addTotalBet');
@@ -2912,8 +2948,20 @@ async function main(): Promise<void> {
         return;
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/tx/session') {
+        requireHostedTxOrigin(req, url, isHosted);
+        const session = issueTxSessionToken(req);
+        writeJson(res, 200, {
+          ok: true,
+          token: session.token,
+          expiresAtUnixMs: session.expiresAtUnixMs
+        });
+        return;
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/tx/market-bet') {
         requireHostedTxOrigin(req, url, isHosted);
+        requireHostedTxSession(req, isHosted);
         console.log(`[market] request path=/api/tx/market-bet caller=${callerLabel(req)}`);
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
@@ -3018,6 +3066,7 @@ async function main(): Promise<void> {
 
       if (req.method === 'POST' && url.pathname === '/api/tx/claim-payout') {
         requireHostedTxOrigin(req, url, isHosted);
+        requireHostedTxSession(req, isHosted);
         console.log(`[market] request path=/api/tx/claim-payout caller=${callerLabel(req)}`);
         const body = await readJsonBody(req);
         const marketKey = requireString(body.marketKey, 'marketKey');
@@ -3101,6 +3150,7 @@ async function main(): Promise<void> {
 
       if (req.method === 'POST' && url.pathname === '/api/tx/finalize') {
         requireHostedTxOrigin(req, url, isHosted);
+        requireHostedTxSession(req, isHosted);
         const body = await readJsonBody(req);
         const intentId = requireString(body.intentId, 'intentId');
         const txHash = requireString(body.txHash, 'txHash');
