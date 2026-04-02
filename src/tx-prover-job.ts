@@ -93,10 +93,11 @@ function debug(message: string): void {
 function setActiveNetwork(network: { graphql: string; networkId: string }): void {
   const nextKey = `${network.networkId}:${network.graphql}`;
   if (activeNetworkKey === nextKey) return;
+  const archiveGraphql = process.env.ZEKO_ARCHIVE_GRAPHQL || network.graphql;
   const instance = Mina.Network({
     networkId: network.networkId as never,
     mina: network.graphql,
-    archive: network.graphql
+    archive: archiveGraphql
   });
   Mina.setActiveInstance(instance);
   activeNetworkKey = nextKey;

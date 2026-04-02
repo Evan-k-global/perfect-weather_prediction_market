@@ -67,6 +67,7 @@ async function main(): Promise<void> {
   expirySlot.lessThanOrEqual(determinationSlot).assertTrue();
 
   const graphql = process.env.ZEKO_GRAPHQL || 'https://testnet.zeko.io';
+  const archiveGraphql = process.env.ZEKO_ARCHIVE_GRAPHQL || graphql;
   const networkId = process.env.ZEKO_NETWORK_ID || 'testnet';
   const txFee = process.env.TX_FEE || '200000000';
   const sender = readSenderPrivateKey();
@@ -75,7 +76,7 @@ async function main(): Promise<void> {
   const network = Mina.Network({
     networkId: networkId as never,
     mina: graphql,
-    archive: graphql
+    archive: archiveGraphql
   });
   Mina.setActiveInstance(network);
 

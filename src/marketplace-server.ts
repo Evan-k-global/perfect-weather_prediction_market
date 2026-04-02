@@ -842,18 +842,19 @@ function parseIntOrDefault(value: string | null, fallback: number): number {
 
 function getNetworkConfig() {
   const graphql = process.env.ZEKO_GRAPHQL || 'https://testnet.zeko.io';
+  const archiveGraphql = process.env.ZEKO_ARCHIVE_GRAPHQL || graphql;
   const requestedNetworkId = process.env.ZEKO_NETWORK_ID || 'testnet';
   const isZekoTestnet = /testnet\.zeko\.io/i.test(graphql);
   const networkId = isZekoTestnet && requestedNetworkId === 'zeko' ? 'testnet' : requestedNetworkId;
-  return { graphql, networkId };
+  return { graphql, archiveGraphql, networkId };
 }
 
 function setActiveZekoNetwork() {
-  const { graphql, networkId } = getNetworkConfig();
+  const { graphql, archiveGraphql, networkId } = getNetworkConfig();
   const network = Mina.Network({
     networkId: networkId as never,
     mina: graphql,
-    archive: graphql
+    archive: archiveGraphql
   });
   Mina.setActiveInstance(network);
 }
