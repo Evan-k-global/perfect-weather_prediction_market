@@ -322,6 +322,15 @@ let privateBatchLeaseStartedAtUnixMs: number | null = null;
 let fastContractCompilePromise: Promise<void> | null = null;
 let lastStateRefreshAtUnixMs = 0;
 
+function getHostedClaimSubmitTimeoutMs(): number {
+  const explicit = process.env.CLAIM_SUBMITTED_TIMEOUT_MS;
+  if (explicit !== undefined) {
+    const parsed = Number.parseInt(explicit, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return 10 * 60 * 1000;
+}
+
 function getPrivacyMode(): PrivacyMode {
   const mode = (process.env.PRIVACY_MODE || 'zk_strong').trim().toLowerCase();
   if (mode === 'compat') return 'compat';
@@ -1759,8 +1768,7 @@ function resolvePrimaryMarketThresholdF(state: Awaited<ReturnType<typeof loadOpe
 
 function attachOnChainDailyMarketState(
   dailyMarkets: Array<DemoDailyMarket & { settlement?: DailySettlementInfo; currentForecastHighF?: number | null; pOverThreshold?: number; pAtOrBelowThreshold?: number; currentDayIndex?: number | null }>,
-  state: Awaited<ReturnType<typeof loadOperatorState>>,
-  pendingByMarketKey: Map<string, { total: number; over: number }> = new Map()
+  state: Awaited<ReturnType<typeof loadOperatorState>>
 ) {
   const viewList = toMarketViews(state, 0);
   const viewsByKey = new Map(viewList.map((m) => [String(m.marketKey), m]));
@@ -1778,7 +1786,6 @@ function attachOnChainDailyMarketState(
       null;
     const basePoolTmina = onChain ? Number(onChain.totalPositionBet) : market.totalPositionBet;
     const baseOverTmina = onChain ? Number(onChain.totalYesPositionBet) : market.totalYesPositionBet;
-    const pending = pendingByMarketKey.get(onChain ? String(onChain.marketKey) : canonicalMarketKey) || { total: 0, over: 0 };
     return {
       ...market,
       marketKey: onChain ? String(onChain.marketKey) : canonicalMarketKey,
@@ -1789,35 +1796,12 @@ function attachOnChainDailyMarketState(
       onChainResolved: onChain ? Boolean(onChain.resolved) : false,
       onChainPoolTmina: onChain ? Number(onChain.totalPositionBet) : 0,
       onChainOverTmina: onChain ? Number(onChain.totalYesPositionBet) : 0,
-      pendingPrivatePoolTmina: pending.total,
-      pendingPrivateOverTmina: pending.over,
-      projectedPoolTmina: basePoolTmina + pending.total,
-      projectedOverTmina: baseOverTmina + pending.over
+      pendingPrivatePoolTmina: 0,
+      pendingPrivateOverTmina: 0,
+      projectedPoolTmina: basePoolTmina,
+      projectedOverTmina: baseOverTmina
     };
   });
-}
-
-function aggregateSubmittedReceiptBetsForWallet(
-  state: Awaited<ReturnType<typeof loadOperatorState>>,
-  walletPublicKey: string | null
-): Map<string, { total: number; over: number }> {
-  const aggregates = new Map<string, { total: number; over: number }>();
-  if (!walletPublicKey) return aggregates;
-  const currentZkappPublicKey = state.zkappPublicKey || null;
-  for (const meta of Object.values(state.receiptMeta || {})) {
-    if (!meta) continue;
-    if (meta.walletPublicKey !== walletPublicKey) continue;
-    if (!metaMatchesCurrentZkapp(meta, currentZkappPublicKey)) continue;
-    if (getReceiptFundingStatus(meta) !== 'submitted') continue;
-    const marketKey = String(meta.marketKey || '');
-    if (!marketKey) continue;
-    const entry = aggregates.get(marketKey) || { total: 0, over: 0 };
-    const stake = Number.isFinite(Number(meta.stakeTmina)) ? Number(meta.stakeTmina) : 0;
-    entry.total += stake;
-    if (meta.side === 'over') entry.over += stake;
-    aggregates.set(marketKey, entry);
-  }
-  return aggregates;
 }
 
 function deriveDailyMarketsFromOnChainState(
@@ -2609,6 +2593,35 @@ function markReceiptClaimConfirmed(state: Awaited<ReturnType<typeof loadOperator
   return true;
 }
 
+function resetSubmittedClaimForRetry(
+  target: {
+    claimStatus?: 'claimable' | 'submitted' | 'confirmed' | 'not-applicable' | null;
+    claimTxHash?: string | null;
+    claimSubmittedAtUnixMs?: number | null;
+    claimConfirmedAtUnixMs?: number | null;
+  } | null | undefined
+): boolean {
+  if (!target) return false;
+  let dirty = false;
+  if (target.claimStatus !== 'claimable') {
+    target.claimStatus = 'claimable';
+    dirty = true;
+  }
+  if (target.claimTxHash !== null) {
+    target.claimTxHash = null;
+    dirty = true;
+  }
+  if (target.claimSubmittedAtUnixMs !== null) {
+    target.claimSubmittedAtUnixMs = null;
+    dirty = true;
+  }
+  if (target.claimConfirmedAtUnixMs !== null) {
+    target.claimConfirmedAtUnixMs = null;
+    dirty = true;
+  }
+  return dirty;
+}
+
 type DerivedResolvedOutcomeMap = Map<string, 'over' | 'under'>;
 
 function getEffectiveResolvedMarketState(
@@ -2681,6 +2694,7 @@ async function reconcileSubmittedPayoutClaims(stateFile: string) {
   const state = await loadOperatorState(stateFile);
   let dirty = finalizeReceiptClaimStatuses(state);
   const derivedResolvedOutcomes: DerivedResolvedOutcomeMap = new Map();
+  const submittedTimeoutMs = getHostedClaimSubmitTimeoutMs();
   const pendingClaims = Object.entries(state.positionMeta || {}).filter(([, meta]) => {
     return Boolean(meta?.claimStatus === 'submitted' && meta?.claimTxHash);
   });
@@ -2708,9 +2722,20 @@ async function reconcileSubmittedPayoutClaims(stateFile: string) {
       }
       if (status === 'INCLUDED') {
         dirty = markPositionClaimConfirmed(state, positionKey, Date.now()) || dirty;
+      } else if (
+        status !== 'INCLUDED' &&
+        Number.isFinite(meta.claimSubmittedAtUnixMs) &&
+        now - Number(meta.claimSubmittedAtUnixMs) >= submittedTimeoutMs
+      ) {
+        dirty = resetSubmittedClaimForRetry(meta) || dirty;
       }
     } catch {
-      // Leave claim pending if status cannot be fetched yet.
+      if (
+        Number.isFinite(meta?.claimSubmittedAtUnixMs) &&
+        now - Number(meta.claimSubmittedAtUnixMs) >= submittedTimeoutMs
+      ) {
+        dirty = resetSubmittedClaimForRetry(meta) || dirty;
+      }
     }
   }
   for (const [receiptKey, meta] of pendingReceiptClaims) {
@@ -2727,9 +2752,22 @@ async function reconcileSubmittedPayoutClaims(stateFile: string) {
       if (status === 'INCLUDED') {
         derivedResolvedOutcomes.set(meta.marketKey, meta.side);
         dirty = markReceiptClaimConfirmed(state, receiptKey, Date.now()) || dirty;
+      } else if (
+        meta.claimStatus === 'submitted' &&
+        status !== 'INCLUDED' &&
+        Number.isFinite(meta.claimSubmittedAtUnixMs) &&
+        now - Number(meta.claimSubmittedAtUnixMs) >= submittedTimeoutMs
+      ) {
+        dirty = resetSubmittedClaimForRetry(meta) || dirty;
       }
     } catch {
-      // Leave claim pending if status cannot be fetched yet.
+      if (
+        meta.claimStatus === 'submitted' &&
+        Number.isFinite(meta?.claimSubmittedAtUnixMs) &&
+        now - Number(meta.claimSubmittedAtUnixMs) >= submittedTimeoutMs
+      ) {
+        dirty = resetSubmittedClaimForRetry(meta) || dirty;
+      }
     }
   }
   if (dirty) {
@@ -4060,13 +4098,10 @@ async function main(): Promise<void> {
       if (req.method === 'GET' && url.pathname === '/api/demo/daily-markets') {
         const snapshot = await loadWeatherSnapshot();
         const state = await loadOperatorState(defaultStatePath);
-        const walletPublicKey = url.searchParams.get('walletPublicKey');
         const baseDailyMarkets = await readDisplayDailyMarkets(state, snapshot);
-        const pendingByMarketKey = aggregateSubmittedReceiptBetsForWallet(state, walletPublicKey);
         const dailyMarkets = attachOnChainDailyMarketState(
           await withDailySettlementInfo(withCurrentForecast(baseDailyMarkets, snapshot)),
-          state,
-          pendingByMarketKey
+          state
         );
         writeJson(res, 200, {
           count: dailyMarkets.length,
