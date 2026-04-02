@@ -2330,6 +2330,33 @@ function getReceiptFundingStatus(meta: { fundingStatus?: 'submitted' | 'confirme
   return meta.fundingStatus === 'submitted' ? 'submitted' : 'confirmed';
 }
 
+function reconcileReceiptFundingStatuses(state: Awaited<ReturnType<typeof loadOperatorState>>): boolean {
+  state.receiptMeta = state.receiptMeta || {};
+  const receipts = state.receipts || {};
+  let dirty = false;
+  for (const [receiptKey, meta] of Object.entries(state.receiptMeta)) {
+    if (!meta) continue;
+    const onChainReceiptExists = Boolean(receipts[receiptKey]);
+    if (onChainReceiptExists) {
+      if (meta.fundingStatus !== 'confirmed') {
+        meta.fundingStatus = 'confirmed';
+        dirty = true;
+      }
+      if (!Number.isFinite(meta.fundingConfirmedAtUnixMs as number)) {
+        meta.fundingConfirmedAtUnixMs = Date.now();
+        dirty = true;
+      }
+      continue;
+    }
+    if (meta.fundingStatus === 'confirmed') {
+      meta.fundingStatus = 'submitted';
+      meta.fundingConfirmedAtUnixMs = null;
+      dirty = true;
+    }
+  }
+  return dirty;
+}
+
 function tminaToNanomina(valueTmina: bigint): bigint {
   return valueTmina * 1_000_000_000n;
 }
@@ -2693,6 +2720,7 @@ async function reconcileSubmittedPayoutClaims(stateFile: string) {
   setActiveZekoNetwork();
   const state = await loadOperatorState(stateFile);
   let dirty = finalizeReceiptClaimStatuses(state);
+  dirty = reconcileReceiptFundingStatuses(state) || dirty;
   const derivedResolvedOutcomes: DerivedResolvedOutcomeMap = new Map();
   const submittedTimeoutMs = getHostedClaimSubmitTimeoutMs();
   const pendingClaims = Object.entries(state.positionMeta || {}).filter(([, meta]) => {
@@ -3476,17 +3504,6 @@ async function main(): Promise<void> {
             side: intent.addYesBet === intent.addTotalBet ? 'over' : 'under',
             stakeTmina: intent.addTotalBet
           };
-          try {
-            setActiveZekoNetwork();
-            const { graphql } = getNetworkConfig();
-            const fundingTxStatus = await fetchTransactionStatus(txHash, graphql);
-            if (fundingTxStatus === 'INCLUDED') {
-              state.receiptMeta[intent.positionKey].fundingStatus = 'confirmed';
-              state.receiptMeta[intent.positionKey].fundingConfirmedAtUnixMs = Date.now();
-            }
-          } catch {
-            // Leave bet in submitted state until a later refresh confirms inclusion.
-          }
         } else if (intent.type === 'payout-claim') {
           await recoverAndRecordReceiptClaimFinalize({
             state,
