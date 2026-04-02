@@ -1124,7 +1124,7 @@
             ${positions.map((item) => `
               <div class="market" style="margin-bottom:8px;">
                 <div class="small"><b>${escapeHtml(item.marketDate || "On-chain market")}</b> | ${escapeHtml(String(item.side || "").toUpperCase())} | ${escapeHtml(String(item.stakeTmina ?? "n/a"))} tMINA</div>
-                <div class="tiny">${item.claimStatus === "receipt-pending-claims-phase" ? "Bet recorded | claim unlocks after daily finalization" : item.resolved ? `Resolved ${escapeHtml(String(item.resolvedOutcome || "").toUpperCase())} ${item.won ? "(won)" : "(lost)"}` : "Open on-chain"}${item.claimed ? " | Claimed" : ""}</div>
+                <div class="tiny">${item.fundingStatus === "submitted" ? "Bet submitted | awaiting chain inclusion" : item.claimStatus === "receipt-pending-claims-phase" ? "Bet recorded | claim unlocks after daily finalization" : item.resolved ? `Resolved ${escapeHtml(String(item.resolvedOutcome || "").toUpperCase())} ${item.won ? "(won)" : "(lost)"}` : "Open on-chain"}${item.claimed ? " | Claimed" : ""}${item.fundingTxHash ? ` | Tx ${escapeHtml(String(item.fundingTxHash))}` : ""}</div>
               </div>
             `).join("")}
           `);

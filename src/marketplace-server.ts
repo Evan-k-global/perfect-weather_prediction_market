@@ -2317,6 +2317,10 @@ function payoutNanominaForStake(totalPositionBet: bigint, totalYesPositionBet: b
   return (totalPositionBet * stake) / pool;
 }
 
+function getReceiptFundingStatus(meta: { fundingStatus?: 'submitted' | 'confirmed' | null }): 'submitted' | 'confirmed' {
+  return meta.fundingStatus === 'submitted' ? 'submitted' : 'confirmed';
+}
+
 function tminaToNanomina(valueTmina: bigint): bigint {
   return valueTmina * 1_000_000_000n;
 }
@@ -2497,6 +2501,9 @@ async function maybeBackfillReceiptMetaForWallet(
       ownerCommitment,
       createdAtUnixMs: Number(evt.blockHeight?.toString?.() || 0),
       fundingTxHash: txHash,
+      fundingStatus: 'confirmed',
+      fundingSubmittedAtUnixMs: Number(evt.blockHeight?.toString?.() || 0),
+      fundingConfirmedAtUnixMs: Number(evt.blockHeight?.toString?.() || 0),
       receiptCommitment: data.receiptCommitment.toString(),
       receiptSalt: '',
       side,
@@ -3398,11 +3405,25 @@ async function main(): Promise<void> {
             ownerCommitment: ownerCommitmentFromWalletPublicKey(intent.walletPublicKey).toString(),
             createdAtUnixMs: intent.createdAtUnixMs,
             fundingTxHash: txHash,
+            fundingStatus: 'submitted',
+            fundingSubmittedAtUnixMs: Date.now(),
+            fundingConfirmedAtUnixMs: null,
             receiptCommitment: intent.receiptCommitment,
             receiptSalt: intent.receiptSalt || '',
             side: intent.addYesBet === intent.addTotalBet ? 'over' : 'under',
             stakeTmina: intent.addTotalBet
           };
+          try {
+            setActiveZekoNetwork();
+            const { graphql } = getNetworkConfig();
+            const fundingTxStatus = await fetchTransactionStatus(txHash, graphql);
+            if (fundingTxStatus === 'INCLUDED') {
+              state.receiptMeta[intent.positionKey].fundingStatus = 'confirmed';
+              state.receiptMeta[intent.positionKey].fundingConfirmedAtUnixMs = Date.now();
+            }
+          } catch {
+            // Leave bet in submitted state until a later refresh confirms inclusion.
+          }
         } else if (intent.type === 'payout-claim') {
           await recoverAndRecordReceiptClaimFinalize({
             state,
@@ -3420,9 +3441,11 @@ async function main(): Promise<void> {
             await refreshState(projectRoot);
             const refreshed = await loadOperatorState(defaultStatePath);
             if (intent.type === 'market-bet') {
-              if (!refreshed.receipts?.[intent.positionKey]) {
-                refreshed.receiptMeta = refreshed.receiptMeta || {};
-                delete refreshed.receiptMeta[intent.positionKey];
+              refreshed.receiptMeta = refreshed.receiptMeta || {};
+              const refreshedMeta = refreshed.receiptMeta[intent.positionKey];
+              if (refreshedMeta && refreshed.receipts?.[intent.positionKey]) {
+                refreshedMeta.fundingStatus = 'confirmed';
+                refreshedMeta.fundingConfirmedAtUnixMs = refreshedMeta.fundingConfirmedAtUnixMs || Date.now();
               }
             }
             await saveOperatorState(defaultStatePath, refreshed);
@@ -3531,6 +3554,7 @@ async function main(): Promise<void> {
               stakeTmina: meta.stakeTmina,
               createdAtUnixMs: meta.createdAtUnixMs,
               fundingTxHash: meta.fundingTxHash,
+              fundingStatus: getReceiptFundingStatus(meta),
               resolved,
               resolvedOutcome,
               won,

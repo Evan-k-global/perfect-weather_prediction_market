@@ -70,6 +70,9 @@ export type StoredReceiptMeta = {
   ownerCommitment: string;
   createdAtUnixMs: number;
   fundingTxHash: string | null;
+  fundingStatus?: 'submitted' | 'confirmed' | null;
+  fundingSubmittedAtUnixMs?: number | null;
+  fundingConfirmedAtUnixMs?: number | null;
   receiptCommitment: string;
   receiptSalt: string;
   side: 'over' | 'under';
