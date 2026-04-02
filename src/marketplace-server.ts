@@ -371,9 +371,6 @@ function shouldAssertChainRootsInBetContext(): boolean {
     const normalized = explicit.trim().toLowerCase();
     return !['0', 'false', 'no', 'off'].includes(normalized);
   }
-  if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
-    return false;
-  }
   return true;
 }
 
@@ -2958,6 +2955,10 @@ async function buildClaimPayoutContext(params: {
   const zkappAddress = getZkappPublicKey();
 
   const { state, derivedResolvedOutcomes } = await reconcileSubmittedPayoutClaims(stateFile);
+  if (shouldAssertChainRootsInBetContext()) {
+    await assertLocalMarketsRootMatchesChain(zkappAddress, state);
+    await assertLocalReceiptsRootMatchesChain(zkappAddress, state);
+  }
   const meta = state.receiptMeta?.[positionKey];
   if (!meta) throw new Error('receipt metadata missing for payout claim');
   if (meta.walletPublicKey !== feePayerPublicKey) {
