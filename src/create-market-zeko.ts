@@ -113,7 +113,7 @@ async function main(): Promise<void> {
   await withTxRetry(
     async () => {
       const tx = await Mina.transaction({ sender: sender.toPublicKey(), fee: txFee }, async () => {
-        zkapp.createMarket(marketKey, newLeaf, marketsMap.getWitness(marketKey));
+      await zkapp.createMarket(marketKey, newLeaf, marketsMap.getWitness(marketKey));
       });
       await tx.prove();
       await tx.sign([sender]).send();

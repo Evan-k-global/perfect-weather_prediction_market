@@ -160,7 +160,7 @@ async function buildMarketBetTx(context: BrowserMarketBetContext): Promise<unkno
   const tx = await Mina.transaction({ sender: feePayer, fee: context.fee }, async () => {
     const bettorPayment = AccountUpdate.createSigned(feePayer);
     bettorPayment.send({ to: zkappAddress, amount: UInt64.from(betAmountNanomina) });
-    zkapp.placeReceiptBet(
+    await zkapp.placeReceiptBet(
       marketKey,
       oldLeaf,
       newLeaf,
@@ -189,7 +189,7 @@ async function buildClaimPayoutTx(context: ClaimPayoutContext): Promise<unknown>
   const zkappAddress = PublicKey.fromBase58(context.zkappPublicKey);
   const zkapp = new FastPredictionMarketPlatform(zkappAddress);
   const tx = await Mina.transaction({ sender: feePayer, fee: context.fee }, async () => {
-    zkapp.claimReceiptPayout(
+    await zkapp.claimReceiptPayout(
       Field(context.marketKey),
       deserializeMarketLeaf(context.resolvedLeaf),
       deserializeMerkleWitness(context.marketWitness),

@@ -276,7 +276,7 @@ async function main(): Promise<void> {
       await withTxRetry(
         async () => {
           const tx = await Mina.transaction({ sender: resolver.toPublicKey(), fee: txFee }, async () => {
-            zkapp.resolveWeatherMarket(
+            await zkapp.resolveWeatherMarket(
               marketKey,
               oldLeaf,
               resolvedLeaf,
