@@ -321,6 +321,9 @@ let privateBatchInFlight = false;
 let privateBatchLeaseStartedAtUnixMs: number | null = null;
 let fastContractCompilePromise: Promise<void> | null = null;
 let lastStateRefreshAtUnixMs = 0;
+let activeChainMutationLease: { owner: string; expiresAtUnixMs: number; kind: string } | null = null;
+
+const CHAIN_MUTATION_LEASE_POLL_MS = 250;
 
 function getHostedClaimSubmitTimeoutMs(): number {
   const explicit = process.env.CLAIM_SUBMITTED_TIMEOUT_MS;
@@ -496,6 +499,60 @@ function writeJson(res: import('node:http').ServerResponse, status: number, data
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(data, null, 2));
+}
+
+function getChainMutationLeaseStatus() {
+  if (activeChainMutationLease && activeChainMutationLease.expiresAtUnixMs <= Date.now()) {
+    activeChainMutationLease = null;
+  }
+  return activeChainMutationLease;
+}
+
+async function acquireChainMutationLease(params: {
+  owner: string;
+  kind: string;
+  holdMs: number;
+  waitMs: number;
+}): Promise<void> {
+  const deadline = Date.now() + params.waitMs;
+  while (Date.now() <= deadline) {
+    const current = getChainMutationLeaseStatus();
+    if (!current || current.owner === params.owner) {
+      activeChainMutationLease = {
+        owner: params.owner,
+        kind: params.kind,
+        expiresAtUnixMs: Date.now() + params.holdMs
+      };
+      return;
+    }
+    await sleep(CHAIN_MUTATION_LEASE_POLL_MS);
+  }
+  const current = getChainMutationLeaseStatus();
+  throw new Error(
+    `chain mutation busy${current ? ` (${current.kind})` : ''}; retry shortly`
+  );
+}
+
+function releaseChainMutationLease(owner: string): void {
+  const current = getChainMutationLeaseStatus();
+  if (current && current.owner === owner) {
+    activeChainMutationLease = null;
+  }
+}
+
+async function withChainMutationLease<T>(params: {
+  owner: string;
+  kind: string;
+  holdMs: number;
+  waitMs: number;
+  work: () => Promise<T>;
+}): Promise<T> {
+  await acquireChainMutationLease(params);
+  try {
+    return await params.work();
+  } finally {
+    releaseChainMutationLease(params.owner);
+  }
 }
 
 function callerLabel(req: IncomingMessage): string {
@@ -838,6 +895,10 @@ function parseIntOrDefault(value: string | null, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function getNetworkConfig() {
@@ -3310,49 +3371,56 @@ async function main(): Promise<void> {
           }
         }
 
-        const txResult = useRemoteTxProver()
-          ? await (async () => {
-              return await withBetProofStateRetry(projectRoot, async () => {
-                const built = await withFreshMarketStateRetry(projectRoot, async () =>
-                  buildBrowserFeePayerMarketBetContext({
-                    stateFile: defaultStatePath,
-                    marketKey: String(selectedMarket.marketKey),
-                    addTotalBet: Math.floor(addTotalBet),
-                    addYesBet: Math.floor(addYesBet),
-                    marketDate,
-                    feePayerPublicKey: walletPublicKey,
-                    userId
-                  })
-                );
-                const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/market-bet', {
-                  context: built.buildContext
-                });
-                return { built, tx: proved.tx };
-              });
-            })()
-            : useLocalServerBetProving()
-            ? await (async () => {
-                return await withBetProofStateRetry(projectRoot, async () => {
-                  const built = await withFreshMarketStateRetry(projectRoot, async () =>
-                    buildBrowserFeePayerMarketBetContext({
-                      stateFile: defaultStatePath,
-                      marketKey: String(selectedMarket.marketKey),
-                      addTotalBet: Math.floor(addTotalBet),
-                      addYesBet: Math.floor(addYesBet),
-                      marketDate,
-                      feePayerPublicKey: walletPublicKey,
-                      userId
-                    })
-                  );
-                  return {
-                    built,
-                    tx: await buildLocalServerReceiptBetTx(built.buildContext)
-                  };
-                });
-              })()
-            : (() => {
-                throw new Error('no transaction proving path configured');
-              })();
+        const txResult = await withChainMutationLease({
+          owner: `bet:${randomUUID()}`,
+          kind: 'market-bet',
+          holdMs: 180_000,
+          waitMs: 45_000,
+          work: async () =>
+            useRemoteTxProver()
+              ? await (async () => {
+                  return await withBetProofStateRetry(projectRoot, async () => {
+                    const built = await withFreshMarketStateRetry(projectRoot, async () =>
+                      buildBrowserFeePayerMarketBetContext({
+                        stateFile: defaultStatePath,
+                        marketKey: String(selectedMarket.marketKey),
+                        addTotalBet: Math.floor(addTotalBet),
+                        addYesBet: Math.floor(addYesBet),
+                        marketDate,
+                        feePayerPublicKey: walletPublicKey,
+                        userId
+                      })
+                    );
+                    const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/market-bet', {
+                      context: built.buildContext
+                    });
+                    return { built, tx: proved.tx };
+                  });
+                })()
+              : useLocalServerBetProving()
+              ? await (async () => {
+                  return await withBetProofStateRetry(projectRoot, async () => {
+                    const built = await withFreshMarketStateRetry(projectRoot, async () =>
+                      buildBrowserFeePayerMarketBetContext({
+                        stateFile: defaultStatePath,
+                        marketKey: String(selectedMarket.marketKey),
+                        addTotalBet: Math.floor(addTotalBet),
+                        addYesBet: Math.floor(addYesBet),
+                        marketDate,
+                        feePayerPublicKey: walletPublicKey,
+                        userId
+                      })
+                    );
+                    return {
+                      built,
+                      tx: await buildLocalServerReceiptBetTx(built.buildContext)
+                    };
+                  });
+                })()
+              : (() => {
+                  throw new Error('no transaction proving path configured');
+                })()
+        });
         const built = txResult.built;
         const tx = txResult.tx;
         writeJson(res, 200, {
@@ -3398,20 +3466,26 @@ async function main(): Promise<void> {
         let mode: string;
 
         if (useRemoteTxProver()) {
-          const builtAndTx = await (async () => {
-            const built = await withFreshMarketStateRetry(projectRoot, async () =>
-              buildClaimPayoutContext({
-                stateFile: defaultStatePath,
-                marketKey,
-                positionKey,
-                feePayerPublicKey: walletPublicKey
-              })
-            );
-            const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/claim-payout', {
-              context: built.buildContext
-            });
-            return { built, tx: proved.tx };
-          })();
+          const builtAndTx = await withChainMutationLease({
+            owner: `claim:${randomUUID()}`,
+            kind: 'claim-payout',
+            holdMs: 180_000,
+            waitMs: 45_000,
+            work: async () => {
+              const built = await withFreshMarketStateRetry(projectRoot, async () =>
+                buildClaimPayoutContext({
+                  stateFile: defaultStatePath,
+                  marketKey,
+                  positionKey,
+                  feePayerPublicKey: walletPublicKey
+                })
+              );
+              const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/claim-payout', {
+                context: built.buildContext
+              });
+              return { built, tx: proved.tx };
+            }
+          });
           tx = builtAndTx.tx;
           const built = builtAndTx.built;
           fee = built.fee;
@@ -3434,15 +3508,22 @@ async function main(): Promise<void> {
           intentId = intent.id;
           mode = 'wallet-fee-payer-remote-prover';
         } else {
-          const built = await withFreshMarketStateRetry(projectRoot, async () =>
-            buildWalletFeePayerClaimPayoutTx({
-              stateFile: defaultStatePath,
-              marketKey,
-              positionKey,
-              feePayerPublicKey: walletPublicKey,
-              userId: walletPublicKey
-            })
-          );
+          const built = await withChainMutationLease({
+            owner: `claim:${randomUUID()}`,
+            kind: 'claim-payout',
+            holdMs: 180_000,
+            waitMs: 45_000,
+            work: async () =>
+              await withFreshMarketStateRetry(projectRoot, async () =>
+                buildWalletFeePayerClaimPayoutTx({
+                  stateFile: defaultStatePath,
+                  marketKey,
+                  positionKey,
+                  feePayerPublicKey: walletPublicKey,
+                  userId: walletPublicKey
+                })
+              )
+          });
           tx = built.tx;
           fee = built.fee;
           payoutSummary = built.payoutSummary;
@@ -3954,6 +4035,33 @@ async function main(): Promise<void> {
           state,
           dailyMarkets
         });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/oracle/acquire-chain-lease') {
+        const body = await readJsonBody(req);
+        requireOracleAuthorization(req, body as Record<string, unknown>);
+        const owner = requireString(body.owner, 'owner');
+        const kind = typeof body.kind === 'string' && body.kind.trim() ? body.kind.trim() : 'oracle-chain-actions';
+        const holdMs = Math.min(
+          Math.max(Number.parseInt(String(body.holdMs || '0'), 10) || 180_000, 5_000),
+          10 * 60_000
+        );
+        const waitMs = Math.min(
+          Math.max(Number.parseInt(String(body.waitMs || '0'), 10) || 120_000, 1_000),
+          10 * 60_000
+        );
+        await acquireChainMutationLease({ owner, kind, holdMs, waitMs });
+        writeJson(res, 200, { ok: true, owner, kind, holdMs });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/oracle/release-chain-lease') {
+        const body = await readJsonBody(req);
+        requireOracleAuthorization(req, body as Record<string, unknown>);
+        const owner = requireString(body.owner, 'owner');
+        releaseChainMutationLease(owner);
+        writeJson(res, 200, { ok: true, owner });
         return;
       }
 

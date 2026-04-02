@@ -1,5 +1,6 @@
 import './env.js';
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -253,73 +254,88 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
   await saveDailyMarketsFile(dailyMarketsFile, dailyMarkets);
 
   const projectRoot = process.cwd();
-  if (runEnsurePass) {
-    const ensureArgs = [
-      'ensure-daily-markets:zeko',
-      '--',
-      '--state-file',
-      stateFile,
-      '--daily-markets-file',
-      dailyMarketsFile
-    ];
-    const ensured = await execFileAsync('pnpm', ensureArgs, { cwd: projectRoot, env: process.env });
-    if (ensured.stdout.trim()) console.log(ensured.stdout.trim());
-    if (ensured.stderr.trim()) console.error(ensured.stderr.trim());
-    lastEnsureDate = activeMarketDate;
-  }
-
-  const updatedStateAfterEnsure = await loadJsonFile<OperatorStateFile>(stateFile);
-  const updatedDailyMarketsAfterEnsure = await loadJsonFile<Record<string, unknown>>(dailyMarketsFile);
-  const marketDates = collectMarketDates(updatedStateAfterEnsure, updatedDailyMarketsAfterEnsure);
-  if (runResolvePass) {
-    const targetDates = new Set([
-      ...resolveDecision.pastDueUnresolvedDates,
-      ...resolveDecision.eligibleTodayDates
-    ]);
-    for (const [marketKey, marketDate] of marketDates.entries()) {
-      const stored = updatedStateAfterEnsure.markets[marketKey];
-      if (!marketDate || !stored || stored.resolved === '1') continue;
-      const shouldResolve = targetDates.has(marketDate);
-      if (!shouldResolve) continue;
-      const resolveArgs = [
-        'resolve-daily-market:zeko',
-        '--',
-        '--market-date',
-        marketDate,
-        '--state-file',
-        stateFile
-      ];
-      console.log(`[oracle-worker] resolving marketDate=${marketDate}`);
-      const resolved = await execFileAsync('pnpm', resolveArgs, { cwd: projectRoot, env: process.env });
-      if (resolved.stdout.trim()) console.log(resolved.stdout.trim());
-      if (resolved.stderr.trim()) console.error(resolved.stderr.trim());
-    }
-    lastResolveWindowKey = resolveDecision.windowKey;
-  }
-
-  const finalState = await loadJsonFile<OperatorStateFile>(stateFile);
-  const finalDailyMarkets = await loadJsonFile<Record<string, unknown>>(dailyMarketsFile);
-  const markets = changedKeys(state.markets || {}, finalState.markets || {});
-  const marketMeta = changedKeys(state.marketMeta || {}, finalState.marketMeta || {});
-  const usedNonces = changedKeys(state.usedNonces || {}, finalState.usedNonces || {});
-  const changedDailyMarkets = changedKeys(dailyMarkets, finalDailyMarkets);
-  if (
-    Object.keys(markets).length === 0 &&
-    Object.keys(marketMeta).length === 0 &&
-    Object.keys(usedNonces).length === 0 &&
-    Object.keys(changedDailyMarkets).length === 0
-  ) {
-    return;
-  }
-  const imported = await req(baseUrl, oracleToken, '/api/oracle/import-state', {
-    markets,
-    marketMeta,
-    usedNonces,
-    dailyMarkets: changedDailyMarkets
+  const leaseOwner = `oracle:${randomUUID()}`;
+  await req(baseUrl, oracleToken, '/api/oracle/acquire-chain-lease', {
+    owner: leaseOwner,
+    kind: 'oracle-chain-actions',
+    holdMs: 10 * 60 * 1000,
+    waitMs: 2 * 60 * 1000
   });
-  console.log(
-    `[oracle-worker] imported chain actions markets=${imported.marketsImported} marketMeta=${imported.marketMetaImported} dailyMarkets=${imported.dailyMarketsImported} usedNonces=${imported.usedNoncesImported}`
-  );
+  try {
+    if (runEnsurePass) {
+      const ensureArgs = [
+        'ensure-daily-markets:zeko',
+        '--',
+        '--state-file',
+        stateFile,
+        '--daily-markets-file',
+        dailyMarketsFile
+      ];
+      const ensured = await execFileAsync('pnpm', ensureArgs, { cwd: projectRoot, env: process.env });
+      if (ensured.stdout.trim()) console.log(ensured.stdout.trim());
+      if (ensured.stderr.trim()) console.error(ensured.stderr.trim());
+      lastEnsureDate = activeMarketDate;
+    }
+
+    const updatedStateAfterEnsure = await loadJsonFile<OperatorStateFile>(stateFile);
+    const updatedDailyMarketsAfterEnsure = await loadJsonFile<Record<string, unknown>>(dailyMarketsFile);
+    const marketDates = collectMarketDates(updatedStateAfterEnsure, updatedDailyMarketsAfterEnsure);
+    if (runResolvePass) {
+      const targetDates = new Set([
+        ...resolveDecision.pastDueUnresolvedDates,
+        ...resolveDecision.eligibleTodayDates
+      ]);
+      for (const [marketKey, marketDate] of marketDates.entries()) {
+        const stored = updatedStateAfterEnsure.markets[marketKey];
+        if (!marketDate || !stored || stored.resolved === '1') continue;
+        const shouldResolve = targetDates.has(marketDate);
+        if (!shouldResolve) continue;
+        const resolveArgs = [
+          'resolve-daily-market:zeko',
+          '--',
+          '--market-date',
+          marketDate,
+          '--state-file',
+          stateFile
+        ];
+        console.log(`[oracle-worker] resolving marketDate=${marketDate}`);
+        const resolved = await execFileAsync('pnpm', resolveArgs, { cwd: projectRoot, env: process.env });
+        if (resolved.stdout.trim()) console.log(resolved.stdout.trim());
+        if (resolved.stderr.trim()) console.error(resolved.stderr.trim());
+      }
+      lastResolveWindowKey = resolveDecision.windowKey;
+    }
+
+    const finalState = await loadJsonFile<OperatorStateFile>(stateFile);
+    const finalDailyMarkets = await loadJsonFile<Record<string, unknown>>(dailyMarketsFile);
+    const markets = changedKeys(state.markets || {}, finalState.markets || {});
+    const marketMeta = changedKeys(state.marketMeta || {}, finalState.marketMeta || {});
+    const usedNonces = changedKeys(state.usedNonces || {}, finalState.usedNonces || {});
+    const changedDailyMarkets = changedKeys(dailyMarkets, finalDailyMarkets);
+    if (
+      Object.keys(markets).length === 0 &&
+      Object.keys(marketMeta).length === 0 &&
+      Object.keys(usedNonces).length === 0 &&
+      Object.keys(changedDailyMarkets).length === 0
+    ) {
+      return;
+    }
+    const imported = await req(baseUrl, oracleToken, '/api/oracle/import-state', {
+      markets,
+      marketMeta,
+      usedNonces,
+      dailyMarkets: changedDailyMarkets
+    });
+    console.log(
+      `[oracle-worker] imported chain actions markets=${imported.marketsImported} marketMeta=${imported.marketMetaImported} dailyMarkets=${imported.dailyMarketsImported} usedNonces=${imported.usedNoncesImported}`
+    );
+  } finally {
+    try {
+      await req(baseUrl, oracleToken, '/api/oracle/release-chain-lease', { owner: leaseOwner });
+    } catch (error) {
+      console.warn('[oracle-worker] failed to release chain lease:', error instanceof Error ? error.message : String(error));
+    }
+  }
 }
 
 async function runCycle(baseUrl: string, oracleToken: string): Promise<void> {
