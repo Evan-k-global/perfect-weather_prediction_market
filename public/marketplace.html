@@ -568,7 +568,12 @@
         const connectBtn = document.getElementById("connectWallet");
         connectBtn.textContent = "Connected";
         connectBtn.disabled = true;
-        refreshResolvedMarkets().catch((e) => {
+        Promise.all([
+          refreshDailyMarkets(),
+          refreshMarket(),
+          refreshWalletActivity(),
+          refreshResolvedMarkets()
+        ]).catch((e) => {
           setActionOut(toJson({ error: String(e) }));
         });
         return publicKey;
