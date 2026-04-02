@@ -726,7 +726,8 @@
       }
 
       async function refreshDailyMarkets() {
-        const res = await req("/api/demo/daily-markets");
+        const walletQuery = walletPublicKey ? `?walletPublicKey=${encodeURIComponent(walletPublicKey)}` : "";
+        const res = await req(`/api/demo/daily-markets${walletQuery}`);
         const todayIso = currentActivePacificMarketDateIso();
         dailyMarkets = (Array.isArray(res.dailyMarkets) ? res.dailyMarkets : [])
           .filter((m) => typeof m.marketDate === "string" && m.marketDate >= todayIso)

@@ -1759,7 +1759,8 @@ function resolvePrimaryMarketThresholdF(state: Awaited<ReturnType<typeof loadOpe
 
 function attachOnChainDailyMarketState(
   dailyMarkets: Array<DemoDailyMarket & { settlement?: DailySettlementInfo; currentForecastHighF?: number | null; pOverThreshold?: number; pAtOrBelowThreshold?: number; currentDayIndex?: number | null }>,
-  state: Awaited<ReturnType<typeof loadOperatorState>>
+  state: Awaited<ReturnType<typeof loadOperatorState>>,
+  pendingByMarketKey: Map<string, { total: number; over: number }> = new Map()
 ) {
   const viewList = toMarketViews(state, 0);
   const viewsByKey = new Map(viewList.map((m) => [String(m.marketKey), m]));
@@ -1777,6 +1778,7 @@ function attachOnChainDailyMarketState(
       null;
     const basePoolTmina = onChain ? Number(onChain.totalPositionBet) : market.totalPositionBet;
     const baseOverTmina = onChain ? Number(onChain.totalYesPositionBet) : market.totalYesPositionBet;
+    const pending = pendingByMarketKey.get(onChain ? String(onChain.marketKey) : canonicalMarketKey) || { total: 0, over: 0 };
     return {
       ...market,
       marketKey: onChain ? String(onChain.marketKey) : canonicalMarketKey,
@@ -1787,12 +1789,35 @@ function attachOnChainDailyMarketState(
       onChainResolved: onChain ? Boolean(onChain.resolved) : false,
       onChainPoolTmina: onChain ? Number(onChain.totalPositionBet) : 0,
       onChainOverTmina: onChain ? Number(onChain.totalYesPositionBet) : 0,
-      pendingPrivatePoolTmina: 0,
-      pendingPrivateOverTmina: 0,
-      projectedPoolTmina: basePoolTmina,
-      projectedOverTmina: baseOverTmina
+      pendingPrivatePoolTmina: pending.total,
+      pendingPrivateOverTmina: pending.over,
+      projectedPoolTmina: basePoolTmina + pending.total,
+      projectedOverTmina: baseOverTmina + pending.over
     };
   });
+}
+
+function aggregateSubmittedReceiptBetsForWallet(
+  state: Awaited<ReturnType<typeof loadOperatorState>>,
+  walletPublicKey: string | null
+): Map<string, { total: number; over: number }> {
+  const aggregates = new Map<string, { total: number; over: number }>();
+  if (!walletPublicKey) return aggregates;
+  const currentZkappPublicKey = state.zkappPublicKey || null;
+  for (const meta of Object.values(state.receiptMeta || {})) {
+    if (!meta) continue;
+    if (meta.walletPublicKey !== walletPublicKey) continue;
+    if (!metaMatchesCurrentZkapp(meta, currentZkappPublicKey)) continue;
+    if (getReceiptFundingStatus(meta) !== 'submitted') continue;
+    const marketKey = String(meta.marketKey || '');
+    if (!marketKey) continue;
+    const entry = aggregates.get(marketKey) || { total: 0, over: 0 };
+    const stake = Number.isFinite(Number(meta.stakeTmina)) ? Number(meta.stakeTmina) : 0;
+    entry.total += stake;
+    if (meta.side === 'over') entry.over += stake;
+    aggregates.set(marketKey, entry);
+  }
+  return aggregates;
 }
 
 function deriveDailyMarketsFromOnChainState(
@@ -4035,10 +4060,13 @@ async function main(): Promise<void> {
       if (req.method === 'GET' && url.pathname === '/api/demo/daily-markets') {
         const snapshot = await loadWeatherSnapshot();
         const state = await loadOperatorState(defaultStatePath);
+        const walletPublicKey = url.searchParams.get('walletPublicKey');
         const baseDailyMarkets = await readDisplayDailyMarkets(state, snapshot);
+        const pendingByMarketKey = aggregateSubmittedReceiptBetsForWallet(state, walletPublicKey);
         const dailyMarkets = attachOnChainDailyMarketState(
           await withDailySettlementInfo(withCurrentForecast(baseDailyMarkets, snapshot)),
-          state
+          state,
+          pendingByMarketKey
         );
         writeJson(res, 200, {
           count: dailyMarkets.length,
