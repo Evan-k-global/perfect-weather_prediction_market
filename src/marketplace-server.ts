@@ -1906,6 +1906,24 @@ async function withFreshMarketStateRetry<T>(projectRoot: string, work: () => Pro
   }
 }
 
+async function withBetProofStateRetry<T>(projectRoot: string, work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    if (!isRemoteProverStateDriftError(error)) throw error;
+    await refreshState(projectRoot);
+    return await work();
+  }
+}
+
+async function ensureHostedBetBuildState(projectRoot: string, isHosted: boolean): Promise<void> {
+  if (isHosted) {
+    await refreshState(projectRoot);
+    return;
+  }
+  await ensureRecentlySyncedState(projectRoot);
+}
+
 function serializeMerkleWitness(witness: { isLefts: Bool[]; siblings: Field[] }): SerializedMerkleWitness {
   return {
     isLefts: witness.isLefts.map((value) => value.toBoolean()),
@@ -3261,11 +3279,7 @@ async function main(): Promise<void> {
           typeof body.thresholdF === 'number' && Number.isFinite(body.thresholdF) ? Math.round(body.thresholdF) : null;
         const userId = walletPublicKey;
         if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
-        if (useRemoteTxProver() && isHosted) {
-          await ensureFreshHostedProvingState(projectRoot);
-        } else {
-          await ensureRecentlySyncedState(projectRoot);
-        }
+        await ensureHostedBetBuildState(projectRoot, isHosted);
 
         const ensureLocalBettableMarket = async () => {
           let currentState = await loadOperatorState(defaultStatePath);
@@ -3297,24 +3311,7 @@ async function main(): Promise<void> {
 
         const txResult = useRemoteTxProver()
           ? await (async () => {
-              const built = await withFreshMarketStateRetry(projectRoot, async () =>
-                buildBrowserFeePayerMarketBetContext({
-                  stateFile: defaultStatePath,
-                  marketKey: String(selectedMarket.marketKey),
-                  addTotalBet: Math.floor(addTotalBet),
-                  addYesBet: Math.floor(addYesBet),
-                  marketDate,
-                  feePayerPublicKey: walletPublicKey,
-                  userId
-                })
-              );
-              const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/market-bet', {
-                context: built.buildContext
-              });
-              return { built, tx: proved.tx };
-            })()
-            : useLocalServerBetProving()
-            ? await (async () => {
+              return await withBetProofStateRetry(projectRoot, async () => {
                 const built = await withFreshMarketStateRetry(projectRoot, async () =>
                   buildBrowserFeePayerMarketBetContext({
                     stateFile: defaultStatePath,
@@ -3326,10 +3323,31 @@ async function main(): Promise<void> {
                     userId
                   })
                 );
-                return {
-                  built,
-                  tx: await buildLocalServerReceiptBetTx(built.buildContext)
-                };
+                const proved = await requestRemoteTxProver<{ ok: true; tx: unknown }>('/prove/market-bet', {
+                  context: built.buildContext
+                });
+                return { built, tx: proved.tx };
+              });
+            })()
+            : useLocalServerBetProving()
+            ? await (async () => {
+                return await withBetProofStateRetry(projectRoot, async () => {
+                  const built = await withFreshMarketStateRetry(projectRoot, async () =>
+                    buildBrowserFeePayerMarketBetContext({
+                      stateFile: defaultStatePath,
+                      marketKey: String(selectedMarket.marketKey),
+                      addTotalBet: Math.floor(addTotalBet),
+                      addYesBet: Math.floor(addYesBet),
+                      marketDate,
+                      feePayerPublicKey: walletPublicKey,
+                      userId
+                    })
+                  );
+                  return {
+                    built,
+                    tx: await buildLocalServerReceiptBetTx(built.buildContext)
+                  };
+                });
               })()
             : (() => {
                 throw new Error('no transaction proving path configured');
