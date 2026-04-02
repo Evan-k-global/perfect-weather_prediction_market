@@ -49,6 +49,10 @@ export type StoredPositionMeta = {
   walletPublicKey: string;
   createdAtUnixMs: number;
   fundingTxHash: string | null;
+  fundingStatus?: 'submitted' | 'confirmed' | null;
+  fundingSubmittedAtUnixMs?: number | null;
+  fundingConfirmedAtUnixMs?: number | null;
+  pendingPositionLeaf?: StoredPositionLeaf | null;
   claimStatus?: 'submitted' | 'confirmed' | null;
   claimTxHash?: string | null;
   claimSubmittedAtUnixMs?: number | null;

@@ -1347,6 +1347,97 @@ function payoutNanominaForStake(totalPositionBet: bigint, totalYesPositionBet: b
   return (totalPositionBet * stake) / pool;
 }
 
+function getFundingStatus(meta: {
+  fundingStatus?: 'submitted' | 'confirmed' | null;
+  pendingPositionLeaf?: ReturnType<typeof serializePositionLeaf> | null;
+}): 'submitted' | 'confirmed' {
+  if (meta.fundingStatus === 'submitted') return 'submitted';
+  if (meta.fundingStatus === 'confirmed') return 'confirmed';
+  return meta.pendingPositionLeaf ? 'submitted' : 'confirmed';
+}
+
+async function rebuildUserPositionsFromState(state: Awaited<ReturnType<typeof loadOperatorState>>) {
+  const next: UserPositions = {};
+  for (const [positionKey, storedPosition] of Object.entries(state.positions || {})) {
+    const meta = state.positionMeta?.[positionKey];
+    if (!meta || getFundingStatus(meta) !== 'confirmed') continue;
+    const storedMarket = state.markets[meta.marketKey];
+    if (!storedMarket) continue;
+    const marketLeaf = deserializeMarketLeaf(storedMarket);
+    if (marketLeaf.resolved.toBoolean()) continue;
+    const positionLeaf = deserializePositionLeaf(storedPosition);
+    const wallet = meta.walletPublicKey;
+    next[wallet] = next[wallet] || {};
+    const delta = positionDelta(
+      Number(positionLeaf.stake.toString()),
+      positionLeaf.sideOver.toBoolean() ? Number(positionLeaf.stake.toString()) : 0
+    );
+    next[wallet][meta.marketKey] = (next[wallet][meta.marketKey] || 0) + delta;
+  }
+  await saveUserPositions(USER_POSITIONS_FILE, next);
+}
+
+async function reconcileSubmittedFundingBets(stateFile: string, projectRoot: string) {
+  setActiveZekoNetwork();
+  const state = await loadOperatorState(stateFile);
+  const pendingFunding = Object.entries(state.positionMeta || {}).filter(([positionKey, meta]) => {
+    if (!meta?.fundingTxHash) return false;
+    if (getFundingStatus(meta) === 'submitted') return true;
+    return Boolean(meta.fundingStatus == null && state.positions[positionKey]);
+  });
+  if (!pendingFunding.length) return state;
+
+  const { graphql } = getNetworkConfig();
+  let dirty = false;
+  let confirmedFunding = false;
+
+  for (const [positionKey, meta] of pendingFunding) {
+    if (!meta?.fundingTxHash) continue;
+    try {
+      const status = await fetchTransactionStatus(meta.fundingTxHash, graphql);
+      if (status === 'INCLUDED') {
+        if (meta.pendingPositionLeaf && !state.positions[positionKey]) {
+          state.positions[positionKey] = meta.pendingPositionLeaf;
+        }
+        meta.fundingStatus = 'confirmed';
+        meta.fundingConfirmedAtUnixMs = Date.now();
+        meta.pendingPositionLeaf = null;
+        confirmedFunding = true;
+        dirty = true;
+        continue;
+      }
+      if (state.positions[positionKey]) {
+        delete state.positions[positionKey];
+        dirty = true;
+      }
+      if (meta.fundingStatus !== 'submitted') {
+        meta.fundingStatus = 'submitted';
+        dirty = true;
+      }
+      if (meta.fundingSubmittedAtUnixMs == null) {
+        meta.fundingSubmittedAtUnixMs = meta.createdAtUnixMs || Date.now();
+        dirty = true;
+      }
+    } catch {
+      // Leave pending submissions unchanged if status cannot be fetched.
+    }
+  }
+
+  if (dirty) {
+    await saveOperatorState(stateFile, state);
+  }
+  if (confirmedFunding) {
+    await refreshState(projectRoot);
+    const refreshed = await loadOperatorState(stateFile);
+    await rebuildUserPositionsFromState(refreshed);
+    return refreshed;
+  }
+  if (dirty) {
+    await rebuildUserPositionsFromState(state);
+  }
+  return state;
+}
+
 async function listResolvedClaimablePositions(walletPublicKey: string, stateFile: string): Promise<
   Array<{
     positionKey: string;
@@ -1382,6 +1473,7 @@ async function listResolvedClaimablePositions(walletPublicKey: string, stateFile
   }> = [];
   for (const [positionKey, meta] of Object.entries(state.positionMeta || {})) {
     if (!meta || meta.walletPublicKey !== walletPublicKey) continue;
+    if (getFundingStatus(meta) !== 'confirmed') continue;
     const storedPosition = state.positions[positionKey];
     if (!storedPosition) continue;
     const positionLeaf = deserializePositionLeaf(storedPosition);
@@ -1427,10 +1519,12 @@ type WalletMarketActivityItem = {
   marketDate: string | null;
   marketKey: string;
   positionKey: string | null;
-  source: 'queued' | 'onchain';
+  source: 'queued' | 'submitted' | 'onchain';
   side: 'over' | 'under';
   stakeTmina: number;
   payoutTmina: number | null;
+  fundingTxHash: string | null;
+  fundingStatus: 'submitted' | 'confirmed' | null;
   claimed: boolean;
   claimStatus: 'claimable' | 'submitted' | 'confirmed' | null;
   claimTxHash: string | null;
@@ -1439,6 +1533,7 @@ type WalletMarketActivityItem = {
   queuedAtUnixMs: number | null;
   status:
     | 'queued-private'
+    | 'bet-submitted'
     | 'open'
     | 'ready-to-settle'
     | 'ready-to-claim'
@@ -1468,6 +1563,8 @@ async function listWalletMarketActivity(
       side: queued.addYesBet === queued.addTotalBet ? 'over' : 'under',
       stakeTmina: queued.addTotalBet,
       payoutTmina: null,
+      fundingTxHash: queued.fundingTxHash,
+      fundingStatus: null,
       claimed: false,
       claimStatus: null,
       claimTxHash: null,
@@ -1484,6 +1581,35 @@ async function listWalletMarketActivity(
 
   for (const [positionKey, meta] of Object.entries(state.positionMeta || {})) {
     if (!meta || meta.walletPublicKey !== walletPublicKey) continue;
+    const fundingStatus = getFundingStatus(meta);
+    if (fundingStatus === 'submitted') {
+      const pendingPosition = meta.pendingPositionLeaf || state.positions[positionKey];
+      if (!pendingPosition) continue;
+      const positionLeaf = deserializePositionLeaf(pendingPosition);
+      result.push({
+        marketDate: meta.marketDate,
+        marketKey: meta.marketKey,
+        positionKey,
+        source: 'submitted',
+        side: positionLeaf.sideOver.toBoolean() ? 'over' : 'under',
+        stakeTmina: Number(positionLeaf.stake.toString()),
+        payoutTmina: null,
+        fundingTxHash: meta.fundingTxHash || null,
+        fundingStatus: 'submitted',
+        claimed: false,
+        claimStatus: null,
+        claimTxHash: null,
+        claimSubmittedAtUnixMs: null,
+        claimConfirmedAtUnixMs: null,
+        queuedAtUnixMs: meta.fundingSubmittedAtUnixMs || meta.createdAtUnixMs || null,
+        status: 'bet-submitted',
+        canSettle: false,
+        canClaim: false,
+        settledAtUnixMs: null,
+        resolvedOutcome: null
+      });
+      continue;
+    }
     const storedPosition = state.positions[positionKey];
     if (!storedPosition) continue;
     const storedMarket = state.markets[meta.marketKey];
@@ -1521,6 +1647,8 @@ async function listWalletMarketActivity(
       side,
       stakeTmina: Number(stake),
       payoutTmina: payout === null ? null : Number(payout),
+      fundingTxHash: meta.fundingTxHash || null,
+      fundingStatus: 'confirmed',
       claimed,
       claimStatus: claimed ? 'confirmed' : meta.claimStatus === 'submitted' ? 'submitted' : canClaim ? 'claimable' : null,
       claimTxHash: meta.claimTxHash || null,
@@ -1570,7 +1698,7 @@ function markPositionClaimConfirmed(state: Awaited<ReturnType<typeof loadOperato
 
 async function reconcileSubmittedPayoutClaims(stateFile: string) {
   setActiveZekoNetwork();
-  const state = await loadOperatorState(stateFile);
+  const state = await reconcileSubmittedFundingBets(stateFile, path.resolve(__dirname, '..'));
   const pendingClaims = Object.entries(state.positionMeta || {}).filter(([, meta]) => {
     return Boolean(meta?.claimStatus === 'submitted' && meta?.claimTxHash);
   });
@@ -2531,6 +2659,7 @@ async function main(): Promise<void> {
           }
         }
         await refreshState(projectRoot);
+        await reconcileSubmittedFundingBets(defaultStatePath, projectRoot);
         const built = await buildWalletFeePayerMarketBetTx({
           stateFile: defaultStatePath,
           marketKey,
@@ -2626,16 +2755,31 @@ async function main(): Promise<void> {
         }
         const state = await loadOperatorState(defaultStatePath);
         if (intent.type === 'market-bet' && intent.newLeaf) {
-          state.markets[intent.marketKey] = intent.newLeaf;
-          state.positions[intent.positionKey] = intent.newPositionLeaf;
           state.positionMeta = state.positionMeta || {};
           state.positionMeta[intent.positionKey] = {
             marketKey: intent.marketKey,
             marketDate: intent.marketDate,
             walletPublicKey: intent.walletPublicKey,
             createdAtUnixMs: intent.createdAtUnixMs,
-            fundingTxHash: txHash
+            fundingTxHash: txHash,
+            fundingStatus: 'submitted',
+            fundingSubmittedAtUnixMs: Date.now(),
+            fundingConfirmedAtUnixMs: null,
+            pendingPositionLeaf: intent.newPositionLeaf
           };
+          try {
+            setActiveZekoNetwork();
+            const { graphql } = getNetworkConfig();
+            const fundingTxStatus = await fetchTransactionStatus(txHash, graphql);
+            if (fundingTxStatus === 'INCLUDED') {
+              state.positions[intent.positionKey] = intent.newPositionLeaf;
+              state.positionMeta[intent.positionKey].fundingStatus = 'confirmed';
+              state.positionMeta[intent.positionKey].fundingConfirmedAtUnixMs = Date.now();
+              state.positionMeta[intent.positionKey].pendingPositionLeaf = null;
+            }
+          } catch {
+            // Leave bet in submitted state until a later refresh confirms inclusion.
+          }
         } else if (intent.type === 'payout-claim') {
           state.positionMeta = state.positionMeta || {};
           const existingMeta = state.positionMeta[intent.positionKey];
@@ -2658,22 +2802,25 @@ async function main(): Promise<void> {
         await saveOperatorState(defaultStatePath, state);
 
         if (intent.type === 'market-bet') {
-          const positions = await loadUserPositions(USER_POSITIONS_FILE);
-          positions[intent.userId] = positions[intent.userId] || {};
-          positions[intent.userId][intent.marketKey] = intent.userNetPositionAfter;
-          await saveUserPositions(USER_POSITIONS_FILE, positions);
+          if (state.positionMeta?.[intent.positionKey]?.fundingStatus === 'confirmed') {
+            await refreshState(projectRoot);
+            const refreshedState = await loadOperatorState(defaultStatePath);
+            await rebuildUserPositionsFromState(refreshedState);
+          }
         }
 
         if (intent.type === 'market-bet' && intent.marketDate) {
-          const dailyMarketMap = await loadDemoDailyMarkets();
-          const day = dailyMarketMap[intent.marketDate];
-          if (day) {
-            const nextTotal = (Number.isFinite(day.totalPositionBet) ? day.totalPositionBet : 0) + intent.addTotalBet;
-            const nextYes = (Number.isFinite(day.totalYesPositionBet) ? day.totalYesPositionBet : 0) + intent.addYesBet;
-            day.totalPositionBet = nextTotal;
-            day.totalYesPositionBet = nextYes;
-            dailyMarketMap[intent.marketDate] = day;
-            await saveDemoDailyMarkets(dailyMarketMap);
+          if (state.positionMeta?.[intent.positionKey]?.fundingStatus === 'confirmed') {
+            const dailyMarketMap = await loadDemoDailyMarkets();
+            const day = dailyMarketMap[intent.marketDate];
+            if (day) {
+              const nextTotal = (Number.isFinite(day.totalPositionBet) ? day.totalPositionBet : 0) + intent.addTotalBet;
+              const nextYes = (Number.isFinite(day.totalYesPositionBet) ? day.totalYesPositionBet : 0) + intent.addYesBet;
+              day.totalPositionBet = nextTotal;
+              day.totalYesPositionBet = nextYes;
+              dailyMarketMap[intent.marketDate] = day;
+              await saveDemoDailyMarkets(dailyMarketMap);
+            }
           }
         }
         delete pendingTxIntents[intentId];
@@ -2685,6 +2832,10 @@ async function main(): Promise<void> {
           marketKey: intent.marketKey,
           userId: intent.userId,
           userNetPosition: intent.userNetPositionAfter,
+          fundingStatus:
+            intent.type === 'market-bet'
+              ? state.positionMeta?.[intent.positionKey]?.fundingStatus || 'submitted'
+              : undefined,
           claimStatus:
             intent.type === 'payout-claim'
               ? state.positionMeta?.[intent.positionKey]?.claimStatus || 'submitted'
