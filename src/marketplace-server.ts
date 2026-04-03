@@ -2008,6 +2008,143 @@ function serializeMerkleWitness(witness: { isLefts: Bool[]; siblings: Field[] })
   };
 }
 
+type SyncParsedEvent = {
+  type: string;
+  data: Record<string, unknown>;
+};
+
+function extractSyncParsedEvents(rawEvents: unknown[]): SyncParsedEvent[] {
+  const parsed: SyncParsedEvent[] = [];
+  for (const item of rawEvents as Array<Record<string, unknown>>) {
+    const flatType = typeof item.type === 'string' ? item.type : null;
+    const flatData = item.event && typeof item.event === 'object' ? (item.event as Record<string, unknown>).data : null;
+    if (flatType && flatData && typeof flatData === 'object' && !Array.isArray(flatData)) {
+      parsed.push({ type: flatType, data: flatData as Record<string, unknown> });
+      continue;
+    }
+    const nested = item.events;
+    if (Array.isArray(nested)) {
+      for (const nestedEvent of nested as Array<Record<string, unknown>>) {
+        const t = typeof nestedEvent.type === 'string' ? nestedEvent.type : null;
+        const d =
+          nestedEvent.event && typeof nestedEvent.event === 'object'
+            ? (nestedEvent.event as Record<string, unknown>).data
+            : nestedEvent.data;
+        if (t && d && typeof d === 'object' && !Array.isArray(d)) {
+          parsed.push({ type: t, data: d as Record<string, unknown> });
+        }
+      }
+    }
+  }
+  return parsed;
+}
+
+function asSyncField(value: unknown, fieldName: string): Field {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') {
+    return Field(value);
+  }
+  if (typeof value === 'object' && value !== null && 'toString' in value) {
+    return Field((value as { toString(): string }).toString());
+  }
+  throw new Error(`event field ${fieldName} missing`);
+}
+
+function asSyncUInt64(value: unknown, fieldName: string): UInt64 {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') {
+    return UInt64.from(value);
+  }
+  if (typeof value === 'object' && value !== null && 'toString' in value) {
+    return UInt64.from((value as { toString(): string }).toString());
+  }
+  throw new Error(`event field ${fieldName} missing`);
+}
+
+function asSyncBool(value: unknown, fieldName: string): Bool {
+  const normalized =
+    typeof value === 'boolean'
+      ? value
+        ? '1'
+        : '0'
+      : typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint'
+      ? String(value)
+      : typeof value === 'object' && value !== null && 'toString' in value
+      ? (value as { toString(): string }).toString()
+      : null;
+  if (normalized === null) throw new Error(`event field ${fieldName} missing`);
+  return Bool(normalized === '1' || normalized.toLowerCase() === 'true');
+}
+
+function buildAuthoritativeStateFromEvents(
+  existingState: OperatorStateFile,
+  rawEvents: unknown[],
+  zkappPublicKey: string
+): OperatorStateFile {
+  const nextState: OperatorStateFile = {
+    zkappPublicKey,
+    markets: {},
+    positions: existingState.positions || {},
+    receipts: {},
+    claimedReceipts: {},
+    usedNonces: {},
+    marketMeta: existingState.marketMeta || {},
+    positionMeta: existingState.positionMeta || {},
+    receiptMeta: existingState.receiptMeta || {}
+  };
+  for (const evt of extractSyncParsedEvents(rawEvents)) {
+    try {
+      if (evt.type === 'marketCreated' || evt.type === 'marketUpdated' || evt.type === 'marketResolved') {
+        const data = evt.data;
+        const marketKey = asSyncField(data.marketKey, 'marketKey').toString();
+        const leaf = new MarketLeaf({
+          configHash: asSyncField(data.configHash, 'configHash'),
+          closeSlot: asSyncUInt64(data.closeSlot, 'closeSlot'),
+          expirySlot: asSyncUInt64(data.expirySlot, 'expirySlot'),
+          thresholdValueTenthC: asSyncUInt64(data.thresholdValueTenthC, 'thresholdValueTenthC'),
+          totalPositionBet: asSyncUInt64(data.totalPositionBet, 'totalPositionBet'),
+          totalYesPositionBet: asSyncUInt64(data.totalYesPositionBet, 'totalYesPositionBet'),
+          resolved: asSyncBool(data.resolved, 'resolved'),
+          outcome: asSyncBool(data.outcome, 'outcome'),
+          oracleStatementHash: asSyncField(data.oracleStatementHash, 'oracleStatementHash')
+        });
+        nextState.markets[marketKey] = serializeMarketLeaf(leaf);
+        if (data.oracleNonce) {
+          nextState.usedNonces[asSyncField(data.oracleNonce, 'oracleNonce').toString()] = '1';
+        }
+      } else if (evt.type === 'receiptCommitted') {
+        nextState.receipts ||= {};
+        nextState.receipts[asSyncField(evt.data.receiptKey, 'receiptKey').toString()] = asSyncField(
+          evt.data.receiptCommitment,
+          'receiptCommitment'
+        ).toString();
+      } else if (evt.type === 'receiptClaimed') {
+        nextState.claimedReceipts ||= {};
+        nextState.claimedReceipts[asSyncField(evt.data.receiptKey, 'receiptKey').toString()] = '1';
+      }
+    } catch {
+      // Ignore incompatible historical events from older contract versions.
+    }
+  }
+  nextState.usedNonces = {
+    ...(existingState.usedNonces || {}),
+    ...(nextState.usedNonces || {})
+  };
+  return nextState;
+}
+
+async function loadLiveOperatorStateForHostedTxBuild(stateFile: string): Promise<OperatorStateFile> {
+  const existingState = await loadOperatorState(stateFile);
+  const { graphql, networkId } = getNetworkConfig();
+  const network = Mina.Network({
+    networkId: networkId as never,
+    mina: graphql,
+    archive: graphql
+  });
+  Mina.setActiveInstance(network);
+  const zkapp = new FastPredictionMarketPlatform(getZkappPublicKey());
+  const rawEvents = await zkapp.fetchEvents();
+  return buildAuthoritativeStateFromEvents(existingState, rawEvents as unknown[], getZkappPublicKey().toBase58());
+}
+
 function deserializeMerkleWitness(serialized: SerializedMerkleWitness): MerkleMapWitness {
   return new MerkleMapWitness(
     serialized.isLefts.map((value) => Bool(Boolean(value))),
@@ -2032,20 +2169,21 @@ async function buildBrowserFeePayerMarketBetContext(params: {
   marketDate: string | null;
   feePayerPublicKey: string;
   userId: string;
+  preferLiveHostedState?: boolean;
 }): Promise<{
   intent: PendingTxIntent;
   fee: string;
   marketSummary: { totalPositionBet: string; totalYesPositionBet: string };
   buildContext: BrowserMarketBetContext;
 }> {
-  const { stateFile, marketKey, addTotalBet, addYesBet, marketDate, feePayerPublicKey, userId } = params;
+  const { stateFile, marketKey, addTotalBet, addYesBet, marketDate, feePayerPublicKey, userId, preferLiveHostedState = false } = params;
   if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
 
   setActiveZekoNetwork();
   const { graphql, networkId } = getNetworkConfig();
   const { feeRaw: txFee } = await getSuggestedSequencerFee(graphql);
   const zkappAddress = getZkappPublicKey();
-  const state = await loadOperatorState(stateFile);
+  const state = preferLiveHostedState ? await loadLiveOperatorStateForHostedTxBuild(stateFile) : await loadOperatorState(stateFile);
   if (shouldAssertChainRootsInBetContext()) {
     await assertLocalMarketsRootMatchesChain(zkappAddress, state);
     await assertLocalReceiptsRootMatchesChain(zkappAddress, state);
@@ -3287,7 +3425,9 @@ async function main(): Promise<void> {
         }
 
         const buildBetContext = async () => {
-          const currentState = await loadOperatorState(defaultStatePath);
+          const currentState = isHosted
+            ? await loadLiveOperatorStateForHostedTxBuild(defaultStatePath)
+            : await loadOperatorState(defaultStatePath);
           const selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
           if (!selectedMarket) {
             throw new Error(`market ${marketDate} is not active on-chain yet. Wait for oracle sync, then try again.`);
@@ -3306,9 +3446,10 @@ async function main(): Promise<void> {
             addTotalBet: Math.floor(addTotalBet),
             addYesBet: Math.floor(addYesBet),
             marketDate,
-              feePayerPublicKey: walletPublicKey,
-              userId
-            });
+            feePayerPublicKey: walletPublicKey,
+            userId,
+            preferLiveHostedState: isHosted
+          });
         };
         const built = useLeanHostedBetContext()
           ? await buildBetContext()
@@ -3365,7 +3506,9 @@ async function main(): Promise<void> {
         }
 
         const ensureLocalBettableMarket = async () => {
-          let currentState = await loadOperatorState(defaultStatePath);
+          let currentState = isHosted
+            ? await loadLiveOperatorStateForHostedTxBuild(defaultStatePath)
+            : await loadOperatorState(defaultStatePath);
           let selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
           let createdOnDemand = false;
           if (!selectedMarket) {
@@ -3402,7 +3545,8 @@ async function main(): Promise<void> {
                     addYesBet: Math.floor(addYesBet),
                     marketDate,
                     feePayerPublicKey: walletPublicKey,
-                    userId
+                    userId,
+                    preferLiveHostedState: true
                   })
                 : await withRemoteProverStateRetry(projectRoot, async () =>
                     await withFreshMarketStateRetry(projectRoot, async () =>
@@ -3432,7 +3576,8 @@ async function main(): Promise<void> {
                     addYesBet: Math.floor(addYesBet),
                     marketDate,
                     feePayerPublicKey: walletPublicKey,
-                    userId
+                    userId,
+                    preferLiveHostedState: true
                   })
                 : await withFreshMarketStateRetry(projectRoot, async () =>
                     buildBrowserFeePayerMarketBetContext({
