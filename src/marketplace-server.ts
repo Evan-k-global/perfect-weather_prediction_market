@@ -368,9 +368,6 @@ function getHostedSafeIntervalMs(envName: string, localFallback: number): number
 }
 
 function shouldAssertChainRootsInBetContext(): boolean {
-  if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
-    return false;
-  }
   const explicit = process.env.BET_CONTEXT_ASSERT_CHAIN_ROOTS;
   if (explicit !== undefined) {
     const normalized = explicit.trim().toLowerCase();
@@ -3425,9 +3422,7 @@ async function main(): Promise<void> {
         }
 
         const buildBetContext = async () => {
-          const currentState = isHosted
-            ? await loadLiveOperatorStateForHostedTxBuild(defaultStatePath)
-            : await loadOperatorState(defaultStatePath);
+          const currentState = await loadOperatorState(defaultStatePath);
           const selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
           if (!selectedMarket) {
             throw new Error(`market ${marketDate} is not active on-chain yet. Wait for oracle sync, then try again.`);
@@ -3448,7 +3443,7 @@ async function main(): Promise<void> {
             marketDate,
             feePayerPublicKey: walletPublicKey,
             userId,
-            preferLiveHostedState: isHosted
+            preferLiveHostedState: false
           });
         };
         const built = useLeanHostedBetContext()
@@ -3506,9 +3501,7 @@ async function main(): Promise<void> {
         }
 
         const ensureLocalBettableMarket = async () => {
-          let currentState = isHosted
-            ? await loadLiveOperatorStateForHostedTxBuild(defaultStatePath)
-            : await loadOperatorState(defaultStatePath);
+          let currentState = await loadOperatorState(defaultStatePath);
           let selectedMarket = findSelectedOnChainMarket(currentState, marketKey, marketDate);
           let createdOnDemand = false;
           if (!selectedMarket) {
@@ -3546,7 +3539,7 @@ async function main(): Promise<void> {
                     marketDate,
                     feePayerPublicKey: walletPublicKey,
                     userId,
-                    preferLiveHostedState: true
+                    preferLiveHostedState: false
                   })
                 : await withRemoteProverStateRetry(projectRoot, async () =>
                     await withFreshMarketStateRetry(projectRoot, async () =>
@@ -3577,7 +3570,7 @@ async function main(): Promise<void> {
                     marketDate,
                     feePayerPublicKey: walletPublicKey,
                     userId,
-                    preferLiveHostedState: true
+                    preferLiveHostedState: false
                   })
                 : await withFreshMarketStateRetry(projectRoot, async () =>
                     buildBrowserFeePayerMarketBetContext({
