@@ -584,21 +584,11 @@
         return connectWallet();
       }
 
-      function nanominaToMinaString(value) {
-        const n = Number(value);
-        if (!Number.isFinite(n) || n <= 0) return "0.1";
-        const mina = n / 1_000_000_000;
-        return mina.toFixed(9).replace(/\.?0+$/, "");
-      }
-
       async function sendOnchainTx(txPayload, fee) {
         if (!window.mina) throw new Error("Auro/Pallad wallet not detected");
-        const feeMina = nanominaToMinaString(fee);
-        const serialized =
-          typeof txPayload === "string" ? txPayload : JSON.stringify(txPayload);
         const sent = await window.mina.sendTransaction({
-          transaction: serialized,
-          feePayer: { fee: feeMina }
+          transaction: txPayload,
+          feePayer: { fee }
         });
         const txHash = sent?.hash || null;
         if (!txHash) throw new Error("wallet did not return tx hash");
@@ -731,8 +721,7 @@
       }
 
       async function refreshDailyMarkets() {
-        const walletQuery = walletPublicKey ? `?walletPublicKey=${encodeURIComponent(walletPublicKey)}` : "";
-        const res = await req(`/api/demo/daily-markets${walletQuery}`);
+        const res = await req("/api/demo/daily-markets");
         const todayIso = currentActivePacificMarketDateIso();
         dailyMarkets = (Array.isArray(res.dailyMarkets) ? res.dailyMarkets : [])
           .filter((m) => typeof m.marketDate === "string" && m.marketDate >= todayIso)
