@@ -262,6 +262,11 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
     waitMs: 2 * 60 * 1000
   });
   try {
+    const syncArgs = ['sync-state:zeko', '--', '--state-file', stateFile];
+    const synced = await execFileAsync('pnpm', syncArgs, { cwd: projectRoot, env: process.env });
+    if (synced.stdout.trim()) console.log(synced.stdout.trim());
+    if (synced.stderr.trim()) console.error(synced.stderr.trim());
+
     if (runEnsurePass) {
       const ensureArgs = [
         'ensure-daily-markets:zeko',

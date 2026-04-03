@@ -4017,6 +4017,7 @@ async function main(): Promise<void> {
       if (req.method === 'POST' && url.pathname === '/api/oracle/export-state') {
         const body = await readJsonBody(req);
         requireOracleAuthorization(req, body as Record<string, unknown>);
+        await refreshState(projectRoot);
         const state = await loadOperatorState(defaultStatePath);
         const dailyMarkets = await loadDemoDailyMarkets(process.env.DEMO_DAILY_MARKETS_FILE || DEMO_DAILY_MARKETS_FILE);
         writeJson(res, 200, {
