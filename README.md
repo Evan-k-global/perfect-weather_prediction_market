@@ -136,5 +136,6 @@ Why split:
 - `skills/private-market-protocol/SKILL.md`
 - `skills/zktls-weather-oracle/SKILL.md`
 - `skills/zeko-market-ops/SKILL.md`
+- `skills/zeko-event-sync-and-archive/SKILL.md`
 - `skills/private-betting-privacy/SKILL.md`
 - `skills/demo-weather-over-under/SKILL.md`
