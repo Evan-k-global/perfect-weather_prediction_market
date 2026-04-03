@@ -221,7 +221,7 @@ async function main(): Promise<void> {
   }
 
   const latestState = await loadOperatorState(stateFile);
-  let nextState = await buildStateFromEvents({
+  const nextState = await buildStateFromEvents({
     zkappAddress,
     networkId,
     graphql,
@@ -241,35 +241,12 @@ async function main(): Promise<void> {
     ...(latestState.receiptMeta || {})
   };
 
-  let localRoot = getLocalMarketsRoot(nextState);
-  let localReceiptsRoot = getLocalReceiptsRoot(nextState);
-  let eventsSource = graphql;
-
-  if ((localRoot !== chainRoot || localReceiptsRoot !== chainReceiptsRoot) && archiveGraphql !== graphql) {
-    const fallbackState = await buildStateFromEvents({
-      zkappAddress,
-      networkId,
-      graphql,
-      archiveGraphql,
-      existingState: latestState
-    });
-    fallbackState.marketMeta = nextState.marketMeta;
-    fallbackState.positionMeta = nextState.positionMeta;
-    fallbackState.receiptMeta = nextState.receiptMeta;
-    const fallbackLocalRoot = getLocalMarketsRoot(fallbackState);
-    const fallbackLocalReceiptsRoot = getLocalReceiptsRoot(fallbackState);
-    if (fallbackLocalRoot === chainRoot && fallbackLocalReceiptsRoot === chainReceiptsRoot) {
-      nextState = fallbackState;
-      localRoot = fallbackLocalRoot;
-      localReceiptsRoot = fallbackLocalReceiptsRoot;
-      eventsSource = archiveGraphql;
-    }
-  }
-
+  const localRoot = getLocalMarketsRoot(nextState);
+  const localReceiptsRoot = getLocalReceiptsRoot(nextState);
   await saveOperatorState(stateFile, nextState);
 
   console.log('State sync complete.');
-  console.log('Events source:', eventsSource);
+  console.log('Events source:', graphql);
   console.log('Markets synced:', Object.keys(nextState.markets).length);
   console.log('Receipts synced:', Object.keys(nextState.receipts || {}).length);
   console.log('Used nonces synced:', Object.keys(nextState.usedNonces).length);
