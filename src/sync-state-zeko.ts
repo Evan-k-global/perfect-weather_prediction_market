@@ -225,7 +225,7 @@ async function main(): Promise<void> {
     zkappAddress,
     networkId,
     graphql,
-    archiveGraphql,
+    archiveGraphql: graphql,
     existingState: latestState
   });
   nextState.marketMeta = {
@@ -243,14 +243,14 @@ async function main(): Promise<void> {
 
   let localRoot = getLocalMarketsRoot(nextState);
   let localReceiptsRoot = getLocalReceiptsRoot(nextState);
-  let eventsSource = archiveGraphql;
+  let eventsSource = graphql;
 
   if ((localRoot !== chainRoot || localReceiptsRoot !== chainReceiptsRoot) && archiveGraphql !== graphql) {
     const fallbackState = await buildStateFromEvents({
       zkappAddress,
       networkId,
       graphql,
-      archiveGraphql: graphql,
+      archiveGraphql,
       existingState: latestState
     });
     fallbackState.marketMeta = nextState.marketMeta;
@@ -262,7 +262,7 @@ async function main(): Promise<void> {
       nextState = fallbackState;
       localRoot = fallbackLocalRoot;
       localReceiptsRoot = fallbackLocalReceiptsRoot;
-      eventsSource = graphql;
+      eventsSource = archiveGraphql;
     }
   }
 
