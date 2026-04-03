@@ -6,6 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { runWeatherAttestation } from './weather-attest.js';
 import { DEFAULT_STATE_FILE, saveOperatorState, type OperatorStateFile, type StoredMarketMeta } from './state-store.js';
+import { isRetryableTxError } from './tx-retry.js';
 import {
   currentActiveMarketDate,
   NWS_94027_REQUEST_PATH,
@@ -263,9 +264,21 @@ async function maybeRunChainActions(baseUrl: string, oracleToken: string): Promi
   });
   try {
     const syncArgs = ['sync-state:zeko', '--', '--state-file', stateFile];
-    const synced = await execFileAsync('pnpm', syncArgs, { cwd: projectRoot, env: process.env });
-    if (synced.stdout.trim()) console.log(synced.stdout.trim());
-    if (synced.stderr.trim()) console.error(synced.stderr.trim());
+    try {
+      const synced = await execFileAsync('pnpm', syncArgs, { cwd: projectRoot, env: process.env });
+      if (synced.stdout.trim()) console.log(synced.stdout.trim());
+      if (synced.stderr.trim()) console.error(synced.stderr.trim());
+    } catch (error) {
+      if (!isRetryableTxError(error)) {
+        throw error;
+      }
+      console.warn(
+        `[oracle-worker] transient sync-state failure; skipping chain actions this cycle: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      return;
+    }
 
     if (runEnsurePass) {
       const ensureArgs = [
