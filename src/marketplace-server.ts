@@ -3360,7 +3360,9 @@ async function main(): Promise<void> {
           typeof body.thresholdF === 'number' && Number.isFinite(body.thresholdF) ? Math.round(body.thresholdF) : null;
         const userId = walletPublicKey;
         if (addYesBet > addTotalBet) throw new Error('addYesBet must be <= addTotalBet');
-        await ensureRecentlySyncedState(projectRoot);
+        if (!isHosted) {
+          await ensureRecentlySyncedState(projectRoot);
+        }
 
         const ensureLocalBettableMarket = async () => {
           let currentState = await loadOperatorState(defaultStatePath);
@@ -3462,7 +3464,9 @@ async function main(): Promise<void> {
           'accept',
           `wallet=${walletPublicKey} marketKey=${marketKey} positionKey=${positionKey}`
         );
-        await ensureRecentlySyncedState(projectRoot);
+        if (!isHosted) {
+          await ensureRecentlySyncedState(projectRoot);
+        }
         let fee: string;
         let payoutSummary: { payoutTmina: string; marketKey: string; positionKey: string };
         let tx: unknown;
