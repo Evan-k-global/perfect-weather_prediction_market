@@ -4583,7 +4583,11 @@ async function main(): Promise<void> {
       console.log('[daily-settle] nightly scheduled settle disabled (DAILY_SETTLE_SCHEDULE_CHECK_MS <= 0)');
     }
 
-    const hostedStateSyncIntervalMs = getHostedSafeIntervalMs('HOSTED_STATE_SYNC_INTERVAL_MS', 15000);
+    const hostedStateSyncIntervalRaw = process.env.HOSTED_STATE_SYNC_INTERVAL_MS;
+    const hostedStateSyncIntervalMs =
+      hostedStateSyncIntervalRaw !== undefined
+        ? Math.max(0, Number.parseInt(hostedStateSyncIntervalRaw, 10) || 0)
+        : 15000;
     if (hostedStateSyncIntervalMs > 0) {
       console.log(`[state-sync] background sync enabled every ${hostedStateSyncIntervalMs}ms`);
       void refreshStateInBackground(projectRoot, 'startup');
