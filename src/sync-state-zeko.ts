@@ -180,46 +180,6 @@ async function main(): Promise<void> {
   const zkappAddress = PrivateKey.fromBase58(readEnv('ZKAPP_PRIVATE_KEY')).toPublicKey();
   const existingState = await loadOperatorState(stateFile);
 
-  let chainRoot: string;
-  let chainReceiptsRoot: string;
-  try {
-    chainRoot = await getOnChainMarketsRoot(zkappAddress);
-    chainReceiptsRoot = await getOnChainReceiptsRoot(zkappAddress);
-  } catch (error) {
-    if (!isUninitializedFastZkappError(error)) {
-      throw error;
-    }
-
-    const emptyState: OperatorStateFile = {
-      zkappPublicKey: zkappAddress.toBase58(),
-      markets: {},
-      positions: {},
-      receipts: {},
-      claimedReceipts: {},
-      usedNonces: {},
-      marketMeta: {},
-      positionMeta: {},
-      receiptMeta: {}
-    };
-    await saveOperatorState(stateFile, emptyState);
-    const emptyMarketsRoot = getLocalMarketsRoot(emptyState);
-    const emptyReceiptsRoot = getLocalReceiptsRoot(emptyState);
-    console.warn(
-      '[sync-state-zeko] zkApp account does not exist on-chain yet; bootstrapping empty fresh-contract state'
-    );
-    console.log('State sync bootstrapped.');
-    console.log('Markets synced:', 0);
-    console.log('Receipts synced:', 0);
-    console.log('Used nonces synced:', 0);
-    console.log('Local marketsRoot:', emptyMarketsRoot);
-    console.log('Local receiptsRoot:', emptyReceiptsRoot);
-    console.log('Chain marketsRoot:', 'missing');
-    console.log('Chain receiptsRoot:', 'missing');
-    console.log('Markets root match:', 'pending deploy');
-    console.log('Receipts root match:', 'pending deploy');
-    return;
-  }
-
   const latestState = await loadOperatorState(stateFile);
   const nextState = await buildStateFromEvents({
     zkappAddress,
@@ -245,17 +205,34 @@ async function main(): Promise<void> {
   const localReceiptsRoot = getLocalReceiptsRoot(nextState);
   await saveOperatorState(stateFile, nextState);
 
+  let chainRoot: string | null = null;
+  let chainReceiptsRoot: string | null = null;
+  try {
+    chainRoot = await getOnChainMarketsRoot(zkappAddress);
+    chainReceiptsRoot = await getOnChainReceiptsRoot(zkappAddress);
+  } catch (error) {
+    if (isUninitializedFastZkappError(error)) {
+      console.warn(
+        '[sync-state-zeko] zkApp account does not exist on-chain yet; saved event-derived fresh-contract state'
+      );
+    } else {
+      console.warn(
+        `[sync-state-zeko] chain root fetch unavailable after event sync: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
   console.log('State sync complete.');
   console.log('Events source:', graphql);
   console.log('Markets synced:', Object.keys(nextState.markets).length);
   console.log('Receipts synced:', Object.keys(nextState.receipts || {}).length);
   console.log('Used nonces synced:', Object.keys(nextState.usedNonces).length);
   console.log('Local marketsRoot:', localRoot);
-  console.log('Chain marketsRoot:', chainRoot);
+  console.log('Chain marketsRoot:', chainRoot ?? 'unavailable');
   console.log('Local receiptsRoot:', localReceiptsRoot);
-  console.log('Chain receiptsRoot:', chainReceiptsRoot);
-  console.log('Markets root match:', localRoot === chainRoot ? 'yes' : 'no');
-  console.log('Receipts root match:', localReceiptsRoot === chainReceiptsRoot ? 'yes' : 'no');
+  console.log('Chain receiptsRoot:', chainReceiptsRoot ?? 'unavailable');
+  console.log('Markets root match:', chainRoot ? (localRoot === chainRoot ? 'yes' : 'no') : 'unknown');
+  console.log('Receipts root match:', chainReceiptsRoot ? (localReceiptsRoot === chainReceiptsRoot ? 'yes' : 'no') : 'unknown');
 }
 
 main().catch((error: unknown) => {
