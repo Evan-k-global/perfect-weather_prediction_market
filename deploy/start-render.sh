@@ -14,6 +14,7 @@ fi
 
 SYNC_ON_START="${SYNC_STATE_ON_START:-1}"
 SYNC_BLOCKING="${SYNC_STATE_BLOCKING:-0}"
+SYNC_READY_ON_FAILURE="${SYNC_READY_ON_FAILURE:-1}"
 SYNC_PID=""
 
 run_state_sync() {
@@ -48,7 +49,11 @@ if [ "$SYNC_ON_START" = "1" ] && [ "$SYNC_BLOCKING" != "1" ]; then
       mark_ready "background startup sync finished"
     else
       echo "[render-start] background state sync failed"
-      mark_not_ready "background startup sync failed"
+      if [ "$SYNC_READY_ON_FAILURE" = "1" ]; then
+        mark_ready "background startup sync failed; serving degraded"
+      else
+        mark_not_ready "background startup sync failed"
+      fi
     fi
   ) &
   SYNC_PID=$!
