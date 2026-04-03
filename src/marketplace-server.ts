@@ -366,6 +366,9 @@ function getHostedSafeIntervalMs(envName: string, localFallback: number): number
 }
 
 function shouldAssertChainRootsInBetContext(): boolean {
+  if (process.env.RENDER === 'true' || process.env.IS_RENDER === 'true') {
+    return true;
+  }
   const explicit = process.env.BET_CONTEXT_ASSERT_CHAIN_ROOTS;
   if (explicit !== undefined) {
     const normalized = explicit.trim().toLowerCase();
