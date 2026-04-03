@@ -107,24 +107,6 @@ function leafFromEventData(data: Record<string, unknown>): { marketKey: string; 
 }
 
 function mergeMonotonicState(existingState: OperatorStateFile, nextState: OperatorStateFile): OperatorStateFile {
-  for (const [marketKey, existingLeafStored] of Object.entries(existingState.markets || {})) {
-    const nextLeafStored = nextState.markets[marketKey];
-    if (!nextLeafStored) {
-      nextState.markets[marketKey] = existingLeafStored;
-      continue;
-    }
-    const existingLeaf = deserializeMarketLeaf(existingLeafStored);
-    const nextLeaf = deserializeMarketLeaf(nextLeafStored);
-    if (existingLeaf.resolved.toBoolean() && !nextLeaf.resolved.toBoolean()) {
-      nextState.markets[marketKey] = existingLeafStored;
-    }
-  }
-
-  nextState.claimedReceipts = {
-    ...(existingState.claimedReceipts || {}),
-    ...(nextState.claimedReceipts || {})
-  };
-
   nextState.usedNonces = {
     ...(existingState.usedNonces || {}),
     ...(nextState.usedNonces || {})
