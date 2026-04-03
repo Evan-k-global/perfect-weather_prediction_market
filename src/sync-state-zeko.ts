@@ -115,14 +115,14 @@ function mergeMonotonicState(existingState: OperatorStateFile, nextState: Operat
   return nextState;
 }
 
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const stateFile = parseOptionalArgValue(args, 'state-file') || DEFAULT_STATE_FILE;
-  const graphql = process.env.ZEKO_GRAPHQL || 'https://testnet.zeko.io';
-  const archiveGraphql = process.env.ZEKO_ARCHIVE_GRAPHQL || graphql;
-  const networkId = process.env.ZEKO_NETWORK_ID || 'testnet';
-  const zkappAddress = PrivateKey.fromBase58(readEnv('ZKAPP_PRIVATE_KEY')).toPublicKey();
-
+async function buildStateFromEvents(params: {
+  zkappAddress: ReturnType<typeof PrivateKey.fromBase58> extends PrivateKey ? ReturnType<PrivateKey['toPublicKey']> : never;
+  networkId: string;
+  graphql: string;
+  archiveGraphql: string;
+  existingState: OperatorStateFile;
+}): Promise<OperatorStateFile> {
+  const { zkappAddress, networkId, graphql, archiveGraphql, existingState } = params;
   const network = Mina.Network({
     networkId: networkId as never,
     mina: graphql,
@@ -131,8 +131,6 @@ async function main(): Promise<void> {
   Mina.setActiveInstance(network);
 
   const zkapp = new FastPredictionMarketPlatform(zkappAddress);
-  const existingState = await loadOperatorState(stateFile);
-
   const rawEvents = await zkapp.fetchEvents();
   const parsed = extractParsedEvents(rawEvents as unknown[]);
   const nextState: OperatorStateFile = {
@@ -170,23 +168,17 @@ async function main(): Promise<void> {
     }
   }
 
-  const latestState = await loadOperatorState(stateFile);
-  nextState.marketMeta = {
-    ...(existingState.marketMeta || {}),
-    ...(latestState.marketMeta || {})
-  };
-  nextState.positionMeta = {
-    ...(existingState.positionMeta || {}),
-    ...(latestState.positionMeta || {})
-  };
-  nextState.receiptMeta = {
-    ...(existingState.receiptMeta || {}),
-    ...(latestState.receiptMeta || {})
-  };
-  mergeMonotonicState(latestState, nextState);
-  await saveOperatorState(stateFile, nextState);
-  const localRoot = getLocalMarketsRoot(nextState);
-  const localReceiptsRoot = getLocalReceiptsRoot(nextState);
+  return mergeMonotonicState(existingState, nextState);
+}
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  const stateFile = parseOptionalArgValue(args, 'state-file') || DEFAULT_STATE_FILE;
+  const graphql = process.env.ZEKO_GRAPHQL || 'https://testnet.zeko.io';
+  const archiveGraphql = process.env.ZEKO_ARCHIVE_GRAPHQL || graphql;
+  const networkId = process.env.ZEKO_NETWORK_ID || 'testnet';
+  const zkappAddress = PrivateKey.fromBase58(readEnv('ZKAPP_PRIVATE_KEY')).toPublicKey();
+  const existingState = await loadOperatorState(stateFile);
 
   let chainRoot: string;
   let chainReceiptsRoot: string;
@@ -228,7 +220,56 @@ async function main(): Promise<void> {
     return;
   }
 
+  const latestState = await loadOperatorState(stateFile);
+  let nextState = await buildStateFromEvents({
+    zkappAddress,
+    networkId,
+    graphql,
+    archiveGraphql,
+    existingState: latestState
+  });
+  nextState.marketMeta = {
+    ...(existingState.marketMeta || {}),
+    ...(latestState.marketMeta || {})
+  };
+  nextState.positionMeta = {
+    ...(existingState.positionMeta || {}),
+    ...(latestState.positionMeta || {})
+  };
+  nextState.receiptMeta = {
+    ...(existingState.receiptMeta || {}),
+    ...(latestState.receiptMeta || {})
+  };
+
+  let localRoot = getLocalMarketsRoot(nextState);
+  let localReceiptsRoot = getLocalReceiptsRoot(nextState);
+  let eventsSource = archiveGraphql;
+
+  if ((localRoot !== chainRoot || localReceiptsRoot !== chainReceiptsRoot) && archiveGraphql !== graphql) {
+    const fallbackState = await buildStateFromEvents({
+      zkappAddress,
+      networkId,
+      graphql,
+      archiveGraphql: graphql,
+      existingState: latestState
+    });
+    fallbackState.marketMeta = nextState.marketMeta;
+    fallbackState.positionMeta = nextState.positionMeta;
+    fallbackState.receiptMeta = nextState.receiptMeta;
+    const fallbackLocalRoot = getLocalMarketsRoot(fallbackState);
+    const fallbackLocalReceiptsRoot = getLocalReceiptsRoot(fallbackState);
+    if (fallbackLocalRoot === chainRoot && fallbackLocalReceiptsRoot === chainReceiptsRoot) {
+      nextState = fallbackState;
+      localRoot = fallbackLocalRoot;
+      localReceiptsRoot = fallbackLocalReceiptsRoot;
+      eventsSource = graphql;
+    }
+  }
+
+  await saveOperatorState(stateFile, nextState);
+
   console.log('State sync complete.');
+  console.log('Events source:', eventsSource);
   console.log('Markets synced:', Object.keys(nextState.markets).length);
   console.log('Receipts synced:', Object.keys(nextState.receipts || {}).length);
   console.log('Used nonces synced:', Object.keys(nextState.usedNonces).length);
