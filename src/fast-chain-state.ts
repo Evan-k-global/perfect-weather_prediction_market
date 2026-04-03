@@ -1,5 +1,6 @@
 import { PublicKey, fetchAccount } from 'o1js';
 import { OperatorStateFile, buildMarketsMerkleMap, buildReceiptsMerkleMap } from './state-store.js';
+import { withTxRetry } from './tx-retry.js';
 
 function stringifyFieldLike(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -18,15 +19,24 @@ function getAppStateField(appState: unknown[] | undefined, index: number, label:
 }
 
 async function getOnChainAppState(zkappAddress: PublicKey): Promise<unknown[]> {
-  const account = await fetchAccount({ publicKey: zkappAddress });
-  if (account.error) {
-    throw new Error(`zkApp account fetch failed: ${account.error.statusText || 'unknown error'}`);
-  }
-  const appState = (account.account as unknown as { zkapp?: { appState?: unknown[] } })?.zkapp?.appState;
-  if (!appState || appState.length === 0) {
-    throw new Error('zkApp appState missing');
-  }
-  return appState;
+  return await withTxRetry(
+    async () => {
+      const account = await fetchAccount({ publicKey: zkappAddress });
+      if (account.error) {
+        throw new Error(`zkApp account fetch failed: ${account.error.statusText || 'unknown error'}`);
+      }
+      const appState = (account.account as unknown as { zkapp?: { appState?: unknown[] } })?.zkapp?.appState;
+      if (!appState || appState.length === 0) {
+        throw new Error('zkApp appState missing');
+      }
+      return appState;
+    },
+    {
+      label: 'fast-chain-state:fetchAccount',
+      attempts: Number.parseInt(process.env.ZEKO_FETCH_ACCOUNT_ATTEMPTS || '4', 10) || 4,
+      initialDelayMs: Number.parseInt(process.env.ZEKO_FETCH_ACCOUNT_RETRY_DELAY_MS || '1500', 10) || 1500
+    }
+  );
 }
 
 export function isMissingZkappAccountError(error: unknown): boolean {

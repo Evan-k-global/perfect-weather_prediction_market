@@ -10,6 +10,7 @@ function stringifyError(error: unknown): string {
 export function isRetryableTxError(error: unknown): boolean {
   const text = stringifyError(error);
   return (
+    text.includes('Bad Gateway') ||
     text.includes('Gateway Timeout') ||
     text.includes('Account_nonce_precondition_unsatisfied') ||
     text.includes('Failed to fetch') ||
