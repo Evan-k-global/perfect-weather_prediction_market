@@ -59,7 +59,7 @@ import {
   type StoredPositionMeta,
   type StoredReceiptMeta
 } from './state-store.js';
-import { withTxRetry } from './tx-retry.js';
+import { isRetryableTxError, withTxRetry } from './tx-retry.js';
 import { deriveDateKeyedMarketKey } from './payout-upgrade-types.js';
 import { getSuggestedSequencerFee } from './sequencer-fee.js';
 import { getFastNodeCompileCache } from './fast-compile-cache.js';
@@ -323,6 +323,7 @@ let privateBatchInFlight = false;
 let privateBatchLeaseStartedAtUnixMs: number | null = null;
 let fastContractCompilePromise: Promise<void> | null = null;
 let lastStateRefreshAtUnixMs = 0;
+let backgroundStateRefreshPromise: Promise<void> | null = null;
 let activeChainMutationLease: { owner: string; expiresAtUnixMs: number; kind: string } | null = null;
 
 const CHAIN_MUTATION_LEASE_POLL_MS = 250;
@@ -1899,6 +1900,26 @@ async function runProjectCommand(projectRoot: string, args: string[]): Promise<s
 async function refreshState(projectRoot: string): Promise<void> {
   await runProjectCommand(projectRoot, ['sync-state:zeko', '--', '--state-file', './data/operator-state.json']);
   lastStateRefreshAtUnixMs = Date.now();
+}
+
+async function refreshStateInBackground(projectRoot: string, reason: string): Promise<void> {
+  if (backgroundStateRefreshPromise) return backgroundStateRefreshPromise;
+  backgroundStateRefreshPromise = (async () => {
+    try {
+      await refreshState(projectRoot);
+      console.log(`[state-sync] success reason=${reason}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isRetryableTxError(error)) {
+        console.warn(`[state-sync] skipped retryable failure reason=${reason}: ${message}`);
+      } else {
+        console.warn(`[state-sync] failed reason=${reason}: ${message}`);
+      }
+    } finally {
+      backgroundStateRefreshPromise = null;
+    }
+  })();
+  return backgroundStateRefreshPromise;
 }
 
 async function ensureRecentlySyncedState(projectRoot: string, maxAgeMs = 5 * 60 * 1000): Promise<void> {
@@ -4200,6 +4221,9 @@ async function main(): Promise<void> {
       if (req.method === 'POST' && url.pathname === '/api/oracle/export-state') {
         const body = await readJsonBody(req);
         requireOracleAuthorization(req, body as Record<string, unknown>);
+        if (lastStateRefreshAtUnixMs === 0 || Date.now() - lastStateRefreshAtUnixMs > 30_000) {
+          await refreshStateInBackground(projectRoot, 'oracle-export');
+        }
         const state = await loadOperatorState(defaultStatePath);
         const dailyMarkets = await loadDemoDailyMarkets(process.env.DEMO_DAILY_MARKETS_FILE || DEMO_DAILY_MARKETS_FILE);
         writeJson(res, 200, {
@@ -4557,6 +4581,17 @@ async function main(): Promise<void> {
       }, nightlySettleIntervalMs);
     } else {
       console.log('[daily-settle] nightly scheduled settle disabled (DAILY_SETTLE_SCHEDULE_CHECK_MS <= 0)');
+    }
+
+    const hostedStateSyncIntervalMs = getHostedSafeIntervalMs('HOSTED_STATE_SYNC_INTERVAL_MS', 15000);
+    if (hostedStateSyncIntervalMs > 0) {
+      console.log(`[state-sync] background sync enabled every ${hostedStateSyncIntervalMs}ms`);
+      void refreshStateInBackground(projectRoot, 'startup');
+      setInterval(() => {
+        void refreshStateInBackground(projectRoot, 'interval');
+      }, hostedStateSyncIntervalMs);
+    } else {
+      console.log('[state-sync] background sync disabled (HOSTED_STATE_SYNC_INTERVAL_MS <= 0)');
     }
   });
 }
