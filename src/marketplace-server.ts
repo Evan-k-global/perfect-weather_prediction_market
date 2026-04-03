@@ -1900,32 +1900,8 @@ async function runProjectCommand(projectRoot: string, args: string[]): Promise<s
 }
 
 async function refreshState(projectRoot: string): Promise<void> {
-  const attempts = Math.max(1, Number.parseInt(process.env.HOSTED_SYNC_MAX_ATTEMPTS || '4', 10) || 4);
-  const delayMs = Math.max(250, Number.parseInt(process.env.HOSTED_SYNC_RETRY_DELAY_MS || '1500', 10) || 1500);
-  const stateFile = './data/operator-state.json';
-  const zkappAddress = getZkappPublicKey();
-  let lastMismatch: { localMarketsRoot: string; chainMarketsRoot: string; localReceiptsRoot: string; chainReceiptsRoot: string } | null = null;
-
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    await runProjectCommand(projectRoot, ['sync-state:zeko', '--', '--state-file', stateFile]);
-    const state = await loadOperatorState(stateFile);
-    const localMarketsRoot = getLocalMarketsRoot(state);
-    const localReceiptsRoot = getLocalReceiptsRoot(state);
-    const chainMarketsRoot = await getOnChainMarketsRoot(zkappAddress);
-    const chainReceiptsRoot = await getOnChainReceiptsRoot(zkappAddress);
-    if (localMarketsRoot === chainMarketsRoot && localReceiptsRoot === chainReceiptsRoot) {
-      lastStateRefreshAtUnixMs = Date.now();
-      return;
-    }
-    lastMismatch = { localMarketsRoot, chainMarketsRoot, localReceiptsRoot, chainReceiptsRoot };
-    if (attempt < attempts) {
-      await sleep(delayMs);
-    }
-  }
-
-  throw new Error(
-    `authoritative sync did not converge after ${attempts} attempts: marketsRoot local=${lastMismatch?.localMarketsRoot} chain=${lastMismatch?.chainMarketsRoot}; receiptsRoot local=${lastMismatch?.localReceiptsRoot} chain=${lastMismatch?.chainReceiptsRoot}`
-  );
+  await runProjectCommand(projectRoot, ['sync-state:zeko', '--', '--state-file', './data/operator-state.json']);
+  lastStateRefreshAtUnixMs = Date.now();
 }
 
 async function ensureRecentlySyncedState(projectRoot: string, maxAgeMs = 5 * 60 * 1000): Promise<void> {
@@ -4043,7 +4019,6 @@ async function main(): Promise<void> {
       if (req.method === 'POST' && url.pathname === '/api/oracle/export-state') {
         const body = await readJsonBody(req);
         requireOracleAuthorization(req, body as Record<string, unknown>);
-        await refreshState(projectRoot);
         const state = await loadOperatorState(defaultStatePath);
         const dailyMarkets = await loadDemoDailyMarkets(process.env.DEMO_DAILY_MARKETS_FILE || DEMO_DAILY_MARKETS_FILE);
         writeJson(res, 200, {
