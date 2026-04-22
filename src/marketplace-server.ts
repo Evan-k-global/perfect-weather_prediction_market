@@ -3393,6 +3393,59 @@ async function main(): Promise<void> {
         return;
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/root-status') {
+        let zkappPublicKey: string | null = null;
+        let zkappConfigError: string | null = null;
+        let localMarketsRoot: string | null = null;
+        let chainMarketsRoot: string | null = null;
+        let localReceiptsRoot: string | null = null;
+        let chainReceiptsRoot: string | null = null;
+        let stateMtimeIso: string | null = null;
+        let rootError: string | null = null;
+
+        try {
+          const zkapp = getZkappPublicKey();
+          zkappPublicKey = zkapp.toBase58();
+          const state = await loadOperatorState(defaultStatePath);
+          localMarketsRoot = getLocalMarketsRoot(state);
+          localReceiptsRoot = getLocalReceiptsRoot(state);
+          try {
+            const stateStat = await stat(defaultStatePath);
+            stateMtimeIso = stateStat.mtime.toISOString();
+          } catch {
+            stateMtimeIso = null;
+          }
+          try {
+            chainMarketsRoot = await getOnChainMarketsRoot(zkapp);
+            chainReceiptsRoot = await getOnChainReceiptsRoot(zkapp);
+          } catch (error) {
+            rootError = error instanceof Error ? error.message : String(error);
+          }
+        } catch (error) {
+          zkappConfigError = error instanceof Error ? error.message : String(error);
+        }
+
+        writeJson(res, 200, {
+          ok: true,
+          service: 'marketplace-root-status',
+          zkappPublicKey,
+          zkappConfigError,
+          stateFile: defaultStatePath,
+          stateMtimeIso,
+          localMarketsRoot,
+          chainMarketsRoot,
+          marketsRootMatch:
+            localMarketsRoot && chainMarketsRoot ? localMarketsRoot === chainMarketsRoot : null,
+          localReceiptsRoot,
+          chainReceiptsRoot,
+          receiptsRootMatch:
+            localReceiptsRoot && chainReceiptsRoot ? localReceiptsRoot === chainReceiptsRoot : null,
+          rootError,
+          ts: new Date().toISOString()
+        });
+        return;
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/ready') {
         const readiness = await readStartupReadyState();
         const status = readiness.ready ? 200 : 503;
