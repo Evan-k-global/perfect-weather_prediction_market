@@ -39,6 +39,10 @@ function parseOptionalArgValue(args: string[], name: string): string | undefined
   return undefined;
 }
 
+function parseFlag(args: string[], name: string): boolean {
+  return args.includes(`--${name}`);
+}
+
 function asStringLike(value: unknown, fieldName: string): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'bigint') return value.toString();
@@ -174,6 +178,7 @@ async function buildStateFromEvents(params: {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const stateFile = parseOptionalArgValue(args, 'state-file') || DEFAULT_STATE_FILE;
+  const allowRootMismatch = parseFlag(args, 'allow-root-mismatch');
   const graphql = process.env.ZEKO_GRAPHQL || 'https://testnet.zeko.io';
   const archiveGraphql = process.env.ZEKO_ARCHIVE_GRAPHQL || graphql;
   const networkId = process.env.ZEKO_NETWORK_ID || 'testnet';
@@ -203,7 +208,6 @@ async function main(): Promise<void> {
 
   const localRoot = getLocalMarketsRoot(nextState);
   const localReceiptsRoot = getLocalReceiptsRoot(nextState);
-  await saveOperatorState(stateFile, nextState);
 
   let chainRoot: string | null = null;
   let chainReceiptsRoot: string | null = null;
@@ -212,14 +216,24 @@ async function main(): Promise<void> {
     chainReceiptsRoot = await getOnChainReceiptsRoot(zkappAddress);
   } catch (error) {
     if (isUninitializedFastZkappError(error)) {
+      await saveOperatorState(stateFile, nextState);
       console.warn(
         '[sync-state-zeko] zkApp account does not exist on-chain yet; saved event-derived fresh-contract state'
       );
     } else {
-      console.warn(
-        `[sync-state-zeko] chain root fetch unavailable after event sync: ${error instanceof Error ? error.message : String(error)}`
+      throw error;
+    }
+  }
+
+  if (chainRoot !== null || chainReceiptsRoot !== null) {
+    const marketsMatch = chainRoot !== null ? localRoot === chainRoot : true;
+    const receiptsMatch = chainReceiptsRoot !== null ? localReceiptsRoot === chainReceiptsRoot : true;
+    if (!allowRootMismatch && (!marketsMatch || !receiptsMatch)) {
+      throw new Error(
+        `state root mismatch localMarkets=${localRoot} chainMarkets=${chainRoot ?? 'unavailable'} localReceipts=${localReceiptsRoot} chainReceipts=${chainReceiptsRoot ?? 'unavailable'}. Refusing to overwrite ${stateFile} with non-canonical replayed state.`
       );
     }
+    await saveOperatorState(stateFile, nextState);
   }
 
   console.log('State sync complete.');
@@ -233,6 +247,9 @@ async function main(): Promise<void> {
   console.log('Chain receiptsRoot:', chainReceiptsRoot ?? 'unavailable');
   console.log('Markets root match:', chainRoot ? (localRoot === chainRoot ? 'yes' : 'no') : 'unknown');
   console.log('Receipts root match:', chainReceiptsRoot ? (localReceiptsRoot === chainReceiptsRoot ? 'yes' : 'no') : 'unknown');
+  if (allowRootMismatch && ((chainRoot && localRoot !== chainRoot) || (chainReceiptsRoot && localReceiptsRoot !== chainReceiptsRoot))) {
+    console.log('Warning: state file was written with a root mismatch because --allow-root-mismatch was set.');
+  }
 }
 
 main().catch((error: unknown) => {

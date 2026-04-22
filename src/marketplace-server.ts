@@ -45,6 +45,7 @@ import {
   getOnChainReceiptsRoot
 } from './fast-chain-state.js';
 import {
+  backupOperatorState,
   buildClaimedReceiptsMerkleMap,
   buildMarketsMerkleMap,
   buildReceiptsMerkleMap,
@@ -1906,6 +1907,17 @@ async function refreshState(projectRoot: string): Promise<void> {
   lastStateRefreshAtUnixMs = Date.now();
 }
 
+function parseBooleanLike(value: unknown, fallback = false): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
 async function refreshStateInBackground(projectRoot: string, reason: string): Promise<void> {
   if (backgroundStateRefreshPromise) return backgroundStateRefreshPromise;
   backgroundStateRefreshPromise = (async () => {
@@ -3448,6 +3460,83 @@ async function main(): Promise<void> {
             localReceiptsRoot && chainReceiptsRoot ? localReceiptsRoot === chainReceiptsRoot : null,
           rootError,
           ts: new Date().toISOString()
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/operator/export-state') {
+        requireOracleAuthorization(req, null);
+        const state = await loadOperatorState(defaultStatePath);
+        writeJson(res, 200, {
+          ok: true,
+          stateFile: defaultStatePath,
+          state
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/operator/import-state') {
+        const body = await readJsonBody(req);
+        requireOracleAuthorization(req, body as Record<string, unknown>);
+        const state = (body as { state?: OperatorStateFile }).state;
+        if (!state || typeof state !== 'object') {
+          throw new Error('state payload required');
+        }
+        const replaceExisting = parseBooleanLike((body as Record<string, unknown>).replaceExisting, false);
+        const existing = replaceExisting
+          ? {
+              markets: {},
+              positions: {},
+              receipts: {},
+              claimedReceipts: {},
+              usedNonces: {},
+              marketMeta: {},
+              positionMeta: {},
+              receiptMeta: {}
+            }
+          : await loadOperatorState(defaultStatePath);
+        const nextState: OperatorStateFile = {
+          zkappPublicKey:
+            typeof state.zkappPublicKey === 'string'
+              ? state.zkappPublicKey
+              : typeof existing.zkappPublicKey === 'string'
+                ? existing.zkappPublicKey
+                : undefined,
+          markets: replaceExisting ? state.markets || {} : { ...(existing.markets || {}), ...(state.markets || {}) },
+          positions:
+            replaceExisting ? state.positions || {} : { ...(existing.positions || {}), ...(state.positions || {}) },
+          receipts:
+            replaceExisting ? state.receipts || {} : { ...(existing.receipts || {}), ...(state.receipts || {}) },
+          claimedReceipts:
+            replaceExisting
+              ? state.claimedReceipts || {}
+              : { ...(existing.claimedReceipts || {}), ...(state.claimedReceipts || {}) },
+          usedNonces:
+            replaceExisting ? state.usedNonces || {} : { ...(existing.usedNonces || {}), ...(state.usedNonces || {}) },
+          marketMeta:
+            replaceExisting ? state.marketMeta || {} : { ...(existing.marketMeta || {}), ...(state.marketMeta || {}) },
+          positionMeta:
+            replaceExisting
+              ? state.positionMeta || {}
+              : { ...(existing.positionMeta || {}), ...(state.positionMeta || {}) },
+          receiptMeta:
+            replaceExisting ? state.receiptMeta || {} : { ...(existing.receiptMeta || {}), ...(state.receiptMeta || {}) }
+        };
+        const backupPath = await backupOperatorState(
+          defaultStatePath,
+          replaceExisting ? 'pre-import-replace' : 'pre-import-merge'
+        );
+        await saveOperatorState(defaultStatePath, nextState);
+        writeJson(res, 200, {
+          ok: true,
+          stateFile: defaultStatePath,
+          replaceExisting,
+          backupPath,
+          markets: Object.keys(nextState.markets || {}).length,
+          positions: Object.keys(nextState.positions || {}).length,
+          receipts: Object.keys(nextState.receipts || {}).length,
+          claimedReceipts: Object.keys(nextState.claimedReceipts || {}).length,
+          usedNonces: Object.keys(nextState.usedNonces || {}).length
         });
         return;
       }

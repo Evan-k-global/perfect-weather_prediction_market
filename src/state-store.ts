@@ -1,5 +1,5 @@
 import { Bool, Field, MerkleMap, UInt64 } from 'o1js';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { PositionLeaf } from './contract.js';
 import { MarketLeaf } from './market-types.js';
@@ -161,6 +161,20 @@ export async function saveOperatorState(statePath: string, state: OperatorStateF
   const tempPath = `${statePath}.tmp`;
   await writeFile(tempPath, JSON.stringify(state, null, 2), 'utf8');
   await rename(tempPath, statePath);
+}
+
+export async function backupOperatorState(statePath: string, suffix?: string): Promise<string | null> {
+  try {
+    await readFile(statePath, 'utf8');
+  } catch {
+    return null;
+  }
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const label = suffix ? `.${suffix.replace(/[^a-zA-Z0-9_-]+/g, '-')}` : '';
+  const backupPath = path.join(path.dirname(statePath), `operator-state.backup.${stamp}${label}.json`);
+  await mkdir(path.dirname(statePath), { recursive: true });
+  await copyFile(statePath, backupPath);
+  return backupPath;
 }
 
 export function buildMarketsMerkleMap(state: OperatorStateFile): MerkleMap {
