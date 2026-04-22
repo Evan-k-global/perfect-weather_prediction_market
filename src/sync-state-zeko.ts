@@ -185,7 +185,7 @@ async function main(): Promise<void> {
     zkappAddress,
     networkId,
     graphql,
-    archiveGraphql: graphql,
+    archiveGraphql,
     existingState: latestState
   });
   nextState.marketMeta = {
