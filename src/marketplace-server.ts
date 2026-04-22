@@ -1898,6 +1898,10 @@ async function runProjectCommand(projectRoot: string, args: string[]): Promise<s
 }
 
 async function refreshState(projectRoot: string): Promise<void> {
+  if (process.env.DISABLE_OPERATOR_STATE_SYNC === '1') {
+    console.warn('[state-sync] skipped because DISABLE_OPERATOR_STATE_SYNC=1');
+    return;
+  }
   await runProjectCommand(projectRoot, ['sync-state:zeko', '--', '--state-file', './data/operator-state.json']);
   lastStateRefreshAtUnixMs = Date.now();
 }
@@ -2424,6 +2428,7 @@ function normalizeOracleStateImportBody(body: Record<string, unknown>): {
   marketMeta: NonNullable<OperatorStateFile['marketMeta']>;
   usedNonces: OperatorStateFile['usedNonces'];
   dailyMarkets: Record<string, DemoDailyMarket>;
+  replaceExisting: boolean;
 } {
   const unwrapped =
     typeof body.body === 'string' && body.body.trim().length > 0
@@ -2439,7 +2444,8 @@ function normalizeOracleStateImportBody(body: Record<string, unknown>): {
     markets: (unwrapped.markets as OperatorStateFile['markets']) || {},
     marketMeta: (unwrapped.marketMeta as NonNullable<OperatorStateFile['marketMeta']>) || {},
     usedNonces: (unwrapped.usedNonces as OperatorStateFile['usedNonces']) || {},
-    dailyMarkets: (unwrapped.dailyMarkets as Record<string, DemoDailyMarket>) || {}
+    dailyMarkets: (unwrapped.dailyMarkets as Record<string, DemoDailyMarket>) || {},
+    replaceExisting: unwrapped.replaceExisting === true
   };
 }
 
@@ -4325,32 +4331,41 @@ async function main(): Promise<void> {
         }
 
         const state = await loadOperatorState(defaultStatePath);
-        state.markets = {
-          ...(state.markets || {}),
-          ...(imported.markets || {})
-        };
-        state.marketMeta = {
-          ...(state.marketMeta || {}),
-          ...(imported.marketMeta || {})
-        };
-        state.usedNonces = {
-          ...(state.usedNonces || {}),
-          ...(imported.usedNonces || {})
-        };
+        state.markets = imported.replaceExisting
+          ? { ...(imported.markets || {}) }
+          : {
+              ...(state.markets || {}),
+              ...(imported.markets || {})
+            };
+        state.marketMeta = imported.replaceExisting
+          ? { ...(imported.marketMeta || {}) }
+          : {
+              ...(state.marketMeta || {}),
+              ...(imported.marketMeta || {})
+            };
+        state.usedNonces = imported.replaceExisting
+          ? { ...(imported.usedNonces || {}) }
+          : {
+              ...(state.usedNonces || {}),
+              ...(imported.usedNonces || {})
+            };
         await saveOperatorState(defaultStatePath, state);
 
         if (existingDailyMarkets) {
           await saveDemoDailyMarkets(
-            {
-              ...existingDailyMarkets,
-              ...imported.dailyMarkets
-            },
+            imported.replaceExisting
+              ? { ...imported.dailyMarkets }
+              : {
+                  ...existingDailyMarkets,
+                  ...imported.dailyMarkets
+                },
             dailyMarketsPath
           );
         }
 
         writeJson(res, 200, {
           ok: true,
+          replaceExisting: imported.replaceExisting,
           marketsImported: Object.keys(imported.markets || {}).length,
           marketMetaImported: Object.keys(imported.marketMeta || {}).length,
           dailyMarketsImported: Object.keys(imported.dailyMarkets || {}).length,
@@ -4643,7 +4658,9 @@ async function main(): Promise<void> {
       hostedStateSyncIntervalRaw !== undefined
         ? Math.max(0, Number.parseInt(hostedStateSyncIntervalRaw, 10) || 0)
         : 15000;
-    if (hostedStateSyncIntervalMs > 0) {
+    if (process.env.DISABLE_OPERATOR_STATE_SYNC === '1') {
+      console.log('[state-sync] background sync disabled (DISABLE_OPERATOR_STATE_SYNC=1)');
+    } else if (hostedStateSyncIntervalMs > 0) {
       console.log(`[state-sync] background sync enabled every ${hostedStateSyncIntervalMs}ms`);
       void refreshStateInBackground(projectRoot, 'startup');
       setInterval(() => {
