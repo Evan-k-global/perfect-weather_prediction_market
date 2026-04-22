@@ -4310,6 +4310,7 @@ async function main(): Promise<void> {
         const body = await readJsonBody(req);
         requireOracleAuthorization(req, body as Record<string, unknown>);
         const marketDate = requireString(body.marketDate, 'marketDate');
+        await refreshState(projectRoot);
         const output = await runProjectCommand(projectRoot, [
           'resolve-daily-market:zeko',
           '--',
@@ -4330,6 +4331,7 @@ async function main(): Promise<void> {
       if (req.method === 'POST' && url.pathname === '/api/oracle/ensure-daily-markets') {
         const body = await readJsonBody(req);
         requireOracleAuthorization(req, body as Record<string, unknown>);
+        await refreshState(projectRoot);
         const output = await runProjectCommand(projectRoot, [
           'ensure-daily-markets:zeko',
           '--',
