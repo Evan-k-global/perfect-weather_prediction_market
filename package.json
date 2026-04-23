@@ -14,6 +14,7 @@
     "bootstrap-fast-zkapp:zeko": "node --enable-source-maps dist/bootstrap-fast-zkapp-zeko.js",
     "deploy:zeko": "node --enable-source-maps dist/deploy.js",
     "sync-state:zeko": "node --enable-source-maps dist/sync-state-zeko.js",
+    "recover-state:candidates": "node --enable-source-maps dist/recover-state-candidates.js",
     "create-market:zeko": "node --enable-source-maps dist/create-market-zeko.js",
     "ensure-daily-markets:zeko": "node --enable-source-maps dist/ensure-daily-markets-zeko.js",
     "resolve-weather:zeko": "node --enable-source-maps dist/resolve-weather-market-zeko.js",
